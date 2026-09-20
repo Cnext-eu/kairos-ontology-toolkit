@@ -602,3 +602,137 @@ class TestTableDispositionIsHonoured:
         from kairos_ontology.core.generate_bindings import table_disposition
 
         assert table_disposition(self._ledger("deferred"), "sys", "shipments") == ""
+
+class TestAuthoredRelationshipsSurviveRegeneration:
+    """#930 -- --force must not discard what propose-relationships made the author paste."""
+
+    RELATIONSHIP = [
+        {
+            "property": "https://ref.test/ont/consignment#hasConsignee",
+            "target": "https://ref.test/ont/party#TradeParty",
+            "join": [{"local": "consignee", "foreign": "party_id"}],
+            "cardinality": "many-to-one",
+            "mode": "non-temporal",
+            "missingParent": "null",
+            "ambiguousParent": "error",
+        }
+    ]
+
+    def _author_a_relationship(self, hub):
+        path = _run(hub).generated[0].path
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        doc["relationships"] = self.RELATIONSHIP
+        path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+        return path
+
+    def test_force_preserves_the_authored_block(self, hub):
+        path = self._author_a_relationship(hub)
+        report = _run(hub, force=True)
+        [regenerated] = [g for g in report.generated if g.outcome == "written"]
+        assert regenerated.relationships_preserved == 1
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert doc["relationships"] == self.RELATIONSHIP, (
+            "the generator never authors relationships, so it has nothing to merge -- "
+            "carrying the block across is the whole fix"
+        )
+
+    def test_regeneration_still_refreshes_everything_else(self, hub):
+        """Preserving relationships must not turn --force into a no-op."""
+        path = self._author_a_relationship(hub)
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        doc["fields"] = []
+        path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+        _run(hub, force=True)
+        refreshed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert refreshed["fields"], "fields are regenerated"
+        assert refreshed["relationships"] == self.RELATIONSHIP, "relationships are not"
+
+    def test_a_binding_without_relationships_reports_none_preserved(self, hub):
+        _run(hub)
+        [g] = [g for g in _run(hub, force=True).generated if g.outcome == "written"]
+        assert g.relationships_preserved == 0
+
+
+class TestDispositionRetractsAStaleBinding:
+    """#925 -- skipping a ruled-out table leaves its binding compiling and emitting."""
+
+    def _rule_out(self, hub, disposition="not-business-data"):
+        analysis = hub / "integration" / "sources" / "_analysis"
+        (analysis / "table-dispositions.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "tables": [
+                        {
+                            "system": "src",
+                            "table": "goods",
+                            "disposition": disposition,
+                            "rationale": "not modelled",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_the_binding_written_before_the_ruling_is_removed(self, hub):
+        path = _run(hub).generated[0].path
+        assert path.is_file()
+        self._rule_out(hub)
+        report = _run(hub, force=True)
+        [skipped] = [g for g in report.generated if g.outcome == "skipped"]
+        assert "retracted" in skipped.note
+        assert not path.exists(), "compile globs this directory; skipping is not enough"
+
+    def test_dry_run_reports_the_retraction_without_performing_it(self, hub):
+        path = _run(hub).generated[0].path
+        self._rule_out(hub)
+        [skipped] = [g for g in _run(hub, dry_run=True, force=True).generated
+                     if g.outcome == "skipped"]
+        assert "retracted" in skipped.note
+        assert path.is_file(), "a dry run writes nothing, and deleting is writing"
+
+    def test_a_table_with_no_prior_binding_says_nothing_about_retraction(self, hub):
+        self._rule_out(hub)
+        [skipped] = [g for g in _run(hub).generated if g.outcome == "skipped"]
+        assert "retracted" not in skipped.note
+
+    def test_bound_disposition_does_not_retract(self, hub):
+        """`bound` is the ledger agreeing with the binding, not overriding it."""
+        path = _run(hub).generated[0].path
+        self._rule_out(hub, disposition="bound")
+        _run(hub, force=True)
+        assert path.is_file()
+
+
+class TestSkipReasonNamesTheRealCause:
+    """#926 -- a class disagreement was reported as missing relationship wiring."""
+
+    def _align_everything_elsewhere(self, hub):
+        analysis = hub / "integration" / "sources" / "_analysis"
+        table = yaml.safe_load(
+            (analysis / "consignment-alignment.yaml").read_text(encoding="utf-8")
+        )["tables"][0]
+        for column in table["columns"]:
+            # Both halves matter: the aligner put the column on another class, and the
+            # property therefore does not resolve against the anchor's module. Either
+            # alone leaves the table bindable.
+            column["ref_class"] = "Booking"
+            column["ref_property"] = "bookingReference"
+        (analysis / "consignment-alignment.yaml").write_text(
+            yaml.safe_dump({"domain": "consignment", "tables": [table]}), encoding="utf-8"
+        )
+
+    def test_it_names_the_anchor_and_the_class_alignment_chose(self, hub):
+        self._align_everything_elsewhere(hub)
+        [skipped] = [g for g in _run(hub).generated if g.outcome == "skipped"]
+        assert "Booking" in skipped.note
+        assert "Consignment" in skipped.note
+
+    def test_it_does_not_send_the_operator_to_propose_relationships(self, hub):
+        self._align_everything_elsewhere(hub)
+        [skipped] = [g for g in _run(hub).generated if g.outcome == "skipped"]
+        assert "will not help" in skipped.note, (
+            "the old text blamed relationship wiring for a cause that has nothing to do "
+            "with relationships"
+        )

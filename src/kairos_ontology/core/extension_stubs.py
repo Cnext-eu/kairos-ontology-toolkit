@@ -38,6 +38,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -303,11 +304,22 @@ def render_extension_ttl(
     return "\n".join(lines)
 
 
-def anchor_classes_for_domain(analysis_dir: Path, domain: str) -> dict[str, str]:
+def anchor_classes_for_domain(
+    analysis_dir: Path, domain: str, hub_root: Optional[Path] = None
+) -> dict[str, str]:
     """``local name -> anchor URI`` for the classes the sheet assigns to *domain*.
 
     Keyed on the local name because that is how a decision records its owning class;
     valued with the URI because that is what ``rdfs:domain`` needs.
+
+    Tables the disposition ledger rules out contribute nothing (#925). Without *hub_root*
+    the ledger cannot be found and every anchored table is in scope, which is the old
+    behaviour: a table dispositioned out still shaped the domain's extension properties.
+    Measured on one hub, two ruled-out tables contributed three properties whose
+    ``rdfs:domain`` pointed at a namespace the domain does not import, so ``validate``
+    failed an import rule on the strength of tables the operator had already removed --
+    and deleting the properties by hand did not stick, because the next render produced
+    them again.
     """
     from .anchor_tables import load_table_anchors
 
@@ -315,9 +327,23 @@ def anchor_classes_for_domain(analysis_dir: Path, domain: str) -> dict[str, str]
         anchors = load_table_anchors(Path(analysis_dir))
     except Exception:  # noqa: BLE001 - advisory; an unreadable sheet scopes to nothing
         return {}
+    ruled_out: set[tuple[str, str]] = set()
+    if hub_root is not None:
+        from .source_disposition import NON_GENERATING_DISPOSITIONS, load_dispositions
+
+        try:
+            for (system, table, column), entry in load_dispositions(Path(hub_root)).items():
+                if column:
+                    continue
+                if str(entry.get("disposition") or "") in NON_GENERATING_DISPOSITIONS:
+                    ruled_out.add((system, table))
+        except Exception:  # noqa: BLE001 - an unreadable ledger must not fail a render
+            ruled_out = set()
     resolved: dict[str, str] = {}
     for entry in anchors.values():
         if str(entry.get("domain") or "") != domain:
+            continue
+        if (str(entry.get("system") or ""), str(entry.get("table") or "")) in ruled_out:
             continue
         uri = str(entry.get("anchor_uri") or "")
         if not uri:
@@ -365,7 +391,7 @@ def build_extension_stubs(
     """Collect and render one domain's accepted extension properties."""
     hub_root = Path(hub_root)
     analysis = hub_root / "integration" / "sources" / "_analysis"
-    classes = anchor_classes_for_domain(analysis, domain)
+    classes = anchor_classes_for_domain(analysis, domain, hub_root=hub_root)
     report = collect_extension_properties(
         hub_root, class_uris=classes, unresolvable=unresolvable_classes(hub_root, domain, classes)
     )
