@@ -1992,7 +1992,7 @@ def run_validation(
         )
         print()
 
-        # Staged business evidence nothing consumed (DD-234). This is a hard stop on
+        # Staged business evidence nothing consumed (DD-233). This is a hard stop on
         # purpose: source schemas the pipeline can re-read at will, but the client's own
         # documents and their Power BI models are the two inputs only a human can supply,
         # and a hub modelled without them is modelled from column names. Silence here

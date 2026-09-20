@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Staged business evidence that never reached the hub (DD-234).
+"""Staged business evidence that never reached the hub (DD-233).
 
 ``.import/`` is where a human drops the things only they can supply: the client's own
 documents, and the Power BI models that say what the business already measures. Every
@@ -43,7 +43,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 #: Rule id for the gate, quoted in diagnostics the way DD-164/DD-169 are.
-IMPORT_EVIDENCE_RULE_ID = "DD-234"
+IMPORT_EVIDENCE_RULE_ID = "DD-233"
 
 #: Directories under ``.import/`` that a command actually reads.
 #:

@@ -1,6 +1,6 @@
 ### Added
 - **`.import/powerbi/` is scaffolded, and staged business evidence nothing consumed now
-  fails `validate` (DD-234).** `.import/` holds the two inputs the pipeline cannot
+  fails `validate` (DD-233).** `.import/` holds the two inputs the pipeline cannot
   re-derive for itself: the client's own documents and their Power BI models. Nothing
   checked that any of it was used. `discovery-status` reported on
   `.import/businessdiscovery/` alone and said "nothing to check" for an empty directory,

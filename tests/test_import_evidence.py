@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Staged business evidence nothing consumed (DD-234).
+"""Staged business evidence nothing consumed (DD-233).
 
 Source schemas the pipeline can re-read at will. The client's own documents and their
 Power BI models are the two inputs only a human can supply, and a hub modelled without

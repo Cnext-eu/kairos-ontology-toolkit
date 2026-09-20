@@ -50,7 +50,7 @@ records that judgement; until they do, a row counts for nothing.
 
 `kairos-ontology validate` fails when an export staged here has no engineering pack in
 `integration/discovery/bi/` — staged-but-unused business evidence is the one thing the
-pipeline cannot re-derive for itself, so it is not allowed to pass silently (DD-234).
+pipeline cannot re-derive for itself, so it is not allowed to pass silently (DD-233).
 `kairos-ontology discovery-status` lists what is outstanding.
 
 ## ⚠️ Sensitive content

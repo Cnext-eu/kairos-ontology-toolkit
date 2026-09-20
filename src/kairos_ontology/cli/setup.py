@@ -298,7 +298,7 @@ def init(
     # Power BI / TMDL exports. A sibling of businessdiscovery/ because it is the same
     # kind of input -- something only a human can supply and the pipeline cannot
     # re-derive -- and because without a scaffolded home for it, hubs invent one and
-    # every command then fails to find it (DD-234).
+    # every command then fails to find it (DD-233).
     imports_pbi = cwd / ".import" / "powerbi"
     imports_pbi.mkdir(parents=True, exist_ok=True)
     pbi_readme_src = _SCAFFOLD_DIR / "import" / "powerbi" / "README.md"
@@ -1152,7 +1152,7 @@ def new_repo(
     # Power BI / TMDL exports. A sibling of businessdiscovery/ because it is the same
     # kind of input -- something only a human can supply and the pipeline cannot
     # re-derive -- and because without a scaffolded home for it, hubs invent one and
-    # every command then fails to find it (DD-234).
+    # every command then fails to find it (DD-233).
     imports_pbi = repo_dir / ".import" / "powerbi"
     imports_pbi.mkdir(parents=True, exist_ok=True)
     pbi_readme_src = _SCAFFOLD_DIR / "import" / "powerbi" / "README.md"
