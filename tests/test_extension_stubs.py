@@ -282,3 +282,86 @@ class TestCompilableRanges:
         from kairos_ontology.core.projections.dbt.policy_normalize import _target_type
 
         assert _target_type("http://www.w3.org/2001/XMLSchema#duration") is None
+
+
+# ---------------------------------------------------------------------------
+# A class the domain cannot resolve (#912)
+# ---------------------------------------------------------------------------
+
+
+class TestUnresolvableAnchorClass:
+    """Global anchoring picks from the whole catalog; a domain's imports are scoped by its
+    blueprint. When they disagree the failure is silent: a property declared on an
+    unresolvable class renders, passes `validate` (syntax and SHACL both accept an
+    `rdfs:domain` pointing anywhere), and is invisible to `generate-bindings`, which
+    resolves through the domain's own closure. Measured: 33 properties, inert, until the
+    missing `owl:imports` was added by hand.
+    """
+
+    @staticmethod
+    def _ledger(tmp_path, on_class):
+        import yaml
+
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "table-dispositions.yaml").write_text(
+            yaml.dump({"schema_version": 1, "tables": [{
+                "system": "sys", "table": "t", "column": "C",
+                "disposition": "registered-extension",
+                "proposed_property": {
+                    "name": "someFlag", "range": "xsd:boolean",
+                    "on_class": on_class, "why": "no reference property",
+                },
+            }]}),
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_a_property_on_an_unresolvable_class_is_skipped_not_rendered(self, tmp_path):
+        from kairos_ontology.core.extension_stubs import collect_extension_properties
+
+        hub = self._ledger(tmp_path, "Widget")
+        uri = "https://ref.example/ont/other#Widget"
+
+        report = collect_extension_properties(
+            hub, class_uris={"Widget": uri}, unresolvable={uri}
+        )
+
+        assert [p.name for p in report.properties] == []
+        assert any("import closure" in entry["reason"] for entry in report.skipped)
+
+    def test_the_skip_says_both_ways_out(self, tmp_path):
+        """Adding the import and re-anchoring are different decisions; name both."""
+        from kairos_ontology.core.extension_stubs import collect_extension_properties
+
+        hub = self._ledger(tmp_path, "Widget")
+        uri = "https://ref.example/ont/other#Widget"
+
+        report = collect_extension_properties(
+            hub, class_uris={"Widget": uri}, unresolvable={uri}
+        )
+        note = report.skipped[0]["reason"]
+
+        assert "owl:imports" in note
+        assert "re-anchor" in note
+
+    def test_a_resolvable_class_still_renders(self, tmp_path):
+        from kairos_ontology.core.extension_stubs import collect_extension_properties
+
+        hub = self._ledger(tmp_path, "Widget")
+        uri = "https://ref.example/ont/other#Widget"
+
+        report = collect_extension_properties(hub, class_uris={"Widget": uri}, unresolvable=set())
+
+        assert [p.name for p in report.properties] == ["someFlag"]
+
+    def test_the_check_is_advisory_and_never_breaks_a_render(self, tmp_path):
+        """A hub mid-authoring may have no loadable master; that must cost a warning."""
+        from kairos_ontology.core.extension_stubs import unresolvable_classes
+
+        assert unresolvable_classes(tmp_path, "d", {"Widget": "https://x/#Widget"}) == set()
+
+    def test_no_classes_means_nothing_to_check(self, tmp_path):
+        from kairos_ontology.core.extension_stubs import unresolvable_classes
+
+        assert unresolvable_classes(tmp_path, "d", {}) == set()

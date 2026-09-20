@@ -931,7 +931,7 @@ def _business_grain(grain: list[str], natural_key: list[str]) -> list[str]:
     return kept or list(grain)
 
 
-def render_anchor_glossary(hub_root: Path | None, *, limit: int = 120) -> str:
+def render_anchor_glossary(hub_root: Path | None, *, limit: int | None = None) -> str:
     """The client's vocabulary as evidence for what a table is (#885).
 
     A glossary concept's ``rdfs:seeAlso`` names the reference class the business's own
@@ -947,7 +947,16 @@ def render_anchor_glossary(hub_root: Path | None, *, limit: int = 120) -> str:
     try:
         from .propose_alignment import load_glossary_records
 
-        records = [r for r in load_glossary_records(hub_root, limit=limit) if r.get("see_also")]
+        # The cap is applied BEFORE the see_also filter, so a low limit costs anchoring
+        # linked concepts it would otherwise have used: on one hub 125 concepts carried a
+        # class and only 74 survived the old cap of 120 (#908). Defaults to the shared
+        # GLOSSARY_PROMPT_LIMIT rather than restating a number here.
+        from .propose_alignment import GLOSSARY_PROMPT_LIMIT
+
+        effective = GLOSSARY_PROMPT_LIMIT if limit is None else limit
+        records = [
+            r for r in load_glossary_records(hub_root, limit=effective) if r.get("see_also")
+        ]
     except Exception:  # noqa: BLE001 - enrichment only; anchoring must still run
         logger.debug("could not load the glossary for the anchoring prompt", exc_info=True)
         return ""
