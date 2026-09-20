@@ -81,6 +81,42 @@ and do not auto-degrade.  Print the remediation and escalate to the contact
 (DD-159).  A run that skipped or could not complete an LLM judgment step must
 carry **BLOCKED** in its transparency report — it may never report "complete".
 
+### Stage 0 pre-flight: enforcement mode
+
+Run every command in this session under autopilot mode, set once:
+
+```powershell
+$env:KAIROS_MODE = "autopilot"      # or pass --mode autopilot per invocation
+kairos-ontology gates               # what this mode refuses, and why
+```
+
+This is the difference between a rule in a skill file and a rule the toolkit
+enforces (DD-234).  Every instruction below saying "an autopilot run must not pass
+that flag" was, until this existed, a request — nothing stopped an agent under
+schedule pressure from clearing a blocker with the flag the error message helpfully
+named.  In autopilot mode the flag is refused at parse time, before the command body
+runs, with a message naming the gate and the human decision it needs.
+
+`kairos-ontology gates` is the authoritative list; do not re-derive it here.  What
+autopilot mode refuses is, in short, every escape that *downgrades the result*:
+`--without-discovery`, `--without-anchors`, `--allow-unresolved`,
+`--allow-fallback-output`, `--no-schema-catalogue-screen`, `--degraded`.  It still
+permits the escapes that are recovery or environment facts rather than judgements
+(`--allow-downgrade`); those are a human's call about the machine, not about the
+model.
+
+Two things to know:
+
+- **Escapes are recorded in the artifact, not only the terminal.**  A
+  `*-alignment.yaml` or `table-anchors.yaml` produced under an escape carries an
+  `enforcement:` block naming the mode and the flags.  A reviewer six months later can
+  see what was skipped, which is the same argument the AI-provenance header makes for
+  authorship.
+- **A refused flag is a stop, not a retry.**  Re-running the same command without the
+  flag will fail on the gate itself, which is the correct outcome: escalate to the
+  declared contact.  Switching the mode back to `interactive` to get past a gate is a
+  violation of this skill, and is visible in the artifact.
+
 ### Stage 0 pre-flight: business discovery
 
 The client's own documents and their Power BI models are the two inputs the pipeline
@@ -98,7 +134,8 @@ kairos-ontology validate             # DD-233 fails on staged evidence nothing c
 
 - **No authored glossary** (`businessdiscovery/*.ttl`) — **STOP**.  `anchor-tables` and
   `propose-alignment` both refuse without one, and `--without-discovery` is a deliberate
-  human escape, never an autopilot decision.  An autopilot run must not pass that flag.
+  human escape, never an autopilot decision.  Under `KAIROS_MODE=autopilot` the toolkit
+  refuses the flag outright (DD-234), so this is enforced rather than requested.
 - **DD-233 findings** (`unextracted`, `unimported`, `misplaced`) — **STOP** and escalate.
   `misplaced` in particular means the operator supplied evidence nothing can see, which
   no amount of downstream work repairs.

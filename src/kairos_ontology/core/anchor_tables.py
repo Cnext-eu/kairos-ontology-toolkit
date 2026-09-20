@@ -67,6 +67,7 @@ from .analyse_sources import (
 from .class_anchoring import read_reference_terms
 from .anchor_drift import compare_anchor_runs, render_drift_summary
 from .discovery_currency import GLOSSARY_FINGERPRINT_KEY, glossary_fingerprint
+from .gates import enforcement_provenance
 from .tracing import call_metadata, flush_tracing, new_session_id
 
 logger = logging.getLogger(__name__)
@@ -1318,6 +1319,7 @@ def run_anchor_tables(
     for line in render_drift_summary(drift):
         say(line, "warning" if drift.drifted else None)
 
+    enforcement = enforcement_provenance()
     payload = {
         # v2 (DD-190): entries carry schema_hash, status, relationships,
         # secondary_entities, flags; pinned entries survive re-runs verbatim.
@@ -1331,6 +1333,11 @@ def run_anchor_tables(
         # moved is the most expensive kind of stale. "none" records a run that had
         # no glossary at all.
         GLOSSARY_FINGERPRINT_KEY: glossary_fingerprint(Path(sources_dir).parent.parent),
+        # DD-234: the enforcement mode and any escape flags this run used. Anchors
+        # written under --without-discovery are source-shaped, and the fingerprint above
+        # says so only indirectly -- "none" is also what a hub with no glossary records.
+        # Omitted on a clean interactive run, so unaffected output is unchanged.
+        **({"enforcement": enforcement} if enforcement else {}),
         "table_count": len(outline),
         "tables": tables,
         "unanchored": unanchored,

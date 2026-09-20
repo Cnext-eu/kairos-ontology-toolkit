@@ -1305,3 +1305,144 @@ class TestPartialEmitReportsStaleDependents:
         )
 
         assert _stale_dependent_domains(hub, emit_target, "party") == ()
+
+
+# ---------------------------------------------------------------------------
+# Evidence is a requirement, and a gate that crashes has not passed (DD-234)
+# ---------------------------------------------------------------------------
+
+
+def _hub_with_imported_sources(tmp_path):
+    """A hub that has imported a source system, so alignment evidence is owed.
+
+    The pre-existing gate fixtures above deliberately do not import one: they write an
+    ``_analysis/`` file directly. That is why they are unaffected by the evidence gate,
+    and it is the same distinction the gate itself draws -- a hub with nothing imported
+    has nothing to align, and stopping its compile would be a false positive nobody can
+    clear.
+    """
+    hub = _hub(tmp_path)
+    system = hub / "integration" / "sources" / "crm"
+    system.mkdir(parents=True, exist_ok=True)
+    (system / "crm.yaml").write_text("system: crm\ntables: []\n", encoding="utf-8")
+    return hub
+
+
+class TestAlignmentEvidenceGate:
+    """Measured on a real hub: deleting ``_analysis/`` took the DD-169 gate from 661
+    findings to a clean pass, with no exception raised anywhere. The gates were built on
+    a report that degrades gracefully, so "no findings" and "nothing was read" arrived
+    at the caller indistinguishable.
+    """
+
+    def test_imported_sources_with_no_alignment_output_blocks_the_compile(
+        self, tmp_path, monkeypatch
+    ):
+        hub = _hub_with_imported_sources(tmp_path)
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "party", "--check", "--format", "json"])
+
+        assert result.exit_code == 1
+        codes = {d["code"] for d in json.loads(result.stdout)["diagnostics"]}
+        assert codes == {"alignment.evidence-missing"}
+
+    def test_the_refusal_names_the_command_that_produces_the_evidence(
+        self, tmp_path, monkeypatch
+    ):
+        """A hard stop that does not say how to clear it is an obstacle, not a control."""
+        hub = _hub_with_imported_sources(tmp_path)
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+        assert "propose-alignment" in result.output
+
+    def test_an_unreadable_alignment_file_blocks_and_is_named(self, tmp_path, monkeypatch):
+        """405 of 661 columns went missing this way, silently."""
+        hub = _hub_with_imported_sources(tmp_path)
+        analysis = hub / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True, exist_ok=True)
+        (analysis / "party-alignment.yaml").write_text("a: [unclosed\n", encoding="utf-8")
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "party", "--check", "--format", "json"])
+
+        assert result.exit_code == 1
+        messages = [d["message"] for d in json.loads(result.stdout)["diagnostics"]]
+        assert any("party-alignment.yaml" in message for message in messages)
+
+    def test_a_hub_with_no_imported_sources_still_compiles(self, tmp_path, monkeypatch):
+        """The scope test. A gate firing where it cannot be cleared gets switched off."""
+        monkeypatch.chdir(_hub(tmp_path))
+
+        result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+        assert result.exit_code == 0, result.output
+
+    def test_healthy_evidence_is_not_reported_as_a_gap(self, tmp_path, monkeypatch):
+        hub = _hub_with_imported_sources(tmp_path)
+        analysis = hub / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True, exist_ok=True)
+        (analysis / "party-alignment.yaml").write_text(
+            "domain: party\ntables: []\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+        assert result.exit_code == 0, result.output
+
+
+class TestAGateThatCannotRunHasNotPassed:
+    """Both guards were wrapped in ``except Exception: ... = []`` so a broken one could
+    not break an unrelated compile. The intent was sound; the effect was that a gate
+    whose failure mode is *pass* is an advisory with a strict-sounding name.
+    """
+
+    def test_a_crashing_column_gate_fails_the_compile(self, tmp_path, monkeypatch):
+        hub = _hub_with_imported_sources(tmp_path)
+        analysis = hub / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True, exist_ok=True)
+        (analysis / "party-alignment.yaml").write_text(
+            "domain: party\ntables: []\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(hub)
+
+        from kairos_ontology.core import alignment_report
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("the guard itself is broken")
+
+        monkeypatch.setattr(alignment_report, "undecided_gap_columns", _boom)
+
+        result = CliRunner().invoke(cli, ["compile", "party", "--check", "--format", "json"])
+
+        assert result.exit_code == 1
+        diagnostics = json.loads(result.stdout)["diagnostics"]
+        assert [d["code"] for d in diagnostics] == ["gate.evaluation-failed"]
+        # The operator has to be able to tell a toolkit defect from a malformed hub file.
+        assert "RuntimeError" in diagnostics[0]["message"]
+        assert "alignment.gap-column-undecided" in diagnostics[0]["message"]
+
+    def test_the_failure_carries_the_gates_own_rule_id(self, tmp_path, monkeypatch):
+        hub = _hub_with_imported_sources(tmp_path)
+        analysis = hub / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True, exist_ok=True)
+        (analysis / "party-alignment.yaml").write_text(
+            "domain: party\ntables: []\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(hub)
+
+        from kairos_ontology.core import alignment_report
+
+        monkeypatch.setattr(
+            alignment_report,
+            "undecided_unanchored_tables",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("broken")),
+        )
+
+        result = CliRunner().invoke(cli, ["compile", "party", "--check", "--format", "json"])
+
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["diagnostics"][0]["rule_id"] == "DD-180"

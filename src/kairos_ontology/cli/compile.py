@@ -981,6 +981,43 @@ def _gate_payload(domain: str, mode: CompileMode, diagnostics: list) -> dict[str
     }
 
 
+def _gate_failure(
+    domain: str, mode: CompileMode, gate_id: str, exc: BaseException
+) -> dict[str, Any]:
+    """Report a gate that could not be evaluated as a failure (DD-234 §1b).
+
+    These guards were wrapped in ``except Exception: pass`` so a broken one could not
+    break an unrelated compile. The intent was sound and the effect was that "the guard
+    crashed" and "the guard passed" produced identical output -- a gate whose failure
+    mode is *pass* is an advisory with a strict-sounding name.
+
+    A gate that cannot run has not been satisfied. It says so, names itself, and carries
+    the exception so the operator can tell a toolkit bug from a malformed hub file.
+    """
+    from ..core.gates import gate_by_id
+
+    gate = gate_by_id(gate_id)
+    click.echo(f"✗ the {gate_id} gate could not be evaluated: {exc}", err=True)
+    if gate is not None:
+        click.echo(f"    {gate.summary}", err=True)
+    click.echo(
+        "    A gate that cannot run has not passed. Fix the input it reads, or report "
+        "this as a toolkit defect.",
+        err=True,
+    )
+    return _gate_payload(
+        domain,
+        mode,
+        [
+            CompileDiagnostic(
+                code="gate.evaluation-failed",
+                message=f"{gate_id} could not be evaluated: {type(exc).__name__}: {exc}",
+                rule_id=gate.rule_id if gate is not None else "DD-234",
+            )
+        ],
+    )
+
+
 def _stale_dependent_domains(hub: Path, emit_target: Path, emitted: str) -> tuple[str, ...]:
     """Return the other domains whose committed output no longer matches the hub (#796).
 
@@ -1107,6 +1144,38 @@ def _compile_one_domain(
     # DD-180: check the anchor before the columns. An unanchored table is the larger
     # omission — none of its columns can map well, and reporting a hundred homeless
     # columns underneath it describes the symptom while hiding the cause.
+    # DD-234: ask whether the evidence exists before asking what it says. Both gates
+    # below are built on a report that degrades gracefully -- an unreadable file is
+    # skipped, an absent directory yields nothing -- so "no findings" and "nothing was
+    # read" arrived here indistinguishable. On one real hub, deleting _analysis/ took
+    # the DD-169 gate from 661 findings to a clean pass.
+    try:
+        from ..core.alignment_report import alignment_evidence_gaps
+
+        evidence_gaps = alignment_evidence_gaps(hub)
+    except Exception as exc:  # noqa: BLE001 - reported as a gate failure, not swallowed
+        return False, _gate_failure(domain, mode, "alignment.evidence-missing", exc)
+    if evidence_gaps:
+        click.echo(
+            f"✗ the gap gates for '{domain}' cannot read the evidence they judge:",
+            err=True,
+        )
+        for gap in evidence_gaps:
+            click.echo(f"    {gap.detail}", err=True)
+            click.echo(f"      ↪ {gap.remediation}", err=True)
+        return False, _gate_payload(
+            domain,
+            mode,
+            [
+                CompileDiagnostic(
+                    code="alignment.evidence-missing",
+                    message=gap.describe(),
+                    rule_id="DD-234",
+                )
+                for gap in evidence_gaps
+            ],
+        )
+
     try:
         from ..core.alignment_report import (
             render_unanchored_guidance,
@@ -1114,8 +1183,8 @@ def _compile_one_domain(
         )
 
         unanchored = undecided_unanchored_tables(hub, domains=[domain])
-    except Exception:  # noqa: BLE001 - never fail a compile on the guard itself
-        unanchored = []
+    except Exception as exc:  # noqa: BLE001 - reported as a gate failure, not swallowed
+        return False, _gate_failure(domain, mode, "alignment.table-unanchored", exc)
     if unanchored:
         click.echo(
             f"✗ {len(unanchored)} table(s) in '{domain}' have no reference class and no "
@@ -1148,8 +1217,8 @@ def _compile_one_domain(
         from ..core.alignment_report import GAP_RESOLUTIONS, undecided_gap_columns
 
         undecided = undecided_gap_columns(hub, domains=[domain])
-    except Exception:  # noqa: BLE001 - never fail a compile on the guard itself
-        undecided = []
+    except Exception as exc:  # noqa: BLE001 - reported as a gate failure, not swallowed
+        return False, _gate_failure(domain, mode, "alignment.gap-column-undecided", exc)
     if undecided:
         click.echo(
             f"✗ {len(undecided)} source column(s) in '{domain}' carry real business data "

@@ -5,6 +5,8 @@
 import json
 import click
 
+from .gates import escape_option
+
 from ..core.adapters import ADAPTER_CHOICES, FABRIC_WAREHOUSE, resolve_adapter
 from pathlib import Path
 
@@ -448,7 +450,8 @@ def validate_dbt_contracts_cmd(output_format):
     is_flag=True,
     help="Validate DDD design overlays (*-ddd-ext.ttl) via the dedicated DDD path",
 )
-@click.option(
+@escape_option(
+    "ontology.import-closure-complete",
     "--degraded",
     is_flag=True,
     default=False,

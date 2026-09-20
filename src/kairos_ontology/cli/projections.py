@@ -4,6 +4,8 @@
 
 import click
 
+from .gates import escape_option
+
 from ..core.adapters import ADAPTER_CHOICES, FABRIC_WAREHOUSE
 from pathlib import Path
 
@@ -84,7 +86,8 @@ from .shared import (
     default=None,
     help="Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.",
 )
-@click.option(
+@escape_option(
+    "ontology.import-closure-complete",
     "--degraded",
     is_flag=True,
     default=False,

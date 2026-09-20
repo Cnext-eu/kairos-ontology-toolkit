@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-95 commands.
+96 commands.
 
 ## Index
 
@@ -69,6 +69,7 @@ not reasoning.
 | [`feedback sync-index`](#feedback-sync-index) | Regenerate ``index.md`` from the records currently on disk. |
 | [`field-mapping-report`](#field-mapping-report) | Generate a field-mapping Excel report: ontology fields x one source system. |
 | [`fit-report`](#fit-report) | Advisory set-difference between a class's full property universe and what is populated. |
+| [`gates`](#gates) | List every gate, the evidence it reads, and the flag that bypasses it (DD-234). |
 | [`generate-bindings`](#generate-bindings) | Generate first-draft EntityBindings from the design sheet (DD-191, no LLM). |
 | [`guard-scope`](#guard-scope) | Deterministic 'no unexpected file changed' guard for a bounded skill gate. |
 | [`harvest-gold`](#harvest-gold) | Diff an edited semantic model against this hub and propose the authoring. |
@@ -864,6 +865,20 @@ kairos-ontology fit-report [OPTIONS]
 | `--format` | `text` | Output format (default: text). |
 
 
+## gates
+
+List every gate, the evidence it reads, and the flag that bypasses it (DD-234). Answers the question the CLI could not previously answer at all: what can block this pipeline, and what can get past it? Reading sixteen option declarations across eight files was the only way to find out.
+
+```
+kairos-ontology gates [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--format` | `text` | Output format (JSON is emitted clean on stdout). |
+| `--verbose`, `-v` |  | Also print why each escape exists and what evidence each gate reads. |
+
+
 ## generate-bindings
 
 Generate first-draft EntityBindings from the design sheet (DD-191, no LLM). For every anchored, non-rejected sheet row with a propose-alignment result: target.class = the sheet's anchor URI (reuse-first, DD-144), fields from the alignment's scalar property mappings (module-scoped resolution; duplicate claims deduped), object-property and sheet- relationship columns carried as technicalFields purpose: relationship, grain/natural-key columns materialized purpose: identity, and quality tests only where the DD-189 profile proved them. Every draft is validated against the closed v5 contract BEFORE writing; invalid drafts are reported, never written. Existing bindings are never overwritten without --force. Review is the git diff; propose-relationships upgrades the FK carriers as parents get bound.
@@ -1324,7 +1339,7 @@ kairos-ontology resolve-ontology [OPTIONS] ONTOLOGY
 | Option | Default | Description |
 |---|---|---|
 | `--catalog` |  |  |
-| `--degraded` |  |  |
+| `--degraded` |  | Resolve an incomplete import closure rather than failing on it; the manifest then describes a partial graph. |
 | `--json-output` |  |  |
 
 

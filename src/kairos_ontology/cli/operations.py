@@ -7,6 +7,8 @@ import re
 import sys
 import json
 import click
+
+from .gates import escape_option
 import hashlib
 import shutil
 import subprocess
@@ -314,7 +316,8 @@ def _migrate_dataplatform_custom_models(repo_root: Path, check: bool) -> None:
 @click.option(
     "--restore", is_flag=True, help="Restore the exact dependency source saved by --test-ref."
 )
-@click.option(
+@escape_option(
+    "toolkit.version-downgrade",
     "--allow-downgrade",
     is_flag=True,
     help="Allow --upgrade to move the toolkit pin backwards to an older version.",

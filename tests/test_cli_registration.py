@@ -39,6 +39,7 @@ RETAINED_COMMANDS = {
     "feedback",
     "field-mapping-report",
     "fit-report",
+    "gates",
     "guard-scope",
     "import-flatfile",
     "import-source",

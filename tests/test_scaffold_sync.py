@@ -7,7 +7,7 @@ Code and GitHub Copilot). .github/copilot-instructions.md is the master source
 for instructions. The scaffold/ folder is the distribution copy sent to hub and
 dataplatform repos. These must stay in sync — this test catches drift.
 
-Fix: run `python scripts/sync-dev-skills.py`
+Fix: run `python scripts/sync_dev_skills.py`
 """
 
 import sys
@@ -38,7 +38,7 @@ class TestScaffoldSync:
             msg_lines.extend(
                 [
                     "",
-                    "Fix: run `python scripts/sync-dev-skills.py`",
+                    "Fix: run `python scripts/sync_dev_skills.py`",
                     "Or install the pre-commit hook: `powershell scripts/install-hooks.ps1`",
                 ]
             )
