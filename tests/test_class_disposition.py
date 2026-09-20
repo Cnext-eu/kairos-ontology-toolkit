@@ -73,7 +73,7 @@ def _bind(hub: Path, name: str, token: str, domain: str = "party") -> None:
 
 class TestPopulation:
     def test_only_classes_in_the_hubs_own_namespaces_count(self, tmp_path):
-        graphs = cd.load_domain_graphs(_hub(tmp_path))
+        graphs = cd.load_domain_files(_hub(tmp_path))
         iris = [item.iri for item in cd.hub_classes(graphs)]
         assert iris == [
             "https://acme.example/ont/billing#Invoice",
@@ -87,10 +87,10 @@ class TestPopulation:
     def test_non_domain_files_are_skipped(self, tmp_path):
         hub = _hub(tmp_path)
         (hub / "model" / "ontologies" / "party-silver-ext.ttl").write_text(PARTY, encoding="utf-8")
-        assert set(cd.load_domain_graphs(hub)) == {"party", "billing"}
+        assert set(cd.load_domain_files(hub)) == {"party", "billing"}
 
     def test_qname_resolves_through_the_domain_files_prefixes(self, tmp_path):
-        graphs = cd.load_domain_graphs(_hub(tmp_path))
+        graphs = cd.load_domain_files(_hub(tmp_path))
         assert cd.resolve_class_token("party:Customer", graphs, "party") == f"{NS}Customer"
         assert cd.resolve_class_token("party:Customer", graphs, "billing") == f"{NS}Customer"
         assert cd.resolve_class_token(f"{NS}Customer", graphs) == f"{NS}Customer"

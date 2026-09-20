@@ -13,11 +13,6 @@ ALLOWED_DIRECT_PARSE_SITES = {
     "analyse_sources.py": "source vocabularies and ontology-package discovery",
     "authoring_scaffolds.py": "source vocabularies and SKOS mapping overlays",
     "catalog_utils.py": "XML catalog parsing",
-    "class_disposition.py": (
-        "hub domain files parsed alone, on purpose: the class population is what the hub "
-        "declares under its own ontology IRI, and the import closure would pull the "
-        "reference models in"
-    ),
     "evidence_loaders.py": "advisory SKOS mapping evidence",
     "compiler/kernel.py": (
         "source vocabulary extraction only; domain ontology semantics use ontology_loader"

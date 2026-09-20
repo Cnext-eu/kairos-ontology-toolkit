@@ -29,6 +29,7 @@ adopting a Silver contract (DD-213 §6).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -82,9 +83,25 @@ CODE_STALE = "class-disposition.stale"
 CODE_UNKNOWN_CLASS = "class-disposition.unknown-class"
 CODE_MALFORMED = "class-disposition.malformed-ledger"
 
+#: ``@prefix x: <ns> .`` and SPARQL-style ``PREFIX x: <ns>``; group 1 may be empty (the
+#: default prefix a domain file conventionally uses for its own terms).
+_PREFIX_DECLARATION = re.compile(
+    r"^\s*(?:@prefix|PREFIX)\s+([A-Za-z0-9_.-]*):\s*<([^>]*)>", re.IGNORECASE | re.MULTILINE
+)
+
 
 class ClassDispositionError(ValueError):
     """A ledger that cannot be trusted, or a record that must not be written."""
+
+
+@dataclass(frozen=True)
+class DomainFile:
+    """One domain ontology file as the hub authored it: its own graph and its own prefixes."""
+
+    name: str
+    path: Path
+    graph: Graph
+    prefixes: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -175,27 +192,47 @@ class ClassDispositionReport:
 # ---------------------------------------------------------------------------
 
 
-def load_domain_graphs(hub_root: Path) -> dict[str, Graph]:
-    """Parse each domain file **alone** -- no import closure -- keyed by domain name.
+def load_domain_files(hub_root: Path) -> dict[str, DomainFile]:
+    """Return each domain file's **own** graph and prefixes -- no import closure.
 
-    Single-file parsing is deliberate: the population is what the hub *declares*, and
-    resolving imports would pull the reference models in. A file that does not parse is
-    skipped here; syntax is ``validate``'s job and is reported there.
+    Through the canonical loader (DD-103), keeping only the depth-0 source of each load
+    result: the population is what the hub *declares*, and the resolved closure would pull
+    the reference models in. Loaded ``degraded`` so an import the catalog cannot resolve
+    does not silently drop the domain from the population -- imports are irrelevant here.
+    Prefixes are read from the file text rather than from any graph, because a graph that
+    came back from the loader's parse cache may not carry them. A file the loader cannot
+    read is skipped; syntax is ``validate``'s job and is reported there.
     """
-    graphs: dict[str, Graph] = {}
-    ontologies = Path(hub_root) / "model" / "ontologies"
+    files: dict[str, DomainFile] = {}
+    hub_root = Path(hub_root)
+    ontologies = hub_root / "model" / "ontologies"
     if not ontologies.is_dir():
-        return graphs
+        return files
+    catalog = hub_root / "catalog-v001.xml"
+    from .ontology_loader import SemanticProfile, load_ontology
+
     for path in sorted(ontologies.glob("*.ttl")):
         if not is_domain_ontology(path):
             continue
-        graph = Graph()
         try:
-            graph.parse(path, format="turtle")
+            loaded = load_ontology(
+                path,
+                catalog_path=catalog if catalog.is_file() else None,
+                profile=SemanticProfile.KAIROS_DESIGN,
+                degraded=True,
+            )
         except Exception:  # noqa: BLE001 - syntax is reported by validate itself
             continue
-        graphs[path.stem] = graph
-    return graphs
+        own = next(
+            (source.graph for source in loaded.sources if source.manifest.import_depth == 0),
+            None,
+        )
+        if own is None:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        prefixes = {match.group(1): match.group(2) for match in _PREFIX_DECLARATION.finditer(text)}
+        files[path.stem] = DomainFile(name=path.stem, path=path, graph=own, prefixes=prefixes)
+    return files
 
 
 def _own_namespaces(graph: Graph) -> list[str]:
@@ -204,7 +241,7 @@ def _own_namespaces(graph: Graph) -> list[str]:
     )
 
 
-def hub_classes(graphs: dict[str, Graph]) -> list[HubClass]:
+def hub_classes(files: dict[str, DomainFile]) -> list[HubClass]:
     """Every ``owl:Class`` a domain file declares under its own ontology IRI, IRI-sorted.
 
     A reference-model IRI re-declared locally to attach a label (the style
@@ -213,32 +250,34 @@ def hub_classes(graphs: dict[str, Graph]) -> list[HubClass]:
     governance.
     """
     classes: dict[str, HubClass] = {}
-    for domain, graph in sorted(graphs.items()):
-        namespaces = _own_namespaces(graph)
-        for cls in graph.subjects(RDF.type, OWL.Class):
+    for domain, item in sorted(files.items()):
+        namespaces = _own_namespaces(item.graph)
+        for cls in item.graph.subjects(RDF.type, OWL.Class):
             if not isinstance(cls, URIRef):
                 continue
             iri = str(cls)
             if not any(iri.startswith(ns) for ns in namespaces):
                 continue
-            label = graph.value(cls, RDFS.label)
+            label = item.graph.value(cls, RDFS.label)
             classes.setdefault(
                 iri,
                 HubClass(
-                    iri=iri, domain=domain, label=str(label) if label else iri.rsplit("#", 1)[-1]
+                    iri=iri,
+                    domain=domain,
+                    label=str(label) if label else iri.rsplit("#", 1)[-1],
                 ),
             )
     return [classes[iri] for iri in sorted(classes)]
 
 
-def resolve_class_token(token: str, graphs: dict[str, Graph], domain: str = "") -> Optional[str]:
+def resolve_class_token(
+    token: str, files: dict[str, DomainFile], domain: str = ""
+) -> Optional[str]:
     """Resolve an absolute IRI or ``prefix:Local`` token against the domain files' prefixes.
 
-    A directly parsed Turtle file keeps its ``@prefix`` declarations in the graph's
-    namespace manager (the *loader's* merged graph does not, which is why the compiler
-    resolves prefixes textually). The named domain's file is tried first, then every other
-    domain, so a binding whose ``metadata.domain`` is stale still resolves when any hub
-    file declares the prefix.
+    The named domain's declarations are tried first, then every other domain's, so a
+    binding whose ``metadata.domain`` is stale still resolves when any hub file declares
+    the prefix. ``None`` when nothing does -- never a guess.
     """
     token = (token or "").strip()
     if not token:
@@ -248,16 +287,16 @@ def resolve_class_token(token: str, graphs: dict[str, Graph], domain: str = "") 
     if ":" not in token:
         return None
     prefix, _, local = token.partition(":")
-    order = [graphs[domain]] if domain in graphs else []
-    order += [graph for name, graph in sorted(graphs.items()) if name != domain]
-    for graph in order:
-        for declared, namespace in graph.namespaces():
-            if declared == prefix:
-                return f"{namespace}{local}"
+    order = [files[domain]] if domain in files else []
+    order += [item for name, item in sorted(files.items()) if name != domain]
+    for item in order:
+        namespace = item.prefixes.get(prefix)
+        if namespace is not None:
+            return f"{namespace}{local}"
     return None
 
 
-def bound_classes(hub_root: Path, graphs: dict[str, Graph]) -> dict[str, list[str]]:
+def bound_classes(hub_root: Path, files: dict[str, DomainFile]) -> dict[str, list[str]]:
     """Return ``{class IRI: [binding file, ...]}`` for every class an EntityBinding targets."""
     bound: dict[str, list[str]] = {}
     bindings_dir = Path(hub_root) / "integration" / "bindings"
@@ -274,20 +313,20 @@ def bound_classes(hub_root: Path, graphs: dict[str, Graph]) -> dict[str, list[st
         metadata = payload.get("metadata") or {}
         token = str(target.get("class") or "") if isinstance(target, dict) else ""
         domain = str(metadata.get("domain") or "") if isinstance(metadata, dict) else ""
-        iri = resolve_class_token(token, graphs, domain)
+        iri = resolve_class_token(token, files, domain)
         if iri:
             bound.setdefault(iri, []).append(path.name)
     return bound
 
 
-def _subclasses_of(iri: str, graphs: dict[str, Graph], population: set[str]) -> set[str]:
+def _subclasses_of(iri: str, files: dict[str, DomainFile], population: set[str]) -> set[str]:
     """Hub classes below *iri*, transitively, across every domain file."""
     found: set[str] = set()
     frontier = [URIRef(iri)]
     while frontier:
         parent = frontier.pop()
-        for graph in graphs.values():
-            for child in graph.subjects(RDFS.subClassOf, parent):
+        for item in files.values():
+            for child in item.graph.subjects(RDFS.subClassOf, parent):
                 if (
                     isinstance(child, URIRef)
                     and str(child) in population
@@ -394,9 +433,9 @@ def record_class_disposition(
         raise ClassDispositionError(
             f"Unknown decided_by {decided_by!r}; expected one of {sorted(DECIDED_BY)}."
         )
-    graphs = load_domain_graphs(hub_root)
-    iri = resolve_class_token(class_iri, graphs)
-    population = {item.iri: item for item in hub_classes(graphs)}
+    files = load_domain_files(hub_root)
+    iri = resolve_class_token(class_iri, files)
+    population = {item.iri: item for item in hub_classes(files)}
     if iri is None or iri not in population:
         raise ClassDispositionError(
             f"{class_iri!r} is not a class this hub declares in its own namespace; "
@@ -434,8 +473,8 @@ def clear_class_dispositions(
     present, entries = load_ledger(hub_root)
     if not present:
         return {"removed": 0, "kept": 0, "classes": []}
-    graphs = load_domain_graphs(hub_root) if classes else {}
-    wanted = {resolve_class_token(token, graphs) or token for token in (classes or ())}
+    files = load_domain_files(hub_root) if classes else {}
+    wanted = {resolve_class_token(token, files) or token for token in (classes or ())}
 
     def matches(iri: str, entry: dict[str, Any]) -> bool:
         if classes is not None and iri not in wanted:
@@ -479,8 +518,8 @@ def audit_class_dispositions(*, hub_root: Path) -> ClassDispositionReport:
     Raises :class:`ClassDispositionError` for a ledger that cannot be trusted.
     """
     hub_root = Path(hub_root)
-    graphs = load_domain_graphs(hub_root)
-    population = hub_classes(graphs)
+    files = load_domain_files(hub_root)
+    population = hub_classes(files)
     report = ClassDispositionReport(classes_total=len(population))
     if not population:
         report.notices.append(
@@ -490,7 +529,7 @@ def audit_class_dispositions(*, hub_root: Path) -> ClassDispositionReport:
 
     present, entries = load_ledger(hub_root)
     report.ledger_present = present
-    bound = bound_classes(hub_root, graphs)
+    bound = bound_classes(hub_root, files)
     iris = {item.iri for item in population}
 
     for item in population:
@@ -510,7 +549,7 @@ def audit_class_dispositions(*, hub_root: Path) -> ClassDispositionReport:
                     )
                 )
             continue
-        if _subclasses_of(item.iri, graphs, iris) & set(bound):
+        if _subclasses_of(item.iri, files, iris) & set(bound):
             report.classes_bound += 1
             report.statuses[item.iri] = STATUS_BOUND_VIA_SUBCLASS
             continue

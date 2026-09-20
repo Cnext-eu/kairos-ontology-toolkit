@@ -20,6 +20,7 @@ RETAINED_COMMANDS = {
     "bump-hub",
     "catalog-test",
     "check-ai-config",
+    "class-disposition",
     "compile",
     "coverage-report",
     "decision",
