@@ -874,6 +874,10 @@ def run_projections(
 
     # Look for SHACL shapes directory — hub layout: model/ontologies/, model/shapes/
     hub_root = ontology_root.parent.parent if ontology_root.parent else None
+    # Hub-wide diagram layout (#855), read once so every target in this run agrees.
+    from .projections.shared import configure_mermaid_layout
+
+    configure_mermaid_layout(hub_root)
     shapes_dir = hub_root / "model" / "shapes" if hub_root else None
     if shapes_dir and shapes_dir.exists():
         print(f"  Found SHACL shapes directory: {shapes_dir}\n")

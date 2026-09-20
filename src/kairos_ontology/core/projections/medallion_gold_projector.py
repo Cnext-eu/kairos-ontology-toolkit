@@ -30,7 +30,7 @@ from .dbt.gold_render import render_powerbi_artifacts
 from .dbt.gold_materialize import materialize_gold_product
 from .dbt.gold_shape import GoldDomainInput, shape_gold_product, shape_gold_products
 from .dbt.gold_specs import GoldContractError
-from .shared import is_mermaid_provenance_line, mermaid_provenance_comment
+from .shared import mermaid_frontmatter, mermaid_provenance_comment, strip_mermaid_header
 from .dbt.gold_specs import GoldProductLogicalSpec, GoldProductPhysicalSpec
 
 if TYPE_CHECKING:
@@ -420,13 +420,14 @@ def generate_master_gold_erd(
             continue
         lines = [
             line
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip() != "erDiagram" and not is_mermaid_provenance_line(line)
+            for line in strip_mermaid_header(path.read_text(encoding="utf-8").splitlines())
+            if line.strip() != "erDiagram"
         ]
         sections.append((_gold_erd_domain_label(path), lines))
     if not sections:
         return None
     result = [
+        *mermaid_frontmatter(),
         "erDiagram",
         mermaid_provenance_comment(),
         f"    %% Gold data products: {hub_name}",

@@ -825,6 +825,10 @@ def compile_cmd(
     # leave enabled process-wide for every mode; only --no-cache turns it off.
     ontology_loader.CACHE_ENABLED = not no_cache
     hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
+    # The Silver ERDs rendered by --emit take their layout from kairos.yaml (#855).
+    from ..core.projections.shared import configure_mermaid_layout
+
+    configure_mermaid_layout(hub)
 
     if all_domains:
         selected = _hub_domains(hub)

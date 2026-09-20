@@ -21,7 +21,7 @@ from typing import Optional
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import RDF, RDFS
 
-from .shared import mermaid_provenance_comment
+from .shared import mermaid_header
 from .uri_utils import extract_local_name
 
 DDD = Namespace("https://kairos.cnext.eu/ddd#")
@@ -109,7 +109,7 @@ def _has_content(data: dict) -> bool:
 
 def _context_map_mmd(graph: Graph, data: dict, domain: str) -> str:
     lines = [
-        mermaid_provenance_comment(indent=""),
+        *mermaid_header(indent=""),
         "%% DDD context map",
         "graph LR",
     ]
@@ -131,7 +131,7 @@ def _context_map_mmd(graph: Graph, data: dict, domain: str) -> str:
 
 def _aggregate_overview_mmd(graph: Graph, data: dict, domain: str) -> str:
     lines = [
-        mermaid_provenance_comment(indent=""),
+        *mermaid_header(indent=""),
         "%% DDD aggregate overview",
         "graph TD",
     ]

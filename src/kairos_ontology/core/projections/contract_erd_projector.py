@@ -34,7 +34,7 @@ from ..compiler.contracts import (
     load_silver_contract,
     resolved_column_name,
 )
-from .shared import mermaid_provenance_comment, mmd_type
+from .shared import mermaid_header, mmd_type
 from .uri_utils import extract_local_name
 
 
@@ -173,8 +173,8 @@ def render_contract_erd(contract: SilverContract) -> str:
     lines = [
         # Unindented to match this file's other comments. The "do not edit" note that
         # used to be appended here now comes from the shared stamp, which also carries
-        # the toolkit version and generation time.
-        mermaid_provenance_comment(indent=""),
+        # the toolkit version; the layout frontmatter precedes it (#855).
+        *mermaid_header(indent=""),
         _comment(f"Declared Silver contract ERD: {contract.domain}"),
         _comment(
             "The published promise (DD-213), not what any binding emits today",

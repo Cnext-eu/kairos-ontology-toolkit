@@ -595,7 +595,8 @@ class TestCliLevelProjection:
         mmd_files = sorted((output_dir / "architecture" / "erd").glob("*-erd.mmd"))
         assert mmd_files
         raw = mmd_files[0].read_bytes()
-        assert raw.startswith(b"%%")
+        # Layout frontmatter first (#855), then the toolkit stamp.
+        assert raw.startswith(b"---\nconfig:\n  layout: elk\n---\n%%")
         assert b"\r" not in raw
 
     def test_erd_is_included_in_target_all(self, temp_dir, ontology_files):

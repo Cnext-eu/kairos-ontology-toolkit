@@ -37,7 +37,7 @@ from .dbt.specs import (
     SilverModelSpec,
     SilverPhysicalPlan,
 )
-from .shared import is_mermaid_provenance_line, mermaid_provenance_comment
+from .shared import mermaid_frontmatter, mermaid_provenance_comment, strip_mermaid_header
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +217,7 @@ def _render_erd(plan: SilverPhysicalPlan) -> str:
     """
     emitted = {model.model_name for model in plan.models}
     lines = [
+        *mermaid_frontmatter(),
         "erDiagram",
         mermaid_provenance_comment(),
         (f"    %% Silver ERD: {plan.domain_name}; adapter={plan.adapter}/{plan.adapter_version}"),
@@ -573,10 +574,8 @@ def generate_master_erd(
             continue
         body = "\n".join(
             line
-            for line in mmd_file.read_text(encoding="utf-8").splitlines()
-            if line.strip() != "erDiagram"
-            and not line.strip().startswith("%% Silver ERD:")
-            and not is_mermaid_provenance_line(line)
+            for line in strip_mermaid_header(mmd_file.read_text(encoding="utf-8").splitlines())
+            if line.strip() != "erDiagram" and not line.strip().startswith("%% Silver ERD:")
         ).strip()
         if body:
             domain_erds.append((_erd_domain_label(mmd_file), body))
@@ -623,6 +622,7 @@ def generate_master_erd(
         if (resolved := _drop_resolved_externals(body, emitted_upper))
     ]
     lines = [
+        *mermaid_frontmatter(),
         "erDiagram",
         mermaid_provenance_comment(),
         f"    %% Master ERD — {hub_name} (all domains)",

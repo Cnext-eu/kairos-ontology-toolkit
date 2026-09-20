@@ -36,7 +36,7 @@ from rdflib.namespace import OWL, RDF, RDFS
 from .shared import (
     class_ancestors,
     effective_domain_classes,
-    mermaid_provenance_comment,
+    mermaid_header,
     named_parents,
 )
 from .uri_utils import extract_local_name
@@ -462,7 +462,7 @@ def generate_erd_artifacts(
         # tracked and drift-gated, so a wall-clock time would fail the gate on every
         # run; *when* is what git history records, and only *which version* cannot be
         # recovered afterwards (#774).
-        mermaid_provenance_comment(indent=""),
+        *mermaid_header(indent=""),
         "%% Canonical ontology class diagram: binding-independent, reflects the",
         "%% ontology graph rather than compile-plan coverage.",
         "%% An imported class is stereotyped with the model it comes from. One reached as",
@@ -600,7 +600,7 @@ def generate_master_class_diagram(
         return None
 
     lines = [
-        mermaid_provenance_comment(indent=""),
+        *mermaid_header(indent=""),
         f"%% Master canonical class diagram for {hub_name}: every domain merged into one.",
         "%% Binding-independent: reflects the ontology graph, not compile-plan coverage.",
         "%% Drawn from the domain graphs together: a class two domains reach is one node,",
