@@ -8,6 +8,8 @@ import json
 import os
 import tempfile
 import click
+
+from .gates import escape_option
 from pathlib import Path
 
 # Importing the design-time MDM package registers the additive ``mdm-profile``
@@ -31,7 +33,12 @@ from .shared import (
 @click.command(name="resolve-ontology")
 @click.argument("ontology")
 @click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
-@click.option("--degraded", is_flag=True, default=False)
+@escape_option(
+    "ontology.import-closure-complete",
+    "--degraded",
+    help="Resolve an incomplete import closure rather than failing on it; the "
+    "manifest then describes a partial graph.",
+)
 @click.option("--json-output", "as_json", is_flag=True, default=False)
 def resolve_ontology_cmd(ontology, catalog, degraded, as_json):
     """Resolve an ontology closure and show its deterministic manifest."""

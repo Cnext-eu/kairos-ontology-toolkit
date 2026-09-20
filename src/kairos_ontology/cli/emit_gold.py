@@ -21,6 +21,8 @@ from pathlib import Path
 
 import click
 
+from .gates import escape_option
+
 from ..core.compiler import build_compile_plan
 from ..core.determinism import write_text_lf
 from ..core.hub_utils import contract_diagrams_dir, find_hub_root, publish_root
@@ -64,7 +66,8 @@ def _gold_manifest_name(domain: str) -> str:
     help="Required to actually write files. Without it, this validates and reports "
     "what would be emitted without touching disk.",
 )
-@click.option(
+@escape_option(
+    "gold.tmdl-structural-validation",
     "--skip-tmdl-validation",
     "skip_tmdl_validation",
     is_flag=True,

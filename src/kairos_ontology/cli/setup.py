@@ -4,6 +4,8 @@
 
 import click
 
+from .gates import escape_option
+
 from ..core.adapters import (
     ADAPTER_CHOICES,
     DBT_CORE_REQUIREMENT,
@@ -200,7 +202,8 @@ def _registration_import_gate(
     "Used as the namespace base: https://<domain>/ont/",
 )
 @click.option("--force", is_flag=True, help="Overwrite existing files")
-@click.option(
+@escape_option(
+    "setup.reference-models-required",
     "--skip-refmodels",
     "skip_refmodels",
     is_flag=True,
@@ -215,7 +218,8 @@ def _registration_import_gate(
     help="Pin a specific kairos-ontology-referencemodels release (e.g. v1.33.1). "
     "Default: the latest published stable release.",
 )
-@click.option(
+@escape_option(
+    "ontology.import-closure-complete",
     "--degraded",
     is_flag=True,
     default=False,
@@ -1036,7 +1040,8 @@ def migrate(check, dry_run, hub_path):
     default=None,
     help='Company internet domain (e.g., "contoso.com"). Defaults to <name>.com if not provided.',
 )
-@click.option(
+@escape_option(
+    "setup.branch-protection",
     "--skip-protection",
     "skip_protection",
     is_flag=True,

@@ -149,6 +149,7 @@ from kairos_ontology.core.discovery_currency import (  # noqa: E402
     UNGROUNDED,
     glossary_fingerprint,
 )
+from kairos_ontology.core.gates import enforcement_provenance  # noqa: E402
 from kairos_ontology.core.generation_outcome import (  # noqa: E402
     OUTCOME_FALLBACK_ONLY,
     OUTCOME_PROVIDER_FAILURE,
@@ -675,6 +676,13 @@ class DomainAlignment:
     #: Issue #182 — algorithm/prompt-contract version this output was produced with.
     #: Lets the canonical completeness gate flag pre-hardening output as unverifiable.
     algorithm_version: int = ALIGNMENT_ALGORITHM_VERSION
+    #: DD-234 — the enforcement mode and any escape flags this run used. The same
+    #: argument the AI-provenance header makes for authorship, applied to enforcement:
+    #: an artifact produced under an escape has to say so on its face. A file written
+    #: with ``--without-discovery`` was otherwise indistinguishable afterwards from a
+    #: grounded one. Empty on a clean interactive run, so unaffected output stays
+    #: byte-identical to what earlier toolkit versions wrote.
+    enforcement: dict[str, Any] = field(default_factory=dict)
     #: uri-anchor-contract — tables whose anchor could not be resolved because
     #: more than one confirmed alias/URI was plausible for the same table.
     #: These are also persisted as a separate versioned record (see
@@ -4870,6 +4878,7 @@ def _propose_alignments(
             alignment_params_sha256=params_hash or None,
             glossary_sha256=glossary_hash,
             excluded_tables=excluded_by_domain.get(domain_id, []),
+            enforcement=enforcement_provenance(),
         )
 
         # uri-anchor-contract: a previously-persisted "resolved" unresolved_anchor
@@ -6096,6 +6105,8 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         data["tables"].append(table_dict)
 
     # DD-070: emit cross-module sections only in cross-module mode (default unchanged)
+    if alignment.enforcement:
+        data["enforcement"] = dict(alignment.enforcement)
     if alignment.alignment_params_sha256:
         data["alignment_params_sha256"] = alignment.alignment_params_sha256
     if alignment.cross_module_matches:

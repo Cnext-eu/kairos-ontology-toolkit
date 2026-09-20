@@ -4,6 +4,8 @@
 
 import json
 import click
+
+from .gates import escape_option
 from pathlib import Path
 from typing import Any
 
@@ -1460,7 +1462,8 @@ def require_business_discovery(why: str, *, escaped: bool) -> None:
     "if set; use 1 for serial). These calls are network-bound, so the useful ceiling is "
     "the provider's rate limit rather than the core count.",
 )
-@click.option(
+@escape_option(
+    "discovery.glossary-required",
     "--without-discovery",
     is_flag=True,
     default=False,
@@ -1507,7 +1510,8 @@ def require_business_discovery(why: str, *, escaped: bool) -> None:
     "(overrides the default model unless --model was set "
     "explicitly). Costs more per run than the mini default.",
 )
-@click.option(
+@escape_option(
+    "alignment.fallback-only-domain",
     "--allow-fallback-output",
     "allow_fallback_output",
     is_flag=True,
@@ -1518,7 +1522,8 @@ def require_business_discovery(why: str, *, escaped: bool) -> None:
     "flag such a domain is skipped as incomplete so a placeholder "
     "never masquerades as a real proposal.",
 )
-@click.option(
+@escape_option(
+    "sources.schema-catalogue-screen",
     "--no-schema-catalogue-screen",
     "no_schema_catalogue_screen",
     is_flag=True,
@@ -1529,7 +1534,8 @@ def require_business_discovery(why: str, *, escaped: bool) -> None:
     "alignment file with the evidence that excluded it. Use this to overrule a "
     "false positive in the screen.",
 )
-@click.option(
+@escape_option(
+    "alignment.anchors-required",
     "--without-anchors",
     "without_anchors",
     is_flag=True,
@@ -2362,7 +2368,8 @@ def conformance_load(archetype_id, refmodels_root, output_format):
     help="Archetype id to validate identity/coverage/staleness against (DD-090, "
     "issue #308). Default: the artifact's own 'archetype.id' field.",
 )
-@click.option(
+@escape_option(
+    "discovery.unresolved-judgment",
     "--allow-unresolved",
     is_flag=True,
     default=False,
@@ -2792,7 +2799,8 @@ def discovery_conformance_confirm_cmd(
     help="Run the same checks as `discovery-conformance validate` immediately after "
     "writing (default: on).",
 )
-@click.option(
+@escape_option(
+    "discovery.unresolved-judgment",
     "--allow-unresolved",
     is_flag=True,
     default=False,
@@ -3069,7 +3077,8 @@ def _echo_data_driven_advisories(artifact, evidence) -> None:
 @click.option(
     "--overwrite", is_flag=True, default=False, help="Explicitly replace an existing file."
 )
-@click.option(
+@escape_option(
+    "discovery.source-evidence",
     "--no-source-evidence",
     is_flag=True,
     default=False,
@@ -3981,7 +3990,8 @@ def _emit_pattern_coverage(root, ledger, output_format):
     "(default: resolved from [tool.kairos].accelerator).",
 )
 @click.option("--model", "llm_model", default=None, help="Override the anchoring model.")
-@click.option(
+@escape_option(
+    "sources.schema-catalogue-screen",
     "--no-schema-catalogue-screen",
     "no_screen",
     is_flag=True,
@@ -3990,7 +4000,8 @@ def _emit_pattern_coverage(root, ledger, output_format):
     "the source's own schema. Use when the screen has excluded a real business table.",
 )
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress progress output.")
-@click.option(
+@escape_option(
+    "discovery.glossary-required",
     "--without-discovery",
     is_flag=True,
     default=False,

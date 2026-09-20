@@ -21,6 +21,9 @@ from ..core.observability.context import (
     set_operation_context,
 )
 from ..core.observability.otel import configure_otel_logging, flush_otel
+from ..core.gates import EnforcementMode as _EnforcementMode
+from ..core.gates import reset_enforcement_state as _reset_enforcement_state
+from ..core.gates import set_active_mode as _set_active_mode
 from . import compile as _compile
 from . import inspection as _inspection
 from . import operations as _operations
@@ -34,6 +37,7 @@ from .emit_gold import apply_gold_connection_cmd, emit_gold_cmd, harvest_gold_cm
 from .package_powerbi_release import package_powerbi_release_cmd
 from .decisions import decision
 from .feedback import feedback
+from .gates import gates_cmd
 from .promote_transform import promote_transform_cmd
 from .validation import (
     validate_dbt_cmd,
@@ -215,12 +219,33 @@ class _KairosGroup(click.Group):
     show_default=True,
     help="Structured log format for console and --log-file.",
 )
+@click.option(
+    "--mode",
+    "mode",
+    type=click.Choice([m.value for m in _EnforcementMode], case_sensitive=False),
+    default=None,
+    help="Enforcement mode for this run (DD-234). 'interactive' (default) lets a human "
+    "pass escape flags deliberately; 'autopilot' and 'ci' refuse the escapes that "
+    "downgrade a result, because nobody is reading the warning. Also settable via "
+    "KAIROS_MODE. Run 'kairos-ontology gates' to see what each mode allows.",
+)
 @click.pass_context
-def cli(ctx, verbose, debug, log_file, log_format):
+def cli(ctx, verbose, debug, log_file, log_format, mode):
     """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
     configure_logging(
         verbose=verbose, debug=debug, log_file=log_file, log_format=log_format
     )
+    # Before any subcommand parses its options, so an escape flag's parse-time callback
+    # sees the resolved mode. Click invokes a group's callback ahead of building the
+    # subcommand context, which is what makes that ordering hold.
+    #
+    # The reset matters as much as the assignment: the escape ledger is process-global
+    # (see core.gates) and one invocation's escapes must not appear in the enforcement
+    # block of an artifact a later invocation writes. One process is normally one
+    # invocation; it is not when a test or an embedder drives the CLI in-process, which
+    # is precisely where a stale ledger would be hardest to notice.
+    _reset_enforcement_state()
+    _set_active_mode(mode)
     token = set_operation_context(OperationContext(operation_id=new_operation_id()))
     otel_handler = configure_otel_logging()
     ctx.obj = {"operation_context_token": token, "otel_handler": otel_handler}
@@ -289,6 +314,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(harvest_gold_cmd)
     group.add_command(package_powerbi_release_cmd)
     group.add_command(decision)
+    group.add_command(gates_cmd)
     group.add_command(feedback)
     group.add_command(validate_dbt_cmd)
     group.add_command(validate_dbt_contracts_cmd)

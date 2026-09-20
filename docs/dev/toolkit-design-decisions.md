@@ -296,5 +296,6 @@ during cleanup.
 | [DD-231](decisions/dd-231-every-hub-class-is-bound-or-carries-a-recorded-disposition-once-the-ledger-is-adopted.md) | Every hub class is bound or carries a recorded disposition once the ledger is adopted | Accepted | 2026-09-20 |
 | [DD-232](decisions/dd-232-the-ubiquitous-language-is-generated-never-hand-maintained.md) | The ubiquitous language is generated, never hand-maintained | Accepted | 2026-09-20 |
 | [DD-233](decisions/dd-233-staged-business-evidence-nothing-consumed-fails-validate.md) | Staged business evidence nothing consumed fails validate | Accepted | 2026-09-20 |
+| [DD-234](decisions/dd-234-a-gate-declares-its-evidence-its-escape-and-the-modes-that-may-use-it.md) | A gate declares its evidence, its escape, and the modes that may use it | Accepted | 2026-09-20 |
 
 ---

@@ -180,6 +180,17 @@ class AlignmentReport:
     schema_version: int = SCHEMA_VERSION
     domains: list[DomainCoverage] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
+    #: Alignment files that exist and could not be parsed, by filename (DD-234).
+    #:
+    #: Previously recorded only as prose in :attr:`notices`, which meant the gates
+    #: consuming this report had no way to tell "this domain has no undecided columns"
+    #: from "this domain's evidence is unreadable, so none were counted". One malformed
+    #: file took 256 columns out of the DD-169 gate's view without any caller being
+    #: able to notice.
+    unreadable: list[str] = field(default_factory=list)
+    #: Whether the analysis directory itself exists. ``False`` is the strongest form of
+    #: the same confusion: every gate downstream reports clean.
+    analysis_dir_present: bool = True
 
     @property
     def columns(self) -> int:
@@ -667,6 +678,7 @@ def _build_alignment_report_uncached(
     report = AlignmentReport()
     directory = Path(analysis_dir)
     if not directory.is_dir():
+        report.analysis_dir_present = False
         report.notices.append(f"No analysis directory at {directory}.")
         return report
 
@@ -688,6 +700,7 @@ def _build_alignment_report_uncached(
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception:  # defensive: one broken file must not sink the report
+            report.unreadable.append(path.name)
             report.notices.append(f"Could not read {path.name}; skipped.")
             continue
         if not isinstance(document, dict):
@@ -1113,3 +1126,114 @@ def iter_gap_columns(report: AlignmentReport) -> Iterable[UnmappedColumn]:
         report.gap_columns,
         key=lambda c: (ranked.get(f"{c.system}.{c.table}", 1 << 30), c.column),
     )
+
+
+# ---------------------------------------------------------------------------
+# Evidence as a requirement, not a condition (DD-234)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceGap:
+    """Alignment evidence a gate needs and cannot read."""
+
+    #: ``missing-directory`` | ``no-alignment-files`` | ``unreadable-file``
+    kind: str
+    #: What is missing, in the operator's terms.
+    detail: str
+    #: The command that produces it.
+    remediation: str
+
+    def describe(self) -> str:
+        return f"{self.detail} ({self.remediation})"
+
+
+def sources_imported(hub_root: Path) -> bool:
+    """Whether this hub has any imported source system.
+
+    The scope test for :func:`alignment_evidence_gaps`. A hub modelling a pure
+    ontology with no warehouse behind it has nothing to align, and demanding
+    alignment evidence from it would be a false stop -- the failure mode that gets a
+    gate switched off.
+
+    A source system is a directory under ``integration/sources/`` holding at least one
+    YAML, excluding ``_analysis`` (the output) and the scaffolded template (an empty
+    example, not a system).
+    """
+    sources = Path(hub_root) / "integration" / "sources"
+    if not sources.is_dir():
+        return False
+    for entry in sources.iterdir():
+        if not entry.is_dir() or entry.name in {"_analysis", "source-system-template"}:
+            continue
+        if any(entry.glob("*.yaml")):
+            return True
+    return False
+
+
+def alignment_evidence_gaps(hub_root: Path) -> list[EvidenceGap]:
+    """Report alignment evidence the DD-169 and DD-180 gates cannot read (DD-234).
+
+    Both gates are built on :func:`build_alignment_report`, which degrades gracefully by
+    design: an unreadable file is skipped, an absent directory yields an empty report.
+    That is right for a *report* and wrong for a gate, because "no undecided columns
+    found" and "nothing was read" come back identical. Measured on a real hub, varying
+    only the readability of the input::
+
+        healthy                      661 undecided columns
+        one *-alignment.yaml broken  405  -- 256 silently gone
+        _analysis/ deleted             0  -- the gate passes clean
+
+    The cheapest way past the strongest gate in the toolkit was to not generate its
+    evidence. This function is what the gates consult first, so the second and third
+    rows become an error instead of a pass.
+
+    Scoped to hubs that have imported sources (see :func:`sources_imported`), and
+    reported hub-wide rather than per domain. A domain with no ``*-alignment.yaml`` of
+    its own is *not* reported: a domain may legitimately have no source tables behind
+    it, and a gate that stops such a compile would be wrong in a way the operator
+    cannot fix. The three rows above are what was measured, and they are what this
+    covers.
+    """
+    hub = Path(hub_root)
+    if not sources_imported(hub):
+        return []
+
+    analysis_dir = hub / "integration" / "sources" / "_analysis"
+    report = build_alignment_report(analysis_dir, hub_root=hub)
+
+    if not report.analysis_dir_present:
+        return [
+            EvidenceGap(
+                kind="missing-directory",
+                detail=(
+                    "this hub has imported sources but no alignment analysis at "
+                    "integration/sources/_analysis/, so no column can be judged"
+                ),
+                remediation="kairos-ontology propose-alignment",
+            )
+        ]
+
+    gaps = [
+        EvidenceGap(
+            kind="unreadable-file",
+            detail=(
+                f"integration/sources/_analysis/{name} could not be parsed, so every "
+                "column it covers is invisible to the gate"
+            ),
+            remediation="fix or regenerate it with 'kairos-ontology propose-alignment'",
+        )
+        for name in sorted(report.unreadable)
+    ]
+    if not report.domains and not gaps:
+        gaps.append(
+            EvidenceGap(
+                kind="no-alignment-files",
+                detail=(
+                    "integration/sources/_analysis/ holds no *-alignment.yaml, so no "
+                    "column can be judged"
+                ),
+                remediation="kairos-ontology propose-alignment",
+            )
+        )
+    return gaps
