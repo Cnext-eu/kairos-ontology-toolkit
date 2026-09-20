@@ -566,15 +566,23 @@ def parse_model_folder(definition_dir: Path) -> TmdlModel:
         model.default_mode = meta.get("defaultMode", "")
         declared_tables = parse_model_table_refs(model_text)
 
-    # Parse tables
+    # Parse tables. The canonical PBIP layout puts them under definition/tables/,
+    # but a Power BI export saved without that folder drops every <table>.tmdl flat
+    # beside model.tmdl. Read both, so a flat export is not reported as an export
+    # missing all of its tables (issue #TMDL-FLAT).
+    table_files: list[Path] = []
     tables_dir = definition_dir / "tables"
     if tables_dir.is_dir():
-        for tmdl_file in sorted(tables_dir.glob("*.tmdl")):
-            content = tmdl_file.read_text(encoding="utf-8")
-            items = parse_tmdl_content(content)
-            for item in items:
-                if isinstance(item, TmdlTable):
-                    model.tables.append(item)
+        table_files.extend(sorted(tables_dir.glob("*.tmdl")))
+    table_files.extend(
+        f for f in sorted(definition_dir.glob("*.tmdl")) if f.name.casefold() != "model.tmdl"
+    )
+    for tmdl_file in table_files:
+        content = tmdl_file.read_text(encoding="utf-8")
+        items = parse_tmdl_content(content)
+        for item in items:
+            if isinstance(item, TmdlTable):
+                model.tables.append(item)
 
     # Parse relationships
     rel_file = definition_dir / "relationships.tmdl"
@@ -592,12 +600,19 @@ def parse_model_folder(definition_dir: Path) -> TmdlModel:
         name for name in declared_tables if name.casefold() not in parsed
     ]
 
-    # Derive model name from parent folder
-    # e.g., "MyModel.SemanticModel/definition/" → "MyModel"
+    # Derive the model name from whichever folder actually identifies the model.
+    # "MyModel.SemanticModel/definition/" → "MyModel"; a flat export folder names
+    # itself. Falling through to the parent for a flat layout named every export in
+    # one staging directory after that directory, so a batch import silently
+    # overwrote each artifact with the next (issue #TMDL-FLAT).
     parent = definition_dir.parent
     if parent.name.endswith(".SemanticModel"):
         model.name = parent.name.rsplit(".SemanticModel", 1)[0]
-    else:
+    elif definition_dir.name.casefold() == "definition":
         model.name = parent.name
+    else:
+        model.name = definition_dir.name
+    if model.name.endswith(".SemanticModel"):
+        model.name = model.name.rsplit(".SemanticModel", 1)[0]
 
     return model

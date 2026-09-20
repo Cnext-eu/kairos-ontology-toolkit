@@ -7,6 +7,7 @@ from kairos_ontology.core.tmdl_parser import (
     TmdlMeasure,
     TmdlRelationship,
     TmdlTable,
+    parse_model_folder,
     parse_model_tmdl,
     parse_tmdl_content,
 )
@@ -343,3 +344,84 @@ table d_Geography
         table = results[0]
         assert table.description == "Geographic dimension table"
         assert table.columns[0].description == "Country name"
+
+
+# ---------------------------------------------------------------------------
+# Folder layouts (issue #874)
+# ---------------------------------------------------------------------------
+
+
+MODEL_TMDL = "model Model\n\tculture: en-US\n\nref table f_sales\nref table d_date\n"
+
+
+def _table_tmdl(name: str) -> str:
+    return (
+        f"table {name}\n"
+        "\n"
+        "\tcolumn amount\n"
+        "\t\tdataType: double\n"
+        "\t\tsummarizeBy: sum\n"
+        "\t\tsourceColumn: amount\n"
+        "\n"
+        f"\tmeasure 'Total {name}' = SUM({name}[amount])\n"
+    )
+
+
+class TestParseModelFolderLayouts:
+    """A flat export is as real as a definition/tables/ one (issue #874)."""
+
+    def test_canonical_definition_tables_layout(self, tmp_path):
+        definition = tmp_path / "MyModel.SemanticModel" / "definition"
+        (definition / "tables").mkdir(parents=True)
+        (definition / "model.tmdl").write_text(MODEL_TMDL, encoding="utf-8")
+        for name in ("f_sales", "d_date"):
+            (definition / "tables" / f"{name}.tmdl").write_text(
+                _table_tmdl(name), encoding="utf-8"
+            )
+
+        model = parse_model_folder(definition)
+
+        assert model.name == "MyModel"
+        assert sorted(t.name for t in model.tables) == ["d_date", "f_sales"]
+        assert model.unresolved_table_refs == []
+
+    def test_flat_layout_tables_are_found(self, tmp_path):
+        """Tables dropped beside model.tmdl are parsed, not reported absent."""
+        export = tmp_path / "staging" / "MyModel"
+        export.mkdir(parents=True)
+        (export / "model.tmdl").write_text(MODEL_TMDL, encoding="utf-8")
+        (export / "database.tmdl").write_text(
+            "database\n\tcompatibilityLevel: 1550\n", encoding="utf-8"
+        )
+        for name in ("f_sales", "d_date"):
+            (export / f"{name}.tmdl").write_text(_table_tmdl(name), encoding="utf-8")
+
+        model = parse_model_folder(export)
+
+        assert sorted(t.name for t in model.tables) == ["d_date", "f_sales"]
+        assert model.unresolved_table_refs == []
+        assert sum(len(t.measures) for t in model.tables) == 2
+
+    def test_flat_layout_is_named_for_the_model_not_the_staging_dir(self, tmp_path):
+        """Two flat exports staged side by side must not collide on one name."""
+        names = []
+        for model_name in ("ModelA", "ModelB"):
+            export = tmp_path / "staging" / model_name
+            export.mkdir(parents=True)
+            (export / "model.tmdl").write_text(MODEL_TMDL, encoding="utf-8")
+            (export / "f_sales.tmdl").write_text(_table_tmdl("f_sales"), encoding="utf-8")
+            names.append(parse_model_folder(export).name)
+
+        assert names == ["ModelA", "ModelB"]
+
+    def test_genuinely_absent_tables_are_still_reported(self, tmp_path):
+        """The #807 warning must not be silenced by the flat-layout sweep."""
+        export = tmp_path / "staging" / "MyModel"
+        export.mkdir(parents=True)
+        (export / "model.tmdl").write_text(MODEL_TMDL, encoding="utf-8")
+        (export / "f_sales.tmdl").write_text(_table_tmdl("f_sales"), encoding="utf-8")
+
+        model = parse_model_folder(export)
+
+        assert [t.name for t in model.tables] == ["f_sales"]
+        assert model.unresolved_table_refs == ["d_date"]
