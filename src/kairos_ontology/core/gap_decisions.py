@@ -382,6 +382,33 @@ _AUDIT_NAME_TOKENS = frozenset(
     }
 )
 
+#: Adjacent token pairs naming an artifact of the tool that loaded the table.
+#:
+#:   _rescued_data      Databricks/Spark -- rows the reader could not parse
+#:   _corrupt_record    the Spark JSON/CSV reader's equivalent
+#:   ts_ms              Debezium CDC event timestamp
+#:   ttSysStartTime/EndTime   SQL Server system-versioned temporal period bounds
+#:   __index_level_0__  a pandas index that survived a parquet round-trip
+#:
+#: Pairs rather than single tokens because "rescued", "record", "index" and "ts" all
+#: occur in real business names, and a false positive here auto-disposes a column to
+#: not-business-data without review -- the one outcome that removes it from the DD-169
+#: gate instead of deferring it (#880).
+#:
+#: Shared with :func:`~kairos_ontology.core.propose_alignment._is_operational_column`
+#: so the documented invariant holds by construction: every name that predicate calls
+#: operational is also :func:`is_audit_named`, because the #521 cross-check that guards
+#: the write must recognise everything the classification silences.
+FRAMEWORK_ARTIFACT_PAIRS = frozenset(
+    {
+        ("rescued", "data"),
+        ("corrupt", "record"),
+        ("ts", "ms"),
+        ("tt", "sys"),
+        ("index", "level"),
+    }
+)
+
 #: Tokens that make a column time-valued. Deliberately disjoint from the audit
 #: tokens above — being a timestamp is what the name says, not what it means.
 _TIME_TOKENS = frozenset({"timestamp", "datetime", "date", "time", "ts", "dt"})
@@ -446,9 +473,17 @@ def is_audit_named(column: str) -> bool:
 
     ``created_at``, ``last_ingest_date``, ``row_version``, ``tenant_id`` — yes.
     ``transaction_timestamp``, ``settled_timestamp``, ``owned_by_subco`` — no.
+
+    Also recognises :data:`FRAMEWORK_ARTIFACT_PAIRS`: a column written by the loading
+    tool is an audit artifact by any reading, and this predicate guards the write site
+    for the classification that silences them, so it has to see them too.
     """
     tokens = _name_tokens(column)
-    return bool(set(tokens) & _AUDIT_NAME_TOKENS) or (len(tokens) > 1 and tokens[-1] == "by")
+    if set(tokens) & _AUDIT_NAME_TOKENS:
+        return True
+    if set(zip(tokens, tokens[1:])) & FRAMEWORK_ARTIFACT_PAIRS:
+        return True
+    return len(tokens) > 1 and tokens[-1] == "by"
 
 
 def _is_time_valued(column: str) -> bool:

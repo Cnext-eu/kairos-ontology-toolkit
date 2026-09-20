@@ -174,3 +174,59 @@ def test_an_acronym_run_splits_before_the_next_word(column, tokens):
 
     assert _name_tokens(column) == tokens
     assert _is_operational_column(column), column
+
+
+# ---------------------------------------------------------------------------
+# Ingestion-framework artifacts (issue #880)
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionFrameworkArtifacts:
+    """Columns written by the loader, never by the business.
+
+    These reached the DD-169 gate as undecided business data, and the recurrence
+    heuristic then proposed `blueprint-gap` for one of them — the disposition that
+    asserts a reference-model defect to file upstream. They belong in the auto rule.
+    """
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "_rescued_data",  # Databricks/Spark unparseable-row capture
+            "_corrupt_record",  # Spark JSON/CSV reader equivalent
+            "ts_ms",  # Debezium CDC event timestamp
+            "ttSysStartTime",  # SQL Server system-versioned temporal period
+            "ttSysEndTime",
+            "__index_level_0__",  # pandas index surviving a parquet round-trip
+        ],
+    )
+    def test_the_artifact_is_operational(self, column):
+        assert _is_operational_column(column)
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "rescued_units",  # a salvage count is business data
+            "record_type",
+            "index_number",
+            "ts_code",
+            "tt_code",
+            "corrupt_flag",
+            "level_of_service",
+            "data_source_name",
+        ],
+    )
+    def test_a_business_name_sharing_a_token_is_not(self, column):
+        """The pairs are pairs for this reason: every token above occurs in real names,
+        and this predicate auto-disposes to not-business-data without review."""
+        assert not _is_operational_column(column)
+
+    @pytest.mark.parametrize(
+        "column",
+        ["_rescued_data", "_corrupt_record", "ts_ms", "ttSysStartTime", "__index_level_0__"],
+    )
+    def test_the_cross_check_recognises_what_the_classification_silences(self, column):
+        """The documented invariant: operational implies audit-named, so #521's
+        cross-check at the write site can see everything this predicate silences."""
+        assert _is_operational_column(column)
+        assert is_audit_named(column)

@@ -266,7 +266,7 @@ def _is_operational_column(column: str) -> bool:
     """
     # The same splitter the DD-169 gate uses, so the two stages tokenize a name
     # identically rather than each having its own idea of a word boundary.
-    from .gap_decisions import _name_tokens
+    from .gap_decisions import FRAMEWORK_ARTIFACT_PAIRS, _name_tokens
 
     tokens = _name_tokens(column)
     if not tokens:
@@ -275,7 +275,10 @@ def _is_operational_column(column: str) -> bool:
         return True
     if len(tokens) > 1 and tokens[-1] in _OPERATIONAL_TRAILING_TOKENS:
         return True
-    return any(pair in _OPERATIONAL_TOKEN_PAIRS for pair in zip(tokens, tokens[1:]))
+    pairs = set(zip(tokens, tokens[1:]))
+    if pairs & FRAMEWORK_ARTIFACT_PAIRS:
+        return True
+    return any(pair in _OPERATIONAL_TOKEN_PAIRS for pair in pairs)
 
 
 def is_generic_vendor_slot(column: str) -> bool:
