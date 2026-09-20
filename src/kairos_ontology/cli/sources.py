@@ -1584,7 +1584,6 @@ def propose_alignment_cmd(
     from ..core.propose_alignment import (
         HIGH_ACCURACY_MODEL,
         AlignmentTotalFailureError,
-        load_glossary_terms,
         run_propose_alignment,
     )
     from ..core.ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model

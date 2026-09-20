@@ -14,6 +14,7 @@ from kairos_ontology.core.source_disposition import (
     DISPOSITIONS,
     audit_source_dispositions,
     load_bound_relations,
+    load_dispositions,
     load_source_tables,
     record_disposition,
 )
@@ -259,8 +260,6 @@ class TestColumnGrainIsNotClobbered:
 # The drafted property survives into the ledger, structured (issue #883)
 # ---------------------------------------------------------------------------
 
-
-from kairos_ontology.core.source_disposition import load_dispositions, record_disposition
 
 PROPERTY = {
     "name": "vesselClass",

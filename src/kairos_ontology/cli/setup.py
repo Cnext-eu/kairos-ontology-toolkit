@@ -1148,7 +1148,6 @@ def new_repo(
     if imports_readme_src.is_file():
         shutil.copy2(imports_readme_src, imports_bd / "README.md")
 
-    # Modeling — toolkit-managed, git-tracked OKF-style records (distinct from raw
     # Power BI / TMDL exports. A sibling of businessdiscovery/ because it is the same
     # kind of input -- something only a human can supply and the pipeline cannot
     # re-derive -- and because without a scaffolded home for it, hubs invent one and
@@ -1156,9 +1155,10 @@ def new_repo(
     imports_pbi = repo_dir / ".import" / "powerbi"
     imports_pbi.mkdir(parents=True, exist_ok=True)
     pbi_readme_src = _SCAFFOLD_DIR / "import" / "powerbi" / "README.md"
-    if pbi_readme_src.is_file() and (not (imports_pbi / "README.md").exists() or force):
+    if pbi_readme_src.is_file():
         shutil.copy2(pbi_readme_src, imports_pbi / "README.md")
 
+    # Modeling — toolkit-managed, git-tracked OKF-style records (distinct from raw
     # client evidence in .import/businessdiscovery/, which stays gitignored).
     imports_modeling = repo_dir / ".import" / "modeling"
     imports_modeling.mkdir(parents=True, exist_ok=True)
