@@ -60,6 +60,21 @@ DISPOSITIONS_RELPATH = Path("integration") / "sources" / "_analysis" / "table-di
 #: gate never fired once.
 CASCADING_DISPOSITIONS: frozenset[str] = frozenset({"not-business-data", "blueprint-gap"})
 
+#: Table-grain dispositions that mean "do not generate a binding for this table" (#918).
+#:
+#: ``bound`` is deliberately absent: it is the one table-grain value that asserts a binding
+#: *exists*, so skipping on it would make the ledger self-defeating. The other three each
+#: say, in their own way, that the table is not being modelled — not business data, a gap
+#: in the reference model, or in scope but not yet.
+#:
+#: Distinct from :data:`CASCADING_DISPOSITIONS`, which answers a different question: which
+#: table-grain values also answer for the table's *columns* in the DD-169 gate (#881).
+#: ``deferred`` is here and not there, because "in scope, not modelled yet" is a reason to
+#: skip generation and is not a reason to stop asking about the columns.
+NON_GENERATING_DISPOSITIONS: frozenset[str] = frozenset(
+    {"not-business-data", "blueprint-gap", "deferred"}
+)
+
 #: The closed set of answers. Each is a decision someone can defend in review.
 DISPOSITIONS: dict[str, str] = {
     # Derived, never recorded: `audit_source_dispositions` reads it from

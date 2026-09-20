@@ -691,6 +691,218 @@ def detect_schema_catalogue_tables(
     return excluded
 
 
+#: Thresholds for :func:`detect_replica_tables`, set from measurement rather than taste.
+#:
+#: Across eight real replica pairs on one hub the replica added exactly one column (a
+#: watermark) and was missing at most two, while the most similar *unrelated* pair in the
+#: same system differed by twenty. The separation is in the **absolute** counts, not in a
+#: ratio: Jaccard similarity ranged 0.750-0.983 across the true pairs, and 0.750 is too
+#: close to legitimate similarity to use as a cut — small tables make a ratio noisy while
+#: the raw difference stays stable.
+_REPLICA_MAX_ADDED = 3
+_REPLICA_MAX_MISSING = 2
+_REPLICA_MIN_SHARED = 5
+
+
+def detect_replica_tables(
+    columns_by_table: dict[tuple[str, str], list[str]],
+) -> list[dict[str, Any]]:
+    """Pairs within one source system where one table is a replication lane of another.
+
+    A CDC or data-factory lane exposes the same business table plus a watermark. Both
+    copies then anchor identically -- same class, same grain, same confidence -- and
+    present as a multi-source estate that does not exist. Measured on one hub: eight such
+    pairs, 21% of anchored tables and 25% of the alignment spend, and every one of them
+    contributed a false ``conformance.group-required`` asking for a merge of a table with
+    itself.
+
+    Detection is on column sets rather than names. A name-prefix rule would have caught
+    the hub this was found on; replication lanes are named differently at every client and
+    some are not prefixed at all. The conditions:
+
+    * **same source system** — a genuinely different system carrying the same table is
+      the multi-source case, and is not this;
+    * **the added columns are all operational**, by the existing
+      :func:`~kairos_ontology.core.propose_alignment._is_operational_column` predicate.
+      This is what keeps it off a legitimately wider table: one that adds real business
+      columns is a different table, however similar its name;
+    * **the differences are small in absolute terms** on both sides. The lane may also be
+      *missing* columns — schema drift is normal, and on the hub measured one lane lagged
+      the base by a real business column — so requiring a strict superset misses the real
+      cases.
+
+    Reported as an unordered pair. Which copy is the lane is often decidable -- the one
+    carrying the watermark -- and often not: when both tables carry operational columns the
+    other lacks, either orientation satisfies the test and picking one would be a coin
+    flip presented as a fact. The decision the report asks for is "pick the copy to bind",
+    which does not depend on that label, and the columns unique to each side are given so
+    the choice can be made on evidence.
+
+    Returns findings widest shared surface first.
+    """
+    from .propose_alignment import _is_operational_column
+
+    findings: list[dict[str, Any]] = []
+    entries = sorted(columns_by_table.items())
+    for index, ((system_a, table_a), cols_a) in enumerate(entries):
+        for (system_b, table_b), cols_b in entries[index + 1 :]:
+            if system_a != system_b:
+                continue
+            set_a = {c.casefold() for c in cols_a}
+            set_b = {c.casefold() for c in cols_b}
+            shared = set_a & set_b
+            if len(shared) < _REPLICA_MIN_SHARED:
+                continue
+            only_a = set_a - set_b
+            only_b = set_b - set_a
+            # One side must look like a lane -- a few columns, all operational -- and the
+            # *other* side must differ by little, which is what keeps this off a pair
+            # where one table genuinely carries more business data than the other.
+            def _is_lane(extras: set[str]) -> bool:
+                return (
+                    bool(extras)
+                    and len(extras) <= _REPLICA_MAX_ADDED
+                    and all(_is_operational_column(c) for c in extras)
+                )
+
+            if not (
+                (_is_lane(only_b) and len(only_a) <= _REPLICA_MAX_MISSING)
+                or (_is_lane(only_a) and len(only_b) <= _REPLICA_MAX_MISSING)
+            ):
+                continue
+            findings.append(
+                {
+                    "system": system_a,
+                    "tables": [table_a, table_b],
+                    "shared": len(shared),
+                    "only_in": {table_a: sorted(only_a), table_b: sorted(only_b)},
+                }
+            )
+    return sorted(findings, key=lambda f: (-f["shared"], f["tables"][0]))
+
+
+def render_replica_tables(findings: list[dict[str, Any]]) -> str:
+    """The operator-facing report for :func:`detect_replica_tables`.
+
+    Deliberately does not recommend dropping either copy. A replication lane is often the
+    *more current* one, so the honest prompt is "these are the same table, pick one and
+    record why" rather than a default that may discard the better source. The columns
+    unique to each side are named because they are the evidence the choice turns on -- on
+    the hub this was found on, one lane was missing a real business column its twin had.
+    """
+    if not findings:
+        return ""
+    lines = [
+        f"\u26a0 {len(findings)} pair(s) of tables in one system hold the same data. Both "
+        "copies anchor identically, which reads downstream as a multi-source merge that "
+        "does not exist:",
+    ]
+    for finding in findings:
+        first, second = finding["tables"]
+        lines.append(f"    {first} \u2248 {second}  ({finding['shared']} shared columns)")
+        for name in (first, second):
+            unique = finding["only_in"][name]
+            if unique:
+                lines.append(f"      only in {name}: {', '.join(unique)}")
+    lines.append(
+        "    \u2192 decide which copy the hub binds and record a disposition for the other. "
+        "A replication lane is often the more current copy, so this is a choice, not a "
+        "cleanup."
+    )
+    return "\n".join(lines)
+
+
+def detect_grain_collapses(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tables of *different* grain anchored to one class (#917).
+
+    `DomainAlignment.likely_entity` has always been persisted with this rationale:
+
+        Carried through so ``alignment_to_registry`` can detect when tables with
+        *different* candidate entities collapse onto one ``ref_class``.
+
+    That function was never written. Meanwhile the collapse happens: on one hub a
+    unit-grain table and an item-grain table anchored to the same class, and a port-pair
+    table and a multi-leg table anchored to another. Nothing objected until `compile`
+    raised ``conformance.group-required`` — a gate that asks the author to declare a
+    *merge*, which for two different grains is exactly the wrong remedy and fans out
+    silently once followed.
+
+    Two conditions, both required, because either alone is a normal and healthy state:
+
+    * **different candidate entities** — the same entity legitimately arrives from two
+      systems, and inferring the same candidate for both is the multi-source case DD-133
+      §3c exists for;
+    * **different key arity** — and arity only. Two systems keying one entity differently
+      (``id`` against ``order_code``) is normal and is not a grain difference; a differing
+      *number* of key columns is, because it means one table sits a level below the other.
+      Comparing the column sets instead would flag every cross-system pair whose keys are
+      spelled differently, and a false "these are not the same entity" is worse here than
+      a miss: it invites a re-anchor that is wrong.
+
+    Returns one finding per class, worst (most tables) first, so the caller can report the
+    class once rather than once per table.
+    """
+    by_class: dict[str, list[dict[str, Any]]] = {}
+    for table in tables:
+        uri = str(table.get("anchor_uri") or "")
+        if uri:
+            by_class.setdefault(uri, []).append(table)
+
+    findings: list[dict[str, Any]] = []
+    for uri, group in by_class.items():
+        if len(group) < 2:
+            continue
+        entities = {str(t.get("likely_entity") or "").strip().casefold() for t in group}
+        entities.discard("")
+        if len(entities) < 2:
+            continue
+        arities = {len(t.get("natural_key") or ()) for t in group}
+        if len(arities) < 2:
+            continue
+        findings.append(
+            {
+                "anchor_uri": uri,
+                "anchor": str(group[0].get("anchor") or ""),
+                "tables": [
+                    {
+                        "system": str(t.get("system") or ""),
+                        "table": str(t.get("table") or ""),
+                        "likely_entity": str(t.get("likely_entity") or ""),
+                        "natural_key": list(t.get("natural_key") or ()),
+                    }
+                    for t in sorted(group, key=lambda x: (x.get("system"), x.get("table")))
+                ],
+            }
+        )
+    return sorted(findings, key=lambda f: (-len(f["tables"]), f["anchor_uri"]))
+
+
+def render_grain_collapses(findings: list[dict[str, Any]]) -> str:
+    """The operator-facing report for :func:`detect_grain_collapses`.
+
+    Says what to do, because a warning that only names a problem gets read as noise. The
+    remedy is never "declare conformance" — that is the gate this exists to pre-empt.
+    """
+    if not findings:
+        return ""
+    lines = [
+        f"⚠ {len(findings)} class(es) anchored from tables of different grain. These are "
+        "probably not the same entity:",
+    ]
+    for finding in findings:
+        lines.append(f"    {finding['anchor']}")
+        for table in finding["tables"]:
+            key = ", ".join(table["natural_key"]) or "(no natural key)"
+            entity = table["likely_entity"] or "(no candidate entity)"
+            lines.append(f"      {table['table']}  key=[{key}]  looks like: {entity}")
+        lines.append(
+            "      → re-anchor the odd one to a class at its own grain, or record a "
+            "disposition. Do NOT resolve this by declaring conformance: DD-133 §3c "
+            "reconciles different sources of one entity, and unioning two grains fans out."
+        )
+    return "\n".join(lines)
+
+
 def _business_grain(grain: list[str], natural_key: list[str]) -> list[str]:
     """Drop operational columns from a proposed grain (#914).
 
@@ -1012,13 +1224,33 @@ def choose_class_copy(
 
 def load_affinity_domains(analysis_dir: Path) -> dict[tuple[str, str], str]:
     """Read ``(system, table) -> primary_domain`` from the affinity artifacts."""
-    out: dict[tuple[str, str], str] = {}
+    return {key: value[0] for key, value in _load_affinity(analysis_dir).items()}
+
+
+def load_affinity_entities(analysis_dir: Path) -> dict[tuple[str, str], str]:
+    """Read ``(system, table) -> likely_entity`` from the affinity artifacts (#917).
+
+    The affinity stage names the business entity it thinks each table holds. That name is
+    the input to the grain-collapse check (:func:`detect_grain_collapses`), which asks
+    whether two tables anchored to one class were ever the same thing — and until now it
+    reached the alignment artifact but never the anchors, so the check had nothing to read
+    at the stage that assigns the class.
+    """
+    return {key: value[1] for key, value in _load_affinity(analysis_dir).items()}
+
+
+def _load_affinity(analysis_dir: Path) -> dict[tuple[str, str], tuple[str, str]]:
+    """``(system, table) -> (primary_domain, likely_entity)`` from the affinity artifacts."""
+    out: dict[tuple[str, str], tuple[str, str]] = {}
     for path in sorted(Path(analysis_dir).glob("*-affinity.yaml")):
         _state, doc = _read_yaml_artifact(path, what="this affinity prior")
         system = str(doc.get("system") or path.stem.removesuffix("-affinity"))
         for table in doc.get("tables") or []:
             if isinstance(table, dict) and table.get("table"):
-                out[(system, str(table["table"]))] = str(table.get("domain") or "")
+                out[(system, str(table["table"]))] = (
+                    str(table.get("domain") or ""),
+                    str(table.get("likely_entity") or ""),
+                )
     return out
 
 
@@ -1155,6 +1387,7 @@ def run_anchor_tables(
         say(f"  ⚖ ruling {skipped_entry['id']} skipped: {skipped_entry['reason']}",
             "warning")
     affinity = load_affinity_domains(analysis_dir)
+    affinity_entities = load_affinity_entities(analysis_dir)
     n_classes = catalog.text.count("\n") + 1 if catalog.text else 0
     say(f"  ⚓ Anchoring {len(call_outline)} table(s) against {n_classes} class(es)")
 
@@ -1248,6 +1481,9 @@ def run_anchor_tables(
                 list(verdict.get("natural_key") or []),
             ),
             "natural_key": list(verdict.get("natural_key") or []),
+            # Carried from the affinity prior so the grain-collapse check can run here,
+            # at the stage that assigns the class, rather than only downstream (#917).
+            "likely_entity": affinity_entities.get((system, table), ""),
             "load_hint": verdict.get("load_hint"),
             "schema_hash": hashes[key],
             "status": "proposed",
@@ -1321,6 +1557,14 @@ def run_anchor_tables(
         f"{unowned} on unowned classes (blueprint gaps), "
         f"{len(unanchored)} unanchored, {invented} invented name(s) rejected"
     )
+    replicas = detect_replica_tables({(sys_, tbl): cols for sys_, tbl, cols in outline})
+    if replicas:
+        for line in render_replica_tables(replicas).splitlines():
+            say(line)
+    collapses = detect_grain_collapses(tables)
+    if collapses:
+        for line in render_grain_collapses(collapses).splitlines():
+            say(line)
     if dropped_rels or dropped_secondary:
         say(
             f"  ⚓ Sheet validation dropped {dropped_rels} relationship(s) "

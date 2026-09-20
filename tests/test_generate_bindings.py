@@ -540,3 +540,65 @@ class TestSourceColumnTypes:
         )
 
         assert load_source_column_types(tmp_path, "src") == {}
+
+
+# ---------------------------------------------------------------------------
+# A dispositioned table is not regenerated (#918)
+# ---------------------------------------------------------------------------
+
+
+class TestTableDispositionIsHonoured:
+    """`--force` is the documented way to pick up a corrected anchor, so a generator that
+    ignores table-grain dispositions undoes every such decision on every legitimate
+    regeneration. Measured on one hub: nine tables came back, eight of them replicas whose
+    bindings had produced a false `conformance.group-required` merge -- so the decision
+    looked ineffective rather than ignored, which is far harder to diagnose.
+    """
+
+    @staticmethod
+    def _ledger(disposition):
+        return {("sys", "orders", ""): {"disposition": disposition}}
+
+    def test_not_business_data_rules_a_table_out(self):
+        from kairos_ontology.core.generate_bindings import table_disposition
+
+        assert table_disposition(self._ledger("not-business-data"), "sys", "orders") == (
+            "not-business-data"
+        )
+
+    def test_deferred_rules_a_table_out(self):
+        from kairos_ontology.core.generate_bindings import table_disposition
+
+        assert table_disposition(self._ledger("deferred"), "sys", "orders") == "deferred"
+
+    def test_blueprint_gap_rules_a_table_out(self):
+        from kairos_ontology.core.generate_bindings import table_disposition
+
+        assert table_disposition(self._ledger("blueprint-gap"), "sys", "orders") == (
+            "blueprint-gap"
+        )
+
+    def test_bound_does_not(self):
+        """`bound` asserts a binding exists; skipping on it would be self-defeating."""
+        from kairos_ontology.core.generate_bindings import table_disposition
+
+        assert table_disposition(self._ledger("bound"), "sys", "orders") == ""
+
+    def test_a_column_grain_entry_does_not_rule_the_table_out(self):
+        """Column decisions are the DD-169 gate's business, not generation's."""
+        from kairos_ontology.core.generate_bindings import table_disposition
+
+        ledger = {("sys", "orders", "AMOUNT"): {"disposition": "not-business-data"}}
+
+        assert table_disposition(ledger, "sys", "orders") == ""
+
+    def test_an_undecided_table_is_generated(self):
+        from kairos_ontology.core.generate_bindings import table_disposition
+
+        assert table_disposition({}, "sys", "orders") == ""
+        assert table_disposition(None, "sys", "orders") == ""
+
+    def test_another_tables_disposition_does_not_leak(self):
+        from kairos_ontology.core.generate_bindings import table_disposition
+
+        assert table_disposition(self._ledger("deferred"), "sys", "shipments") == ""

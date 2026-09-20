@@ -839,3 +839,208 @@ class TestBusinessGrain:
 
     def test_an_empty_grain_stays_empty(self):
         assert self._grain([], []) == []
+
+
+# ---------------------------------------------------------------------------
+# Two tables of different grain on one class (#917)
+# ---------------------------------------------------------------------------
+
+
+def _anchored(table, entity, key, uri="https://ex/ont#ConsignmentItem", system="sys"):
+    return {
+        "system": system,
+        "table": table,
+        "anchor": uri.rsplit("#", 1)[-1],
+        "anchor_uri": uri,
+        "likely_entity": entity,
+        "natural_key": key,
+    }
+
+
+class TestGrainCollapseDetection:
+    """`likely_entity` has always been persisted so a detector could "detect when tables
+    with different candidate entities collapse onto one ref_class". The detector was never
+    written. Measured on a real hub: a unit-grain table and an item-grain table on one
+    class, and a port-pair table and a multi-leg table on another. Nothing objected until
+    `compile` asked for a conformance merge -- the one remedy that must not be applied.
+    """
+
+    @staticmethod
+    def _detect(tables):
+        from kairos_ontology.core.anchor_tables import detect_grain_collapses
+
+        return detect_grain_collapses(tables)
+
+    def test_different_entities_and_different_key_arity_is_a_collapse(self):
+        findings = self._detect([
+            _anchored("gate_shipment", "TerminalGateShipment", ["ref", "seq"]),
+            _anchored("cargo_detail", "RoRoGoodsUnit", ["ref", "seq", "item"]),
+        ])
+
+        assert len(findings) == 1
+        assert [t["table"] for t in findings[0]["tables"]] == ["cargo_detail", "gate_shipment"]
+
+    def test_the_same_entity_from_two_systems_is_not_a_collapse(self):
+        """That is the multi-source case DD-133 3c exists for, and must stay clean."""
+        findings = self._detect([
+            _anchored("orders", "SalesOrder", ["id"], system="erp"),
+            _anchored("orders", "SalesOrder", ["order_id"], system="crm"),
+        ])
+
+        assert findings == []
+
+    def test_a_cosmetic_key_spelling_difference_is_not_a_collapse(self):
+        """Two systems spelling one key differently is not a grain difference."""
+        findings = self._detect([
+            _anchored("a", "SalesOrder", ["REFXX"], system="erp"),
+            _anchored("b", "PurchaseOrder", ["refxx"], system="erp"),
+        ])
+
+        assert findings == []
+
+    def test_different_entities_with_the_same_key_shape_is_not_flagged(self):
+        """Both conditions are required; a differing label alone is too weak a signal."""
+        findings = self._detect([
+            _anchored("a", "ThingOne", ["id"]),
+            _anchored("b", "ThingTwo", ["code"]),
+        ])
+
+        assert findings == []
+
+    def test_a_table_with_no_candidate_entity_does_not_trigger_it(self):
+        findings = self._detect([
+            _anchored("a", "", ["ref"]),
+            _anchored("b", "RoRoGoodsUnit", ["ref", "seq"]),
+        ])
+
+        assert findings == []
+
+    def test_one_table_on_a_class_is_never_a_collapse(self):
+        assert self._detect([_anchored("a", "Thing", ["id"])]) == []
+
+    def test_the_report_refuses_the_conformance_remedy(self):
+        """The gate that notices asks for a merge; the report has to say not to."""
+        from kairos_ontology.core.anchor_tables import render_grain_collapses
+
+        text = render_grain_collapses(self._detect([
+            _anchored("gate_shipment", "TerminalGateShipment", ["ref", "seq"]),
+            _anchored("cargo_detail", "RoRoGoodsUnit", ["ref", "seq", "item"]),
+        ]))
+
+        assert "Do NOT resolve this by declaring conformance" in text
+        assert "re-anchor" in text
+
+    def test_nothing_renders_when_nothing_collapsed(self):
+        from kairos_ontology.core.anchor_tables import render_grain_collapses
+
+        assert render_grain_collapses([]) == ""
+
+
+# ---------------------------------------------------------------------------
+# A replication lane is not a second source (#916)
+# ---------------------------------------------------------------------------
+
+
+class TestReplicaDetection:
+    """Eight such pairs on one hub: 21% of anchored tables, 25% of alignment spend, and a
+    false `conformance.group-required` for each, asking to merge a table with itself.
+    """
+
+    @staticmethod
+    def _detect(mapping):
+        from kairos_ontology.core.anchor_tables import detect_replica_tables
+
+        return detect_replica_tables(mapping)
+
+    def test_a_watermark_only_copy_is_a_replica(self):
+        findings = self._detect({
+            ("sys", "orders"): ["id", "customer", "amount", "status", "created_by", "region"],
+            ("sys", "cdc_orders"): ["id", "customer", "amount", "status", "created_by", "region", "ts_ms"],
+        })
+
+        assert len(findings) == 1
+        assert findings[0]["tables"] == ["cdc_orders", "orders"]
+        assert findings[0]["only_in"]["cdc_orders"] == ["ts_ms"]
+        assert findings[0]["only_in"]["orders"] == []
+
+    def test_a_lane_that_also_lags_the_base_is_still_a_replica(self):
+        """Schema drift is normal: on the hub measured, one lane was missing a real
+        business column its twin had. Requiring a strict superset misses the real cases.
+        """
+        findings = self._detect({
+            ("sys", "orders"): ["id", "customer", "amount", "status", "created_by", "region", "iso_size_type"],
+            ("sys", "cdc_orders"): ["id", "customer", "amount", "status", "created_by", "region", "ts_ms"],
+        })
+
+        assert len(findings) == 1
+        assert findings[0]["only_in"]["orders"] == ["iso_size_type"]
+
+    def test_the_pair_is_unordered_when_both_sides_carry_operational_extras(self):
+        """Either orientation satisfies the test, so asserting which is the lane would be
+        a coin flip presented as a fact. The decision does not depend on the label.
+        """
+        findings = self._detect({
+            ("sys", "orders"): ["id", "customer", "amount", "status", "created_by", "region", "_rescued_data"],
+            ("sys", "cdc_orders"): ["id", "customer", "amount", "status", "created_by", "region", "ts_ms"],
+        })
+
+        assert len(findings) == 1
+        assert sorted(findings[0]["tables"]) == ["cdc_orders", "orders"]
+        assert findings[0]["only_in"]["orders"] == ["_rescued_data"]
+        assert findings[0]["only_in"]["cdc_orders"] == ["ts_ms"]
+
+    def test_a_copy_in_a_different_system_is_not_a_replica(self):
+        """Two systems carrying one table is the multi-source case, not a lane."""
+        findings = self._detect({
+            ("erp", "orders"): ["id", "customer", "amount", "status", "created_by", "region"],
+            ("warehouse", "orders"): ["id", "customer", "amount", "status", "created_by", "region", "ts_ms"],
+        })
+
+        assert findings == []
+
+    def test_a_table_adding_real_business_columns_is_not_a_replica(self):
+        """However similar the name, a wider table is doing something of its own."""
+        findings = self._detect({
+            ("sys", "orders"): ["id", "customer", "amount", "status", "created_by", "region"],
+            ("sys", "orders_enriched"): ["id", "customer", "amount", "status", "created_by", "region", "credit_rating"],
+        })
+
+        assert findings == []
+
+    def test_a_copy_missing_a_column_is_not_a_replica(self):
+        findings = self._detect({
+            ("sys", "orders"): ["id", "customer", "amount", "status", "created_by", "region", "a", "b", "c"],
+            ("sys", "orders_slim"): ["id", "customer", "amount", "status", "created_by", "region", "ts_ms"],
+        })
+
+        assert findings == []
+
+    def test_too_many_extra_columns_is_not_a_replica(self):
+        findings = self._detect({
+            ("sys", "orders"): ["id"],
+            ("sys", "wide"): ["id", "ts_ms", "created_at", "updated_at", "modified_by"],
+        })
+
+        assert findings == []
+
+    def test_identical_column_sets_are_not_reported(self):
+        """No extra column means no watermark, so this is a different question."""
+        findings = self._detect({
+            ("sys", "a"): ["id", "customer", "amount", "status", "created_by", "region"],
+            ("sys", "b"): ["id", "customer", "amount", "status", "created_by", "region"],
+        })
+
+        assert findings == []
+
+    def test_the_report_does_not_tell_you_to_drop_the_replica(self):
+        """A CDC lane is often the more current copy, so this is a choice."""
+        from kairos_ontology.core.anchor_tables import render_replica_tables
+
+        text = render_replica_tables(self._detect({
+            ("sys", "orders"): ["id", "customer", "amount", "status", "created_by", "region"],
+            ("sys", "cdc_orders"): ["id", "customer", "amount", "status", "created_by", "region", "ts_ms"],
+        }))
+
+        assert "this is a choice, not a cleanup" in text
+        assert "record a disposition" in text
+        assert "only in cdc_orders: ts_ms" in text
