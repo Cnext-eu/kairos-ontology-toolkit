@@ -14,7 +14,13 @@ Validation is read-only unless the user explicitly requests an output file.
    schema by running `kairos-ontology compile <domain> --check --format json`.
 4. Preserve ordered, source-located compiler diagnostics without changing their severity.
 5. Distinguish ontology validity, binding compilation, and runtime dbt/platform testing.
-6. Route fixes to the owning source, ontology, mapping, Gold, or MDM skill.
+6. Route fixes to the owning source, ontology, mapping, Gold, MDM, or architecture skill.
+   Two of `validate`'s sections belong to **kairos-design-architecture**: the DDD overlay
+   report (`validate --ddd` alone runs only that — the strategic file, each overlay merged
+   with its domain, and the cross-file audit `ddd.context-redeclared` /
+   `ddd.context-label-conflict` / `ddd.class-in-two-contexts`), and the class dispositions
+   (`class-disposition.undecided-class` is a warning until the hub adopts the ledger, an
+   error afterwards, degradable with `--degraded`).
 7. Never read a raw ontology serialization (`.ttl`/`.rdf`/`.owl`) as text; treat
    `validate`/`compile` diagnostics, or `resolve-ontology`/`show-class-inventory`/
    `list-class-properties`/`explain-term` output, as authoritative.

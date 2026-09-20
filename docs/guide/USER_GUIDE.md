@@ -24,11 +24,13 @@ ontology-hub/
 ├── catalog-v001.xml
 ├── model/
 │   ├── ontologies/<domain>.ttl
-│   └── shapes/                              # optional
+│   ├── shapes/                              # optional
+│   └── extensions/                          # optional: <domain>-gold-ext.ttl,
+│                                            #   ddd-contexts-ext.ttl, <domain>-ddd-ext.ttl
 ├── integration/
 │   ├── sources/<source>/*.ttl
 │   ├── bindings/*.binding.yaml
-│   ├── discovery/                           # confirmed context only
+│   ├── discovery/                           # confirmed context; class-dispositions.yaml
 │   ├── transforms/dbt/models/               # optional SQL/YAML
 │   └── transforms/dbt/seeds/                # optional static reference CSV
 └── output/                                  # generated
@@ -44,7 +46,15 @@ The authored authorities are:
 - optional dbt seed CSVs for small, static, hand-maintained reference data that belongs in
   version control rather than a warehouse source, with optional sibling `seeds/<name>.yml`
   column docs; and
-- optional Gold and MDM policy TTL.
+- optional Gold and MDM policy TTL; and
+- the optional DDD architecture layer — one hub-wide `model/extensions/ddd-contexts-ext.ttl`
+  (bounded contexts, context map) and one `model/extensions/<domain>-ddd-ext.ttl` per domain
+  (context membership, aggregates, invariants, language) — plus the class ledger
+  `integration/discovery/class-dispositions.yaml` recording why a class is deliberately not
+  bound. Documentation only: the compiler never opens a DDD file, so the ontology may run
+  ahead of the sources without changing Silver. `project --target ddd` renders it as context
+  diagrams, `ubiquitous-language.ttl` and `concept-guide.md` under
+  `ontology-hub-publish/architecture/ddd/`.
 
 The binding owns source-to-canonical execution. Unknown YAML fields, duplicate keys,
 unresolved terms, unsupported expressions, and incomplete runtime policies fail closed.

@@ -132,7 +132,14 @@ Before proposing a binding:
    the `fit-report` note above — without it, every candidate reports
    `Evidence: none`, not a real negative), or by reasoning over the hub's own
    source inventory; this is a workflow check, not a new tool;
-5. use only already-redacted, masked, aggregated, or synthetic examples.
+5. use only already-redacted, masked, aggregated, or synthetic examples;
+6. read the target class's entry in `ontology-hub-publish/architecture/ddd/concept-guide.md`
+   when the hub has one: its scope note and synonyms are the words the source is likely to
+   use for its columns, its invariants are the `DataQualityRule`s to consider, and a class
+   recorded as `architecture-only` or `deferred` in
+   `integration/discovery/class-dispositions.yaml` is **not a binding target** until the
+   context engineer withdraws that disposition — binding it anyway is a design change to
+   raise, not a shortcut to take.
 
 Never expose or persist raw PII, sensitive free text, proprietary samples, or
 credentials. An unredacted sample blocks the workflow and must return to the
@@ -586,6 +593,10 @@ out-of-scope work. Artifact generation is a separate execution step.
 ## Related skills
 
 - **kairos-design-domain** — create the bounded canonical ontology slice first.
+- **kairos-design-architecture** — the context, invariants and language of the class you
+  are binding, and the ledger of classes deliberately not bound. Binding a class flips its
+  ledger status to `bound` automatically; a disposition left behind becomes a
+  `class-disposition.stale` warning for the context engineer to clear.
 - **kairos-design-source** — import source authority and PII-safe samples.
 - **kairos-develop-dbt-transformation** — author ordinary contracted relational
   models when binding expressions are insufficient.

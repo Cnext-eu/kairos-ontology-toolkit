@@ -47,6 +47,31 @@ Use `compile` directly; do not add orchestration around it.
    legitimately passes it.
 6. Verify the command succeeded and report emitted paths from the current result.
 
+## Diagram and documentation targets (`project`)
+
+`project` is not `compile`: it draws and documents, and reads no CompilePlan.
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology project --target erd            # canonical class diagrams + master
+uv run kairos-ontology project --target ddd            # architecture layer, see below
+uv run kairos-ontology project --target contract-erd   # declared Silver contract ERDs
+```
+
+`erd` and `ddd` write under `ontology-hub-publish/architecture/`, a **tracked, drift-gated**
+lane: CI regenerates both and diffs them, so run them after any ontology, overlay, contract or
+binding change and commit the result; `git add` new files, because the gate does not see
+untracked additions. `contract-erd` writes beside the contracts in
+`ontology-hub/model/contracts/diagrams/`.
+
+`ddd` writes, for every hub with a class, `architecture/ddd/ubiquitous-language.ttl` and
+`architecture/ddd/concept-guide.md` (DD-232), and for a hub with a DDD overlay also
+`architecture/ddd/contexts/*.mmd`, `contexts/design-notes.md` and the per-domain
+`<domain>-aggregate-overview.mmd` / `<domain>-ddd-report.md` (DD-230). Sample values in the
+concept guide are off unless `kairos.yaml` says `projections.concept_guide.samples: true`.
+Every generated `.mmd` opens with `layout: elk` frontmatter (#855); a hub whose renderer
+predates Mermaid 10.5 sets `projections.mermaid_layout: none`.
+
 Compiler input is the authored ontology, source/dbt contracts, and closed
 `EntityBinding` documents. Compiler output is derived and must not be edited by
 this skill — including temporary or workaround edits meant to unblock a failing

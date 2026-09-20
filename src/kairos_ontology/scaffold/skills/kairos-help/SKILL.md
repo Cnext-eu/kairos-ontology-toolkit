@@ -21,6 +21,7 @@ keeps all downstream systems consistent with it, automatically.
 | **2. Setup** | Set up a new project or configure an existing one. |
 | **3. Discover** | Agree on business terms and context together. |
 | **4. Design** | Connect source systems, define shared business concepts, and describe how data maps between them. |
+| **4b. Architect** (optional) | Draw the bounded contexts, aggregates and invariants over the shared concepts, keep the business's own words for them, and say which concepts are deliberately not in Silver yet. Documentation only. |
 | **5. Validate** | Check that everything is correct and consistent. |
 | **6. Compile / Execute** | Generate the resulting pipelines and artifacts, and review the results. |
 | **7. Consume** | Connect the generated output to downstream systems that will use it. |
@@ -38,6 +39,7 @@ keeps all downstream systems consistent with it, automatically.
 | `kairos-design-discovery` | Capture business context/terms | "Document what 'customer churn' means for this domain." |
 | `kairos-design-source` | Import/document source schemas | "Import the schema for our billing Postgres table." |
 | `kairos-design-domain` | Design OWL classes/properties | "Add an Invoice class with an issuedDate property." |
+| `kairos-design-architecture` | Bounded contexts, aggregates, invariants, ubiquitous language, and the "not in Silver yet" ledger — for the context engineer | "Put Invoice and InvoiceLine in a Billing context and record why PostalAddress is architecture-only." |
 | `kairos-design-mapping` | Author EntityBinding YAML | "Bind the billing.invoices table to the Invoice entity." |
 | `scaffold-binding` | Auto-scaffold first-draft bindings | "Generate a skeleton binding for the crm.organisations table." |
 | `fit-report` | Inspect property coverage before mapping | "Show me which Invoice properties my data already populates." |
@@ -64,6 +66,11 @@ immutable CompilePlan and deterministic downstream artifacts.
 
 - `model/ontologies/<domain>.ttl`: canonical OWL meaning
 - `model/shapes/`: optional SHACL
+- `model/extensions/ddd-contexts-ext.ttl` and `model/extensions/<domain>-ddd-ext.ttl`: optional
+  DDD architecture layer — contexts and the context map hub-wide, class annotations per
+  domain; documentation only, never read by the compiler
+- `integration/discovery/class-dispositions.yaml`: optional ledger of classes deliberately not
+  bound (`deferred`, `architecture-only`, `abstract`)
 - `integration/sources/<source>/*.ttl`: physical source schema and redacted samples
 - `integration/bindings/*.binding.yaml`: sole source-to-canonical execution authority
 - `integration/transforms/dbt/models/`: ordinary contracted dbt SQL/YAML for complex logic
@@ -85,9 +92,15 @@ kairos-ontology compile <domain> --explain --format json
 kairos-ontology compile <domain> --emit --confirm-emit
 kairos-ontology decision new
 kairos-ontology validate
+kairos-ontology validate --ddd
+kairos-ontology project --target ddd
+kairos-ontology class-disposition list --undecided
 ```
 
 Use `kairos-design-source`, `kairos-design-domain`, and `kairos-design-mapping` to author inputs;
+`kairos-design-architecture` for the optional DDD layer (contexts, aggregates, invariants, the
+ubiquitous language and the class ledger — `project --target ddd` writes the context diagrams,
+`ubiquitous-language.ttl` and `concept-guide.md` under `ontology-hub-publish/architecture/ddd/`);
 `kairos-develop-dbt-transformation` for ordinary contracted dbt models; `kairos-design-gold` and
 `kairos-design-mdm` (toolkit repository only, while MDM is not live) for optional consumers; `kairos-execute-validate` for validation; and
 `kairos-toolkit-ops` for managed files, versions, and reference models. Use

@@ -12,6 +12,7 @@ the [decision log](https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main
 | Agree and record what the business means | [Capture business context](capture-business-context.md) |
 | Get a source system's schema into the hub | [Import a source system](import-a-source-system.md) |
 | Define what the business means | [Design a domain](design-a-domain.md) |
+| Carry an architect's logical model without growing Silver | [Document the architecture with a DDD overlay](document-architecture-with-a-ddd-overlay.md) |
 | Connect a source table to a canonical entity | [Bind a source to an entity](bind-a-source-to-an-entity.md) |
 | Onboard a second system to an entity you already model | [Add a second source to a class](add-a-second-source-to-a-class.md) |
 | Handle logic a binding cannot express | [Write a contracted dbt model](write-a-contracted-dbt-model.md) |

@@ -51,7 +51,15 @@ from enum import Enum
 
 #: reached 70 outstanding decisions before anyone was told.
 
-SCHEMA_VERSION = 7
+#: v8 adds the architecture-layer observations (``DomainSnapshot.ddd_overlay``,
+#: ``HubInputSnapshot.ddd_strategic_file``) and the class-disposition observation
+#: (``class_dispositions`` / ``ClassDispositionObservation``), with two actions routed to
+#: kairos-design-architecture: optional ``design-architecture`` when a DDD overlay or the
+#: strategic file exists (DD-229/DD-230), and ``record-class-disposition`` when hub classes
+#: have no recorded outcome (DD-231) -- blocking once the hub has adopted the ledger, an
+#: advisory nudge before. Same lesson as v7: a gate `validate` enforces must be proposed
+#: by the flow before it fails.
+SCHEMA_VERSION = 8
 
 
 class InputStatus(str, Enum):
@@ -143,6 +151,11 @@ ACTION_SKILLS: dict[str, str] = {
     "validate-dbt": "kairos-execute-validate",
     "review-gold": "kairos-design-gold",
     "review-mdm": "kairos-design-mdm",
+    # DD-229/DD-230/DD-231: the architecture layer -- bounded contexts, aggregates,
+    # invariants, and the "deliberately not in Silver" ledger -- is the context engineer's,
+    # not the domain designer's or the binding author's.
+    "design-architecture": "kairos-design-architecture",
+    "record-class-disposition": "kairos-design-architecture",
 }
 
 
@@ -171,6 +184,8 @@ class DomainSnapshot:
     mdm_policy: InputStatus = InputStatus.MISSING
     passthrough_count: int = 0
     canonical_count: int = 0
+    #: Presence of this domain's tactical DDD overlay, ``{domain}-ddd-ext.ttl`` (DD-229).
+    ddd_overlay: InputStatus = InputStatus.MISSING
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +276,28 @@ class SourceDomainCoverageObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class ClassDispositionObservation:
+    """Hub classes with no recorded outcome -- bound or explicitly disposed (DD-231).
+
+    The class-side sibling of :class:`SourceDispositionObservation`. ``ledger_present``
+    decides the weight: before the hub adopts the ledger an undecided class is a warning in
+    `validate` and an advisory nudge here; afterwards it is an error there and blocking
+    here. All-zero is the no-observation default.
+    """
+
+    classes_total: int = 0
+    classes_undecided: int = 0
+    ledger_present: bool = False
+
+    @property
+    def coverage(self) -> float:
+        """Fraction with any recorded outcome. 1.0 when there is nothing to decide."""
+        if not self.classes_total:
+            return 1.0
+        return round((self.classes_total - self.classes_undecided) / self.classes_total, 4)
+
+
+@dataclass(frozen=True, slots=True)
 class HubInputSnapshot:
     """Defensible, in-memory observations of a hub's authored inputs."""
 
@@ -301,6 +338,11 @@ class HubInputSnapshot:
     #: Source tables with no recorded outcome (DD-164). All-zero is the no-observation
     #: state; ``validate`` fails on a non-zero undecided count.
     source_dispositions: SourceDispositionObservation = SourceDispositionObservation()
+    #: Presence of the hub-wide strategic DDD file, ``model/extensions/ddd-contexts-ext.ttl``
+    #: (DD-229). MISSING is the no-observation default.
+    ddd_strategic_file: InputStatus = InputStatus.MISSING
+    #: Hub classes with no recorded outcome (DD-231). All-zero is the no-observation state.
+    class_dispositions: ClassDispositionObservation = ClassDispositionObservation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,6 +600,69 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 ),
                 priority=23,
                 blocking=True,
+            )
+        )
+    if snapshot.class_dispositions.classes_undecided:
+        obs = snapshot.class_dispositions
+        actions.append(
+            _action(
+                "record-class-disposition",
+                ActionStatus.HUMAN_DECISION_REQUIRED,
+                rationale=(
+                    f"{obs.classes_undecided} of {obs.classes_total} hub class(es) are neither "
+                    f"bound nor given an explicit disposition ({obs.coverage:.0%} decided). "
+                    + (
+                        "The hub has adopted the class ledger, so `validate` fails on this "
+                        "(DD-231). "
+                        if obs.ledger_present
+                        else "`validate` warns until the hub adopts the class ledger with "
+                        "'kairos-ontology class-disposition init', then fails (DD-231). "
+                    )
+                    + "Each class needs a human call: bind it, or record it as deferred, "
+                    "architecture-only, or abstract -- so a context engineer's logical model "
+                    "in the ontology never reads as forgotten."
+                ),
+                command=(
+                    "kairos-ontology class-disposition list --undecided   # then, per class:\n"
+                    "  kairos-ontology class-disposition set --class <IRI or prefix:Local> "
+                    '--disposition <deferred|architecture-only|abstract> --rationale "<why>"'
+                ),
+                priority=25,
+                blocking=obs.ledger_present,
+            )
+        )
+    if snapshot.ddd_strategic_file is InputStatus.PRESENT or any(
+        domain.ddd_overlay is InputStatus.PRESENT for domain in snapshot.domains
+    ):
+        overlays = sorted(
+            domain.domain
+            for domain in snapshot.domains
+            if domain.ddd_overlay is InputStatus.PRESENT
+        )
+        actions.append(
+            _action(
+                "design-architecture",
+                ActionStatus.OPTIONAL,
+                rationale=(
+                    "An architecture layer exists ("
+                    + ", ".join(
+                        filter(
+                            None,
+                            [
+                                "hub-wide strategic file"
+                                if snapshot.ddd_strategic_file is InputStatus.PRESENT
+                                else "",
+                                f"overlay(s) for {', '.join(overlays)}" if overlays else "",
+                            ],
+                        )
+                    )
+                    + "). Optionally review it with the context engineer: `validate --ddd` "
+                    "checks the overlays and the hub-wide consistency; `project --target ddd` "
+                    "regenerates the context diagrams, the ubiquitous language and the concept "
+                    "guide (DD-229/DD-230/DD-232). Documentation only -- it never changes Silver."
+                ),
+                command=("kairos-ontology validate --ddd\n  kairos-ontology project --target ddd"),
+                priority=60,
             )
         )
     if snapshot.registered_concepts_unbound:

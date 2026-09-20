@@ -37,6 +37,7 @@ from .conformance_artifact import (
 from .hub_utils import is_authored_discovery_ttl, is_domain_ontology_stem
 from .next_actions import (
     BiConceptMappingObservation,
+    ClassDispositionObservation,
     CompileStatus,
     DiagnosticView,
     DiscoveryConformanceStatus,
@@ -281,6 +282,28 @@ def _source_disposition_status(root: Path) -> SourceDispositionObservation:
     )
 
 
+def _class_disposition_status(root: Path) -> ClassDispositionObservation:
+    """Count hub classes with no recorded outcome (DD-231).
+
+    Same degradation rule as the source-table observer: any failure -- including a ledger
+    the audit refuses to trust -- yields the no-observation default, because `validate` is
+    where that error is reported and a crashing observer must not take `next` down.
+    """
+    try:
+        from .class_disposition import audit_class_dispositions
+
+        report = audit_class_dispositions(hub_root=root)
+    except Exception:
+        return ClassDispositionObservation()
+    if not report.classes_total:
+        return ClassDispositionObservation()
+    return ClassDispositionObservation(
+        classes_total=report.classes_total,
+        classes_undecided=report.classes_undecided,
+        ledger_present=report.ledger_present,
+    )
+
+
 def _registered_concepts_unbound(root: Path) -> int:
     """Count registered concepts (#505 Layer B) no EntityBinding targets yet.
 
@@ -314,8 +337,6 @@ def _registered_concepts_unbound(root: Path) -> int:
             if isinstance(target, dict) and isinstance(target.get("class"), str):
                 targeted.add(target["class"].strip())
     return sum(1 for entry in registered if str(entry.get("uri") or "") not in targeted)
-
-
 
 
 def _configured_adapter(root: Path) -> str:
@@ -508,6 +529,7 @@ def gather_hub_input_snapshot(
                 diagnostics=diagnostics,
                 gold_policy=_extension_status(extensions_dir, name, "-gold-ext.ttl"),
                 mdm_policy=_extension_status(extensions_dir, name, "-mdm-ext.ttl"),
+                ddd_overlay=_extension_status(extensions_dir, name, "-ddd-ext.ttl"),
                 passthrough_count=passthrough_count,
                 canonical_count=canonical_count,
             )
@@ -531,4 +553,17 @@ def gather_hub_input_snapshot(
         source_domain_coverage=_source_domain_coverage_status(root),
         registered_concepts_unbound=_registered_concepts_unbound(root),
         source_dispositions=_source_disposition_status(root),
+        ddd_strategic_file=_strategic_file_status(extensions_dir),
+        class_dispositions=_class_disposition_status(root),
+    )
+
+
+def _strategic_file_status(extensions_dir: Path) -> InputStatus:
+    """Presence of the hub-wide strategic DDD file (DD-229)."""
+    from .ddd import find_strategic_file
+
+    return (
+        InputStatus.PRESENT
+        if find_strategic_file(extensions_dir) is not None
+        else InputStatus.MISSING
     )

@@ -101,6 +101,7 @@ copy; Copilot resolves the same tree.
 | Business context and terminology | `kairos-design-discovery` |
 | Import, document, or analyse source schemas | `kairos-design-source` |
 | Create or change OWL classes/properties | `kairos-design-domain` |
+| Bounded contexts, aggregates, invariants, ubiquitous language, classes deliberately not in Silver | `kairos-design-architecture` |
 | Author source-to-canonical EntityBinding YAML | `kairos-design-mapping` |
 | Create a complex contracted dbt model | `kairos-develop-dbt-transformation` |
 | Design Gold/Power BI products | `kairos-design-gold` |
@@ -120,8 +121,8 @@ Always invoke the owning skill before a skill-managed command or authored design
 
 ## Design interaction
 
-Discovery, source, ontology, mapping, dbt transformation, Gold, and MDM design are interactive by
-default. An explicit fleet override applies only to the active skill invocation and expires when it
+Discovery, source, ontology, architecture, mapping, dbt transformation, Gold, and MDM design are
+interactive by default. An explicit fleet override applies only to the active skill invocation and expires when it
 ends or pauses. Fleet mode keeps all validation and evidence checks, records each AI-approved choice
 with rationale, confidence, and references, and stops for ambiguity, low confidence, sensitive or
 proprietary data, policy choices, and destructive actions.

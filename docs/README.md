@@ -23,7 +23,7 @@ it is, `dev/`.
 | [CompilePlan consumption](guide/CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
 | [Logging & observability](guide/OBSERVABILITY.md) | Verbosity flags, JSON logs, optional OpenTelemetry bridge (DD-151) |
 | [Demonstration guide](guide/demo.md) | A 45-minute walkthrough of the v5 contract |
-| [Practitioner guides](guide/practitioner/) | Context-engineer and data-engineer methodology |
+| [Practitioner guides](guide/practitioner/) | Context-engineer and data-engineer methodology, and [how the two work together](guide/practitioner/context-and-data-engineer-workflow.md) |
 
 The first four are the ones shipped to hubs; the allowlist lives in
 `scripts/sync_dev_skills.py`.
