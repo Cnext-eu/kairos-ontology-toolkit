@@ -65,6 +65,7 @@ from .analyse_sources import (
     parse_source_vocabulary,
 )
 from .class_anchoring import read_reference_terms
+from .anchor_drift import compare_anchor_runs, render_drift_summary
 from .discovery_currency import GLOSSARY_FINGERPRINT_KEY, glossary_fingerprint
 from .tracing import call_metadata, flush_tracing, new_session_id
 
@@ -1311,6 +1312,12 @@ def run_anchor_tables(
                 t["table"],
             )
 
+    # What moved since the last run, while the previous artifact is still in hand.
+    # A re-run used to overwrite every unpinned row in silence (#877).
+    drift = compare_anchor_runs(existing, tables)
+    for line in render_drift_summary(drift):
+        say(line, "warning" if drift.drifted else None)
+
     payload = {
         # v2 (DD-190): entries carry schema_hash, status, relationships,
         # secondary_entities, flags; pinned entries survive re-runs verbatim.
@@ -1328,6 +1335,9 @@ def run_anchor_tables(
         "tables": tables,
         "unanchored": unanchored,
         "excluded": catalogue,
+        # Durable, so the diff survives the terminal that produced it. Omitted on a
+        # first run, where there is nothing to compare against.
+        **({"drift_since_last_run": drift.to_dict()} if not drift.is_first_run else {}),
     }
     header = provenance_comment(
         "anchor-tables",
