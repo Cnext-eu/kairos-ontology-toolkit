@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-94 commands.
+95 commands.
 
 ## Index
 
@@ -96,6 +96,7 @@ not reasoning.
 | [`scaffold-binding`](#scaffold-binding) | Scaffold a first-draft v5 EntityBinding YAML for one Bronze source table. |
 | [`scaffold-contract`](#scaffold-contract) | Generate a declared Silver contract from the current compile plan. |
 | [`scaffold-domain`](#scaffold-domain) | Scaffold a new domain ontology in an existing hub (issue #469). |
+| [`scaffold-extensions`](#scaffold-extensions) | Draft OWL properties from the accepted ``registered-extension`` decisions. |
 | [`scaffold-mapping`](#scaffold-mapping) | Preview or write evidence-grounded named v2 mapping proposals. |
 | [`scaffold-silver-ext`](#scaffold-silver-ext) | Preview or write a legacy, non-authoritative Silver skeleton. |
 | [`scaffold-staging`](#scaffold-staging) | Scaffold first-class stg_<source>__<entity> + int_merged__<entity> staging (issue #399, #616). |
@@ -1391,6 +1392,22 @@ kairos-ontology scaffold-domain [OPTIONS]
 | `--force` |  | Overwrite existing .ttl file. |
 | `--refmodels-root` |  | Override reference-models root (default: auto-detected from installed package). |
 | `--ai` |  | Use the configured AI provider to generate domain class/property stubs from conformance evidence and source schemas. |
+
+
+## scaffold-extensions
+
+Draft OWL properties from the accepted ``registered-extension`` decisions. Every property rendered was already decided — this reads the disposition ledger and writes what is recorded there, with the name, range and owning class the aligner proposed. It makes no judgement of its own. That matters because the decisions had no consumer. ``registered-extension``'s own definition points at ``register-concept``, which registers a *class* the archetype catalog lacks; these are *columns* wanting *properties* on classes that already exist. An operator who closed the gate column by column ended up re-deriving every property by hand from a second file. Output is a DRAFT written outside ``model/ontologies/`` so the validator does not load it, the same contract ``suggest-shapes`` uses (DD-076): review it as a diff and move what you accept into the owning domain's ontology. Skipped and reported, never guessed: a non-datatype range (an object property needs a target class and a relationship decision), a name that is not camelCase, and a name accepted with two different class or range readings. Examples: kairos-ontology scaffold-extensions --domain roro --dry-run kairos-ontology scaffold-extensions --domain roro
+
+```
+kairos-ontology scaffold-extensions [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--domain` | **required** | Hub data domain to render extensions for. |
+| `-o`, `--out` |  | Output draft TTL path (default: <repo>/ontology-hub-publish/extensions-draft/<domain>.ttl). |
+| `--namespace` |  | Property namespace (default: the domain ontology's own, from catalog-v001.xml). |
+| `--dry-run` |  | Print the draft, write nothing. |
 
 
 ## scaffold-mapping
