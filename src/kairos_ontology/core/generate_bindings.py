@@ -517,6 +517,27 @@ def generate_binding_doc(
     return doc, ""
 
 
+def table_disposition(
+    dispositions: dict[tuple[str, str, str], dict[str, Any]] | None,
+    system: str,
+    table: str,
+) -> str:
+    """The table-grain disposition ruling this table out of generation, or ``""`` (#918).
+
+    The ledger is keyed ``(system, table, column)`` with an empty column for a table-grain
+    entry. ``generate-bindings`` already loads it for the column-grain join that surfaces
+    accepted ``registered-extension`` properties; this reads the half it was ignoring.
+
+    Returns ``""`` for ``bound``, which asserts that a binding exists rather than that one
+    should not.
+    """
+    from .source_disposition import NON_GENERATING_DISPOSITIONS
+
+    entry = (dispositions or {}).get((system, table, "")) or {}
+    value = str(entry.get("disposition") or "")
+    return value if value in NON_GENERATING_DISPOSITIONS else ""
+
+
 def run_generate_bindings(
     hub_root: Path,
     *,
@@ -569,6 +590,21 @@ def run_generate_bindings(
         if domain and str(entry.get("domain") or "") != domain:
             continue
         if str(entry.get("status") or "") == "rejected":
+            continue
+        ruled_out = table_disposition(dispositions, system, table)
+        if ruled_out and not (tables and key in tables):
+            # The ledger is where a hub records that a table is not being modelled, and
+            # --force is the documented way to pick up a corrected anchor -- so without
+            # this, every legitimate regeneration silently resurrected every table-grain
+            # decision the hub had made (#918). Measured on one hub: nine tables, eight of
+            # them replicas whose bindings had produced a false multi-source merge, all
+            # back on the next run.
+            #
+            # An explicit --table overrides, so an author can regenerate one dispositioned
+            # table deliberately without clearing the ledger first.
+            report.generated.append(GeneratedBinding(
+                system, table, "", str(entry.get("domain") or ""), "skipped",
+                note=f"recorded as {ruled_out} in the disposition ledger"))
             continue
         if not entry.get("anchor_uri") or not entry.get("domain"):
             report.generated.append(GeneratedBinding(
