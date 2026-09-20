@@ -30,8 +30,17 @@ try
 }
 catch (TmdlFormatException ex)
 {
-    // The one exception type that means "this TMDL content is actually invalid" --
-    // TmdlSerializer's own parser rejected it.
+    // The TMDL text itself is malformed -- TmdlSerializer's own parser rejected it.
+    result["status"] = "fail";
+    result["error_type"] = ex.GetType().Name;
+    result["message"] = ex.Message;
+}
+catch (TmdlSerializationException ex)
+{
+    // The text parses but the model does not hold together: an unresolvable
+    // relationship endpoint, a ref to a table the tree does not contain. TOM raises
+    // this about the CONTENT, so it is a validation failure, not an environment one.
+    // Power BI Desktop refuses to open such a model (issue #876).
     result["status"] = "fail";
     result["error_type"] = ex.GetType().Name;
     result["message"] = ex.Message;
