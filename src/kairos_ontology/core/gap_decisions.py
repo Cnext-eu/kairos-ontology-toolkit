@@ -799,7 +799,7 @@ def suggest_family_dispositions(
     """
     families = sheet.get("families") or []
     if not families:
-        return {"families_described": 0}
+        return {"families_described": 0, "flagged_incoherent": 0}
 
     # Families are domain-scoped (the same token is a different decision in a
     # different domain), so the response key must carry the domain too. Keying on

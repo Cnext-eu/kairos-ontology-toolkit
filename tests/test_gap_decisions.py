@@ -675,3 +675,18 @@ class TestSchemaCatalogueTablesAreHonoured:
         summary = build_decision_sheet(self._hub(tmp_path, excluded=False))["summary"]
         assert summary["schema_catalogue_tables_excluded"] == 0
         assert summary["gap_columns_in_excluded_tables"] == 0
+
+
+class TestSuggestFamilyDispositions:
+    def test_an_empty_sheet_returns_full_stats_shape(self):
+        """#889: An empty sheet (all gaps decided) returns the full stats shape."""
+        from kairos_ontology.core.gap_decisions import suggest_family_dispositions
+
+        stats = suggest_family_dispositions({}, client=None, model="dummy")
+        assert stats == {"families_described": 0, "flagged_incoherent": 0}
+
+    def test_a_sheet_with_empty_families_list_returns_full_stats_shape(self):
+        from kairos_ontology.core.gap_decisions import suggest_family_dispositions
+
+        stats = suggest_family_dispositions({"families": []}, client=None, model="dummy")
+        assert stats == {"families_described": 0, "flagged_incoherent": 0}

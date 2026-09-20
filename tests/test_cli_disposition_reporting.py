@@ -125,6 +125,63 @@ class TestWithheldConflictsAreSurfaced:
         assert "conflict(s)" not in result.output
         assert "table-anchors.yaml" not in result.output
 
+    def test_suggest_with_no_families_reports_cleanly(self, monkeypatch, tmp_path):
+        """#889: --suggest on a sheet with no families reports all gap columns decided."""
+        from kairos_ontology.core import ai_preflight, ai_provider, anchor_tables, gap_decisions
+
+        monkeypatch.setattr(ai_preflight, "require_ai_provider", lambda *a, **k: None)
+        monkeypatch.setattr(ai_provider, "get_ai_client", lambda *a, **k: None)
+        monkeypatch.setattr(anchor_tables, "load_table_anchors", lambda *a, **k: {})
+        monkeypatch.setattr(
+            gap_decisions,
+            "suggest_family_dispositions",
+            lambda *a, **k: {"families_described": 0, "flagged_incoherent": 0},
+        )
+        result = _run(
+            monkeypatch, tmp_path, ["draft-gap-decisions", "--suggest", "--dry-run"],
+            sheet=_sheet(families=0),
+        )
+        assert result.exit_code == 0, result.output
+        assert "no families left to describe — every gap column is decided" in result.output
+
+    def test_suggest_with_families_reports_described_and_flagged(self, monkeypatch, tmp_path):
+        """#889: --suggest reports described and flagged counts when families are present."""
+        from kairos_ontology.core import ai_preflight, ai_provider, anchor_tables, gap_decisions
+
+        monkeypatch.setattr(ai_preflight, "require_ai_provider", lambda *a, **k: None)
+        monkeypatch.setattr(ai_provider, "get_ai_client", lambda *a, **k: None)
+        monkeypatch.setattr(anchor_tables, "load_table_anchors", lambda *a, **k: {})
+        monkeypatch.setattr(
+            gap_decisions,
+            "suggest_family_dispositions",
+            lambda *a, **k: {"families_described": 3, "flagged_incoherent": 1},
+        )
+        result = _run(
+            monkeypatch, tmp_path, ["draft-gap-decisions", "--suggest", "--dry-run"],
+            sheet=_sheet(families=3),
+        )
+        assert result.exit_code == 0, result.output
+        assert "described 3 family/families (1 flagged as not one concept)" in result.output
+
+    def test_suggest_defensively_handles_missing_flagged_incoherent(self, monkeypatch, tmp_path):
+        """#889: CLI uses .get('flagged_incoherent', 0) defensively."""
+        from kairos_ontology.core import ai_preflight, ai_provider, anchor_tables, gap_decisions
+
+        monkeypatch.setattr(ai_preflight, "require_ai_provider", lambda *a, **k: None)
+        monkeypatch.setattr(ai_provider, "get_ai_client", lambda *a, **k: None)
+        monkeypatch.setattr(anchor_tables, "load_table_anchors", lambda *a, **k: {})
+        monkeypatch.setattr(
+            gap_decisions,
+            "suggest_family_dispositions",
+            lambda *a, **k: {"families_described": 2},
+        )
+        result = _run(
+            monkeypatch, tmp_path, ["draft-gap-decisions", "--suggest", "--dry-run"],
+            sheet=_sheet(families=2),
+        )
+        assert result.exit_code == 0, result.output
+        assert "described 2 family/families (0 flagged as not one concept)" in result.output
+
 
 class TestHelpTextDocumentsWhatTheCommandsDo:
     def test_anchor_tables_help_declares_that_it_can_drop_a_table(self):
