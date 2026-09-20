@@ -691,6 +691,34 @@ def detect_schema_catalogue_tables(
     return excluded
 
 
+def _business_grain(grain: list[str], natural_key: list[str]) -> list[str]:
+    """Drop operational columns from a proposed grain (#914).
+
+    ``grain_columns`` becomes the identity of the Silver row: ``generate-bindings`` turns
+    each one into a ``purpose: identity`` technical field. An audit or system-versioning
+    column in there does not make the row *more* identified, it changes what the row *is* —
+    a SQL Server ``ttSysStartTime`` in the grain turns "one row per consignment" into "one
+    row per consignment per version". Counts become version counts, uniqueness tests pass
+    that should fail, and a join on the entity fans out. Measured on a real hub: five of
+    seven generated bindings carried a system-versioning timestamp as part of identity.
+
+    Deliberately conservative, because :func:`_is_operational_column` is the narrow
+    classifier whose false positives delete real data:
+
+    * a column the model itself put in ``natural_key`` is never dropped — the stage that
+      proposed the grain said that column identifies the business entity, and that
+      statement outranks a name-shaped guess;
+    * the grain is never emptied — if every column looks operational the proposal is
+      returned untouched for a human to read, since a table with no grain is not a safer
+      answer than a table with a questionable one.
+    """
+    from .propose_alignment import _is_operational_column
+
+    protected = {c.casefold() for c in natural_key}
+    kept = [c for c in grain if c.casefold() in protected or not _is_operational_column(c)]
+    return kept or list(grain)
+
+
 def render_anchor_glossary(hub_root: Path | None, *, limit: int = 120) -> str:
     """The client's vocabulary as evidence for what a table is (#885).
 
@@ -1215,7 +1243,10 @@ def run_anchor_tables(
             "domain_basis": basis,
             "owners": owner_ids,
             "bridged_from": bridge_ids,
-            "grain_columns": list(verdict.get("grain_columns") or []),
+            "grain_columns": _business_grain(
+                list(verdict.get("grain_columns") or []),
+                list(verdict.get("natural_key") or []),
+            ),
             "natural_key": list(verdict.get("natural_key") or []),
             "load_hint": verdict.get("load_hint"),
             "schema_hash": hashes[key],
