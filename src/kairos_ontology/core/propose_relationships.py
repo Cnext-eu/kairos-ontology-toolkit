@@ -42,6 +42,8 @@ from typing import Any, Optional
 
 import yaml
 
+from .projections.shared import camel_to_snake
+
 logger = logging.getLogger(__name__)
 
 #: Bumped when the machine-readable proposal contract changes.
@@ -87,6 +89,25 @@ def _class_token(ref: str) -> str:
     if ":" in tail:
         tail = tail.rsplit(":", 1)[-1]
     return tail.strip().lower()
+
+
+def _emitted_column_for(property_ref: str) -> str:
+    """The Silver column a mapped property produces, by the kernel's default rule.
+
+    ``camel_to_snake`` of the property's local name. A binding may author the property as
+    a full URI, a ``prefix:Local`` qname or a bare local name -- the compiler accepts all
+    three -- so the prefix is stripped here. Case is preserved on the way, which is why
+    this cannot use ``_class_token``: that case-folds, and ``camel_to_snake`` of an
+    already-lowercased name loses every word boundary.
+
+    A Silver contract may pin a different ``columnName`` (``contract_emission``). That is
+    not read here; a pinned name that disagrees is caught by the compiler's
+    externalReference key check rather than guessed at.
+    """
+    tail = _local_name(property_ref)
+    if ":" in tail:
+        tail = tail.rsplit(":", 1)[-1]
+    return camel_to_snake(tail.strip())
 
 
 def _slug(class_uri: str) -> str:
@@ -197,6 +218,10 @@ class BoundEntity:
     technical_outputs: dict[str, str] = field(default_factory=dict)
     #: Authored source column -> canonical type, from technicalFields.
     technical_types: dict[str, str] = field(default_factory=dict)
+    #: Authored source column -> emitted column name, for columns carried by ``fields:``.
+    #: The kernel default is ``camel_to_snake`` of the property's local name, so a key
+    #: column carried this way reaches Silver under the ontology's name, not the source's.
+    field_outputs: dict[str, str] = field(default_factory=dict)
     #: Every source column the binding references (fields + technicalFields + identity).
     referenced_columns: tuple[str, ...] = ()
     relationship_count: int = 0
@@ -213,15 +238,26 @@ class BoundEntity:
     def output_column_for(self, source_column: str) -> tuple[str, str]:
         """Return (output column, canonical type) for a parent key column.
 
-        Falls back to a snake_case rendering of the source column with a sentinel type
-        when the parent never materialized it as a technical field -- the author must
-        confirm both rather than trust a guess.
+        The *output* column, not the source one. ``join.foreign`` is emitted verbatim as
+        the parent model's column -- ``on src.<local> = <parent>.<foreign>`` -- and a
+        parent that carries its key through ``fields:`` renames it on the way: a source
+        ``ACCOUNT_REF`` mapped to ``partyId`` reaches Silver as ``party_id``. Proposing
+        the source name produced SQL joining on a column the parent model does not have,
+        which compiled clean, emitted, and would fail only at dbt run time (#928).
+
+        Returns the sentinel when the parent exposes the column under no name at all.
+        That is the honest answer -- there is nothing to join to -- and it replaces a
+        snake_case fallback that invented a plausible name for a column that did not
+        exist, in a module whose contract is to emit a sentinel rather than a guess.
         """
         key = _normalize(source_column)
         for authored, output in self.technical_outputs.items():
             if _normalize(authored) == key:
                 return output, self.technical_types.get(authored, SENTINEL_KEY_TYPE)
-        return _snake(source_column), SENTINEL_KEY_TYPE
+        for authored, output in self.field_outputs.items():
+            if _normalize(authored) == key:
+                return output, SENTINEL_KEY_TYPE
+        return SENTINEL_JOIN_COLUMN, SENTINEL_KEY_TYPE
 
 
 def _bare_column(expression: Any) -> Optional[str]:
@@ -280,12 +316,16 @@ def index_bindings(bindings_dir: Path) -> tuple[BoundEntity, ...]:
                     # example joins ``local: account_id`` while the carrier is
                     # ``name: account_ref, expression: account_id``.
                     relationship_columns.append(column)
+        field_outputs: dict[str, str] = {}
         for mapped in data.get("fields") or []:
             if not isinstance(mapped, dict):
                 continue
             column = _bare_column(mapped.get("expression"))
             if column:
                 referenced.append(column)
+                mapped_property = mapped.get("property")
+                if isinstance(mapped_property, str) and mapped_property:
+                    field_outputs[column] = _emitted_column_for(mapped_property)
 
         authored: set[tuple[str, str]] = set()
         for relationship in data.get("relationships") or []:
@@ -306,6 +346,7 @@ def index_bindings(bindings_dir: Path) -> tuple[BoundEntity, ...]:
                 source_key=source_key,
                 technical_outputs=technical_outputs,
                 technical_types=technical_types,
+                field_outputs=field_outputs,
                 referenced_columns=tuple(dict.fromkeys(referenced)),
                 relationship_count=len(data.get("relationships") or []),
                 authored_relationships=frozenset(authored),
@@ -787,6 +828,20 @@ def build_relationship_proposals(
                 local, foreign, resolved, join_evidence = _match_join(
                     child, parent, fk_evidence
                 )
+                # _match_join works in the parent's *source* columns, because that is what
+                # the evidence is expressed in. What the join has to name is the column the
+                # parent actually emits.
+                if resolved:
+                    foreign_output, _ = parent.output_column_for(foreign)
+                    if foreign_output == SENTINEL_JOIN_COLUMN:
+                        # Matched a parent key the parent does not carry into Silver. There
+                        # is no column to join to, so this is not a resolved join.
+                        resolved = False
+                        join_evidence = (
+                            f"{join_evidence}; but the parent does not emit {foreign}"
+                        )
+                else:
+                    foreign_output = foreign
                 proposals.append(
                     RelationshipProposal(
                         child_binding=child.name,
@@ -802,9 +857,11 @@ def build_relationship_proposals(
                         evidence_id=evidence_id,
                         endpoint_match=endpoint_match,
                         local_column=local,
-                        foreign_column=foreign,
+                        foreign_column=foreign_output,
                         join_resolved=resolved,
-                        external_reference=_external_reference(child, parent, foreign),
+                        external_reference=_external_reference(
+                            child, parent, foreign if resolved else SENTINEL_JOIN_COLUMN
+                        ),
                         join_evidence=join_evidence,
                         join_candidates=(
                             () if resolved else child.relationship_columns
