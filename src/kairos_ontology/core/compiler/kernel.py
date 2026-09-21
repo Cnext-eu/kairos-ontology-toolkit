@@ -2052,48 +2052,40 @@ def _wire_relationships(
                     )
                 )
                 continue
-            if external is None and len(relationship.on) != 1:
-                # Defensive: _relationship_diagnostics already rejects a composite
-                # (non-external) join as "safety.adapter-unsupported" before this binding
-                # is admitted here.
-                diagnostics.append(
-                    CompileDiagnostic(
-                        code="safety.adapter-unsupported",
-                        message=(
-                            f"relationship '{relationship.property}' on binding "
-                            f"'{binding.name}' was dropped during wiring: composite "
-                            "relationship joins are deferred beyond the v5 first slice"
-                        ),
-                        location=SourceLocation(path=binding.source_path, pointer=pointer),
-                    )
-                )
-                continue
             if external is None:
-                join = relationship.on[0]
                 assert target_binding is not None
-                target_columns = (
-                    _relationship_output_column(target_binding, join.foreign, context),
+                # Every join column, not just the first. A same-domain relationship may be
+                # composite for the same reason a cross-domain one may: the parent's
+                # natural key is composite. Downstream is already general -- JoinSpec
+                # carries a source column per entry in `relationship.on`, and the renderer
+                # zips those against `target_columns` strictly (#810).
+                resolved = tuple(
+                    (index, item, _relationship_output_column(target_binding, item.foreign, context))
+                    for index, item in enumerate(relationship.on)
                 )
-                if target_columns[0] is None:
+                unmapped = [(index, item) for index, item, column in resolved if column is None]
+                if unmapped:
                     # Defensive: _relationship_diagnostics already rejects a foreign join
                     # column the target binding doesn't map to exactly one output column
                     # as "safety.relationship-endpoint" before this binding is admitted
                     # here.
+                    index, item = unmapped[0]
                     diagnostics.append(
                         CompileDiagnostic(
                             code="safety.relationship-endpoint",
                             message=(
                                 f"relationship '{relationship.property}' on binding "
                                 f"'{binding.name}' was dropped during wiring: join "
-                                f"column '{join.foreign}' is not mapped by the target "
+                                f"column '{item.foreign}' is not mapped by the target "
                                 "binding"
                             ),
                             location=SourceLocation(
-                                path=binding.source_path, pointer=f"{pointer}/join/0"
+                                path=binding.source_path, pointer=f"{pointer}/join/{index}"
                             ),
                         )
                     )
                     continue
+                target_columns = tuple(column for _index, _item, column in resolved)
                 target_model = target_class.name.lower()
                 description = f"Surrogate reference to {target_class.name}"
             else:
@@ -3308,15 +3300,6 @@ def _relationship_diagnostics(
                     location=SourceLocation(
                         path=binding.source_path, pointer=f"{pointer}/ambiguousParent"
                     ),
-                )
-            )
-            continue
-        if external is None and len(relationship.on) != 1:
-            diagnostics.append(
-                CompileDiagnostic(
-                    code="safety.adapter-unsupported",
-                    message="composite relationship joins are deferred beyond the v5 first slice",
-                    location=SourceLocation(path=binding.source_path, pointer=f"{pointer}/join"),
                 )
             )
             continue

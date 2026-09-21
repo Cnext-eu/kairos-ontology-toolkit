@@ -111,11 +111,13 @@ def test_wire_relationships_reports_unresolved_endpoint(tmp_path: Path) -> None:
     assert any(item.code == "safety.relationship-endpoint" for item in diagnostics), diagnostics
 
 
-def test_wire_relationships_reports_composite_join(tmp_path: Path) -> None:
-    """Defensive drop #3: a composite (non-external) join is authored.
+def test_wire_relationships_wires_a_composite_same_domain_join(tmp_path: Path) -> None:
+    """A composite same-domain join wires, rather than being dropped as unsupported (#810).
 
-    Unreachable via ``compile_domain`` today -- ``_relationship_diagnostics`` already
-    rejects a composite join and blocks the whole binding pre-wiring.
+    The cross-domain shape always accepted one -- ``externalReference.key`` is a list --
+    and everything downstream is general: ``JoinSpec`` carries a source column per entry
+    in ``relationship.on`` and the renderer zips those against ``target_columns``
+    strictly. Only the same-domain branch truncated to ``on[0]``.
     """
     hub = _hub(tmp_path)
     context, bindings, bounds, customer = _customer_and_bounds(hub)
@@ -128,9 +130,20 @@ def test_wire_relationships_reports_composite_join(tmp_path: Path) -> None:
         composite if binding.name == "crm-customer" else binding for binding in bindings
     )
 
-    _, diagnostics = kernel_module._wire_relationships(bounds, mutated_bindings, context, hub)
+    wired, diagnostics = kernel_module._wire_relationships(
+        bounds, mutated_bindings, context, hub
+    )
 
-    assert any(item.code == "safety.adapter-unsupported" for item in diagnostics), diagnostics
+    assert not [item for item in diagnostics if item.code == "safety.adapter-unsupported"]
+    joins = [
+        join
+        for bound in wired
+        for candidate in bound.silver_candidates
+        for join in candidate.joins
+    ]
+    assert joins, "the relationship was dropped instead of wired"
+    assert len(joins[0].target_columns) == 2, joins[0].target_columns
+    assert len(joins[0].source_column_uris) == 2, joins[0].source_column_uris
 
 
 def test_wire_relationships_reports_unmapped_foreign_column(tmp_path: Path) -> None:
