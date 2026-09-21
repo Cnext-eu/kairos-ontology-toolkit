@@ -243,12 +243,19 @@ class BoundEntity:
     def output_column_for(self, source_column: str) -> tuple[str, str]:
         """Return (output column, canonical type) for a parent key column.
 
-        The *output* column, not the source one. ``join.foreign`` is emitted verbatim as
-        the parent model's column -- ``on src.<local> = <parent>.<foreign>`` -- and a
-        parent that carries its key through ``fields:`` renames it on the way: a source
-        ``ACCOUNT_REF`` mapped to ``partyId`` reaches Silver as ``party_id``. Proposing
-        the source name produced SQL joining on a column the parent model does not have,
-        which compiled clean, emitted, and would fail only at dbt run time (#928).
+        The *output* column, not the source one: a parent that carries its key through
+        ``fields:`` renames it on the way, so a source ``ACCOUNT_REF`` mapped to
+        ``partyId`` reaches Silver as ``party_id``.
+
+        Two callers need that name. A cross-domain proposal needs it twice over -- the
+        ``externalReference`` key names the parent's *output* column, and ``join.foreign``
+        must equal that key exactly, so both are this value (#928). Every proposal,
+        cross-domain or not, needs it as an existence check: a parent key that reaches no
+        output column at all is unjoinable whichever shape the join takes.
+
+        It is deliberately **not** what a same-domain ``join.foreign`` names -- see
+        :func:`build_relationship_proposals`, where the compiler resolves that against the
+        parent's *source* columns and translates it itself.
 
         Returns the sentinel when the parent exposes the column under no name at all.
         That is the honest answer -- there is nothing to join to -- and it replaces a
@@ -534,6 +541,10 @@ class RelationshipProposal:
     #: two endpoints matched differently the weaker kind is reported.
     endpoint_match: str
     local_column: str
+    #: The parent-side join column, in whichever namespace that proposal's join shape
+    #: requires: the parent's *source* column same-domain (the compiler resolves it there
+    #: and the emitter translates), its *output* column cross-domain (where it must equal
+    #: the ``externalReference`` key). See :func:`build_relationship_proposals`.
     foreign_column: str
     #: True when the join columns were matched deterministically rather than sentinelled.
     join_resolved: bool
@@ -1140,8 +1151,26 @@ def build_relationship_proposals(
                     child, parent, fk_evidence
                 )
                 # _match_join works in the parent's *source* columns, because that is what
-                # the evidence is expressed in. What the join has to name is the column the
-                # parent actually emits.
+                # the evidence is expressed in. Which of the parent's two names
+                # ``join.foreign`` must then carry depends on the join shape, and the
+                # compiler enforces a different rule for each:
+                #
+                # * same-domain (no ``externalReference``) -- the parent is compiled in
+                #   scope, so ``kernel._relationship_diagnostics`` resolves ``join.foreign``
+                #   against the parent's *source* relation columns and rejects anything
+                #   else with ``safety.column-unresolved: relationship foreign column '...'
+                #   does not resolve``. The emitter then translates it to the output column
+                #   itself (``kernel._relationship_output_column``). So the parent's source
+                #   column is the only accepted value here.
+                # * cross-domain (``externalReference``) -- the parent is a declared
+                #   contract, not a compiled peer. ``join.foreign`` must equal the declared
+                #   key exactly, that key names the parent's *output* column, and the
+                #   emitter uses it verbatim as the parent model's column (#928).
+                #
+                # Both shapes still require the parent to carry the key into Silver at all,
+                # which is what the sentinel check below asks. A source column that reaches
+                # no output column is unjoinable either way.
+                foreign_column = foreign
                 if resolved:
                     foreign_output, _ = parent.output_column_for(foreign)
                     if foreign_output == SENTINEL_JOIN_COLUMN:
@@ -1151,8 +1180,9 @@ def build_relationship_proposals(
                         join_evidence = (
                             f"{join_evidence}; but the parent does not emit {foreign}"
                         )
-                else:
-                    foreign_output = foreign
+                        foreign_column = SENTINEL_JOIN_COLUMN
+                    elif child.domain != parent.domain:
+                        foreign_column = foreign_output
                 reverse = (
                     None
                     if resolved
@@ -1175,7 +1205,7 @@ def build_relationship_proposals(
                         evidence_id=evidence_id,
                         endpoint_match=endpoint_match,
                         local_column=local,
-                        foreign_column=foreign_output,
+                        foreign_column=foreign_column,
                         join_resolved=resolved,
                         external_reference=_external_reference(
                             child, parent, foreign if resolved else SENTINEL_JOIN_COLUMN

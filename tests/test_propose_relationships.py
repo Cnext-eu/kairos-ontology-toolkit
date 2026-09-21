@@ -172,11 +172,14 @@ class TestProposals:
     def test_join_columns_are_matched_deterministically(self, hub):
         """local names the child's source column, foreign the column the parent emits.
 
-        The asymmetry is the emitted SQL's: the child side reads from the raw source CTE
-        (``src.<local>``) while the parent side reads from the built model
-        (``ref(parent).<foreign>``). Naming the parent's *source* column here produced a
-        join against a column the parent model does not have -- it compiled, emitted, and
-        would fail only when dbt ran (#928).
+        This fixture is cross-domain, which is the case where ``join.foreign`` really is
+        the parent's *output* column: it has to equal the ``externalReference`` key, and
+        the emitter uses it verbatim as the parent model's column. Naming the parent's
+        source column here produced a join against a column the parent model does not have
+        -- it compiled, emitted, and would fail only when dbt ran (#928).
+
+        A same-domain join is the other way round; see
+        ``TestTheJoinNamesTheColumnTheCompilerResolves``.
         """
         proposal = _report(hub).proposals[0]
         assert proposal.join_resolved is True
@@ -690,6 +693,131 @@ class TestTheJoinNamesTheColumnTheParentEmits:
             assert (
                 proposal.external_reference["key"][0]["column"] == proposal.foreign_column
             )
+
+
+class TestTheJoinNamesTheColumnTheCompilerResolves:
+    """#928 follow-up -- "always the output column" is right for only one of two shapes.
+
+    The output-column rule was applied to every proposal, and it is the compiler's rule
+    for exactly the cross-domain ones. ``kernel._relationship_diagnostics`` splits on
+    ``externalReference``:
+
+    * no ``externalReference`` (same domain) -- the parent is compiled in scope, so
+      ``join.foreign`` is resolved against the parent's **source** relation columns and
+      anything else is rejected with ``safety.column-unresolved: relationship foreign
+      column '...' does not resolve``. ``kernel._relationship_output_column`` then does the
+      rename itself when the join is emitted.
+    * with ``externalReference`` (cross domain) -- the parent is a declared contract, not a
+      compiled peer. ``join.foreign`` must equal the declared key exactly, that key names
+      the parent's **output** column, and the emitter uses it verbatim.
+
+    Verified against a real hub: a same-domain relationship authored on the parent's
+    output column failed to compile with that exact diagnostic, and the same relationship
+    authored on the parent's source column compiled and emitted
+    ``on src.party_number = transportparty.party_id`` -- the translation the proposal is
+    not supposed to do. The live symptom was a same-domain ``withinTerminal`` proposed
+    with ``foreign: internal_location_id`` where only ``locid`` compiles.
+    """
+
+    def _hub(self, tmp_path, parent_domain, key_property="cons:consignmentReference"):
+        """A hub whose parent renames its key, in *parent_domain*.
+
+        The child is always in ``booking``, so passing ``"booking"`` makes the pair
+        same-domain and anything else makes it cross-domain. Only that one metadata field
+        differs between the two cases, which is the point: the join columns, the source
+        relations and the bridge are identical, so a difference in the proposal can only
+        come from the domain discriminator.
+        """
+        hub_root = tmp_path / "hub"
+        bindings = hub_root / "integration" / "bindings"
+        bindings.mkdir(parents=True)
+        (hub_root / "model" / "ontologies").mkdir(parents=True)
+        (hub_root / "kairos.yaml").write_text("adapter: fabric\n", encoding="utf-8")
+        (bindings / "bookings.binding.yaml").write_text(
+            _binding(
+                "bookings", "booking", _BOOKING_CLASS, "booking_id",
+                "technicalFields:\n"
+                "  - name: consignment_id\n"
+                "    expression: consignment_id\n"
+                "    type: string\n"
+                "    nullable: false\n"
+                "    purpose: relationship\n",
+            ),
+            encoding="utf-8",
+        )
+        (bindings / "consignments.binding.yaml").write_text(
+            _binding(
+                "consignments", parent_domain, _CONSIGNMENT_CLASS, "consignment_id",
+                key_property=key_property,
+            ),
+            encoding="utf-8",
+        )
+        blueprint = (
+            tmp_path / "ontology-reference-models" / "accelerator-packs" / "logistics"
+            / "client-hub-blueprint"
+        )
+        blueprint.mkdir(parents=True)
+        (blueprint / "data-domains.yaml").write_text(_DATA_DOMAINS_YAML, encoding="utf-8")
+        return hub_root
+
+    def test_a_same_domain_join_names_the_parents_source_column(self, tmp_path):
+        """The parent renames ``consignment_id`` to ``consignment_reference``; ignore that.
+
+        In scope the compiler looks ``join.foreign`` up in the parent's source relation,
+        where only ``consignment_id`` exists, and translates it to the emitted name on its
+        own. Proposing ``consignment_reference`` -- the emitted name -- names a column the
+        parent's *source* does not have, so the paste fails compile outright rather than
+        at dbt run time.
+        """
+        proposal = _report(self._hub(tmp_path, "booking")).proposals[0]
+        assert proposal.join_resolved is True
+        assert proposal.local_column == "consignment_id"
+        assert proposal.foreign_column == "consignment_id"
+        assert proposal.external_reference is None, "same-domain refs are rejected (#335)"
+
+    def test_a_cross_domain_join_names_the_parents_output_column(self, tmp_path):
+        """The same parent, one domain apart, and now the rename is exactly what matters.
+
+        Nothing resolves ``join.foreign`` against the parent's source here -- the parent
+        is out of scope -- so the only contract is that it equals the ``externalReference``
+        key, which names the parent's output column and is used verbatim as the parent
+        model's column.
+        """
+        proposal = _report(self._hub(tmp_path, "consignment")).proposals[0]
+        assert proposal.join_resolved is True
+        assert proposal.local_column == "consignment_id"
+        assert proposal.foreign_column == "consignment_reference"
+        assert proposal.external_reference["key"] == [
+            {"column": "consignment_reference", "type": "<CONFIRM_KEY_TYPE>"}
+        ]
+        assert proposal.external_reference["key"][0]["column"] == proposal.foreign_column
+
+    def test_the_rendered_yaml_carries_the_shapes_own_column(self, tmp_path):
+        """What a human pastes, since that is the only artifact that reaches a hub."""
+        same = _report(self._hub(tmp_path / "same", "booking")).proposals[0]
+        cross = _report(self._hub(tmp_path / "cross", "consignment")).proposals[0]
+        assert "foreign: consignment_id" in same.to_yaml()
+        assert "externalReference" not in same.to_yaml()
+        assert "foreign: consignment_reference" in cross.to_yaml()
+
+    @pytest.mark.parametrize("parent_domain", ["booking", "consignment"])
+    def test_a_parent_that_does_not_emit_its_key_is_unjoinable_either_way(
+        self, tmp_path, parent_domain
+    ):
+        """Neither shape can join a source column that never reaches Silver.
+
+        The same-domain rule is "name the source column", not "the source column is always
+        fine": the compiler resolves ``join.foreign`` in the parent's source *and* the
+        emitter has to translate it, and a key carried by no field and no technical field
+        translates to nothing. So the existence check survives the split, and the sentinel
+        is still the honest answer on both sides.
+        """
+        hub = self._hub(tmp_path / parent_domain, parent_domain, key_property="")
+        proposal = _report(hub).proposals[0]
+        assert proposal.join_resolved is False
+        assert proposal.foreign_column == SENTINEL_JOIN_COLUMN
+        assert "does not emit consignment_id" in proposal.join_evidence
+
 
 def _proposal(prop: str, *, local="account_ref", foreign="party_id", child="bookings",
               parent="parties") -> RelationshipProposal:
