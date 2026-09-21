@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 import re
 from dataclasses import dataclass, replace
+from functools import lru_cache
 
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
@@ -174,18 +175,49 @@ def _namespace_local(uri: str) -> tuple[str, str]:
     return (f"{namespace}/" if namespace else "", local)
 
 
-def _declared_prefixes(source_path: str) -> dict[str, tuple[str, ...]]:
-    """Return explicitly authored Turtle prefixes from one source file."""
-    if not source_path:
-        return {}
-    path = Path(source_path)
-    if not path.is_file() or path.suffix.lower() not in {".ttl", ".turtle"}:
-        return {}
-    text = path.read_text(encoding="utf-8")
+@lru_cache(maxsize=512)
+def _read_declared_prefixes(source_path: str, _identity: tuple[int, int]) -> tuple[
+    tuple[str, tuple[str, ...]], ...
+]:
+    """Parse one Turtle file's ``@prefix`` declarations. Cached on file identity.
+
+    *_identity* is ``(mtime_ns, size)``, unused in the body and present only as part of
+    the cache key: a file rewritten in the same process produces a different key and is
+    re-read, so the cache cannot serve a stale answer to a test or a long-lived process.
+    The ``stat`` that produces it is work the caller already did to check the file exists.
+
+    Returns a tuple of pairs rather than a dict because a cached value must not be
+    mutable -- a caller that edited a returned dict would corrupt every later hit.
+    """
+    text = Path(source_path).read_text(encoding="utf-8")
     prefixes: dict[str, list[str]] = {}
     for match in _PREFIX_DECLARATION.finditer(text):
         prefixes.setdefault(match.group(1), []).append(match.group(2))
-    return {prefix: tuple(namespaces) for prefix, namespaces in prefixes.items()}
+    return tuple((prefix, tuple(namespaces)) for prefix, namespaces in prefixes.items())
+
+
+def _declared_prefixes(source_path: str) -> dict[str, tuple[str, ...]]:
+    """Return explicitly authored Turtle prefixes from one source file.
+
+    Pure in its path, and hot: one domain's plan build called this 13,464 times against
+    36 distinct files -- each call a stat, a full read and a regex scan of the whole file,
+    over the vendored reference-model corpus. That was ~3.7s of self time in an 11.4s
+    build, the largest single entry in the profile. Caching the parse took the same build
+    from 8.6s to 2.0s (#944).
+
+    The stat stays on every call. It is what makes the cache safe, and it is cheap next to
+    the read it guards.
+    """
+    if not source_path:
+        return {}
+    path = Path(source_path)
+    if path.suffix.lower() not in {".ttl", ".turtle"}:
+        return {}
+    try:
+        stat = path.stat()
+    except OSError:  # missing, or not readable -- same answer as the old is_file() guard
+        return {}
+    return dict(_read_declared_prefixes(source_path, (stat.st_mtime_ns, stat.st_size)))
 
 
 def _ambiguous_imported_prefix_origins(
@@ -363,12 +395,23 @@ def _prefix_alternatives(loaded, root_path: Path) -> dict[str, tuple[str, ...]]:
     return result
 
 
-def _compute_declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple[str, ...]:
-    """Implementation shared by the private and public aliases (issue #445)."""
+def _compute_declared_prefix_aliases(
+    loaded, root_path: Path, uri: str, bindings: dict[str, str] | None = None
+) -> tuple[str, ...]:
+    """Implementation shared by the private and public aliases (issue #445).
+
+    *bindings* lets a caller labelling several URIs against one closure build the
+    prefix map once. It is loop-invariant here -- only the namespace comparison below
+    uses *uri* -- and building it walks every source file in the closure, so rebuilding
+    it per URI made this the hottest path in a plan build: 370 owners against 36 sources
+    was 13,320 of 13,464 file reads (#944).
+    """
     namespace, local = _namespace_local(uri)
+    if bindings is None:
+        bindings = _safe_prefix_bindings(loaded, root_path)
     aliases = {
         f"{prefix}:{local}" if prefix else f":{local}"
-        for prefix, declared_namespace in _safe_prefix_bindings(loaded, root_path).items()
+        for prefix, declared_namespace in bindings.items()
         if declared_namespace == namespace
     }
     return tuple(sorted(aliases))

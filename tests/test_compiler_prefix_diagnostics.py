@@ -5,10 +5,17 @@ ambiguity is a non-fatal warning that lists candidate ``@prefix`` declarations."
 
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 from types import SimpleNamespace
 
-from kairos_ontology.core.compiler.kernel import _prefix_alternatives, _prefix_diagnostics
+from kairos_ontology.core.compiler.kernel import (
+    _declared_prefixes,
+    _prefix_alternatives,
+    _prefix_diagnostics,
+    _read_declared_prefixes,
+)
 from kairos_ontology.core.compiler.result import DiagnosticSeverity
 
 
@@ -119,3 +126,48 @@ def test_prefix_alternatives_is_empty_when_no_safe_alternative_exists(tmp_path):
     loaded = _loaded(root, tmp_path / "a.ttl", tmp_path / "b.ttl")
 
     assert _prefix_alternatives(loaded, root) == {}
+
+class TestDeclaredPrefixesIsCached:
+    """#944 -- one domain's plan build called this 13,464 times against 36 files.
+
+    Each call stat'd, read and regex-scanned a whole Turtle file, over the vendored
+    reference-model corpus: ~3.7s of self time in an 11.4s build, the largest single entry
+    in the profile. Caching the parse took the same build from 8.6s to 2.0s.
+    """
+
+    def test_a_second_read_of_the_same_file_does_not_reparse(self, tmp_path):
+        path = _write(tmp_path / "a.ttl", "@prefix ex: <https://ex.test/a#> .\n")
+        _read_declared_prefixes.cache_clear()
+        assert _declared_prefixes(str(path)) == {"ex": ("https://ex.test/a#",)}
+        after_first = _read_declared_prefixes.cache_info()
+        assert _declared_prefixes(str(path)) == {"ex": ("https://ex.test/a#",)}
+        after_second = _read_declared_prefixes.cache_info()
+        assert after_second.misses == after_first.misses, "the file was read twice"
+        assert after_second.hits == after_first.hits + 1
+
+    def test_a_rewritten_file_is_reread(self, tmp_path):
+        """The stat stays on every call, which is what makes the cache safe.
+
+        Keying on the path alone would serve a stale answer here -- to a test that edits a
+        fixture, or to any process that outlives one CLI invocation.
+        """
+        path = _write(tmp_path / "b.ttl", "@prefix ex: <https://ex.test/one#> .\n")
+        _read_declared_prefixes.cache_clear()
+        assert _declared_prefixes(str(path)) == {"ex": ("https://ex.test/one#",)}
+        os.utime(path, (0, 0))  # force a distinct mtime regardless of clock resolution
+        _write(path, "@prefix ex: <https://ex.test/two#> .\n")
+        assert _declared_prefixes(str(path)) == {"ex": ("https://ex.test/two#",)}
+
+    def test_the_returned_mapping_is_safe_to_mutate(self, tmp_path):
+        """A caller editing the result must not corrupt every later cache hit."""
+        path = _write(tmp_path / "c.ttl", "@prefix ex: <https://ex.test/c#> .\n")
+        _read_declared_prefixes.cache_clear()
+        first = _declared_prefixes(str(path))
+        first["injected"] = ("https://ex.test/injected#",)
+        assert _declared_prefixes(str(path)) == {"ex": ("https://ex.test/c#",)}
+
+    def test_a_missing_or_non_turtle_path_is_still_empty(self, tmp_path):
+        """Unchanged behaviour: the old guard was is_file() plus a suffix check."""
+        assert _declared_prefixes("") == {}
+        assert _declared_prefixes(str(tmp_path / "absent.ttl")) == {}
+        assert _declared_prefixes(str(_write(tmp_path / "d.txt", "@prefix ex: <x> ."))) == {}
