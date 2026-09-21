@@ -217,8 +217,31 @@ def load_source_tables(sources_dir: Path) -> dict[tuple[str, str], int]:
     return tables
 
 
-def load_bound_relations(bindings_dir: Path) -> set[tuple[str, str]]:
-    """Return ``{(system, table)}`` for every relation an EntityBinding already maps."""
+def load_bound_relations(bindings_dir: Path, hub_root: Path) -> set[tuple[str, str]]:
+    """Return ``{(system, table)}`` for every source table an EntityBinding already maps.
+
+    Two authored forms bind a table and both count (#939). ``source.relation`` names one
+    relation outright. ``source.dbtModel`` -- DD-133 §3d's mechanism for a binding whose
+    grain needs relational work first -- names a contracted model, and every source table
+    that model's SQL reads is read, mapped and emitted to Silver just as directly. Seeing
+    only the first form, this audit reported those tables as undecided, and the only ways
+    to silence it were a ledger row the ledger's own documentation calls unnecessary
+    ("authoring the binding is what states it") or one it calls redundant. It also cost
+    the #925 ``bound-and-ruled-out`` conflict, computed from this same set: a
+    ``dbtModel``-bound table that was *also* ruled out read as merely unbound.
+
+    Model SQL is scanned with the compiler's :func:`extract_source_pairs`, the single
+    extraction authority, so this audit can never disagree with the two closure walks
+    about which sources a model reads. Only the selected model is scanned, not its
+    transitive ``ref()`` closure: resolving that needs a parsed ``EntityBinding`` and
+    raises on the first defect, which is the compiler's job, not an advisory audit's. A
+    source table reached only through an upstream ``ref()``ed model is therefore still
+    reported undecided.
+
+    *hub_root* resolves the binding's repository-relative ``sqlPath``. An unreadable path
+    is skipped rather than raised on, matching this function's existing posture toward a
+    malformed binding.
+    """
     bound: set[tuple[str, str]] = set()
     if not bindings_dir.is_dir():
         return bound
@@ -229,12 +252,35 @@ def load_bound_relations(bindings_dir: Path) -> set[tuple[str, str]]:
             continue
         if not isinstance(payload, dict):
             continue
-        relation = ((payload.get("source") or {}) or {}).get("relation")
-        if not isinstance(relation, str) or "." not in relation:
-            continue
-        system, _, table = relation.partition(".")
-        bound.add((system.strip(), table.strip()))
+        raw_source = payload.get("source")
+        source: dict[str, Any] = raw_source if isinstance(raw_source, dict) else {}
+        relation = source.get("relation")
+        if isinstance(relation, str) and "." in relation:
+            system, _, table = relation.partition(".")
+            bound.add((system.strip(), table.strip()))
+        bound |= _dbt_model_source_pairs(source, hub_root)
     return bound
+
+
+def _dbt_model_source_pairs(source: dict[str, Any], hub_root: Path) -> set[tuple[str, str]]:
+    """Return the source tables a ``source.dbtModel`` binding's own SQL reads.
+
+    Split out so the two authored source forms read as the independent alternatives they
+    are, and so the compiler import stays local: ``source_disposition`` is imported by
+    ``validate`` and by hub inspection, neither of which should pull in the compiler to
+    read a ledger.
+    """
+    from .compiler.dbt_source import extract_source_pairs
+
+    model = source.get("dbtModel")
+    sql_path = model.get("sqlPath") if isinstance(model, dict) else None
+    if not isinstance(sql_path, str) or not sql_path.strip():
+        return set()
+    try:
+        text = (Path(hub_root) / sql_path).read_text(encoding="utf-8")
+    except Exception:  # defensive: an unresolvable sqlPath is the compiler's problem
+        return set()
+    return set(extract_source_pairs(text))
 
 
 def load_dispositions(hub_root: Path) -> dict[tuple[str, str], dict[str, Any]]:
@@ -275,7 +321,7 @@ def audit_source_dispositions(
         )
         return report
 
-    bound = load_bound_relations(hub_root / "integration" / "bindings")
+    bound = load_bound_relations(hub_root / "integration" / "bindings", hub_root)
     recorded = load_dispositions(hub_root)
 
     for (system, table), row_count in sorted(tables.items()):
