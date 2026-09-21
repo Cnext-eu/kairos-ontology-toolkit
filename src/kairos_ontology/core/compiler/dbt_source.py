@@ -47,7 +47,9 @@ _SOURCE_KW_TABLE_FIRST_RE = re.compile(
 )
 #: Every ``source(`` call site, whatever its argument shape. ``\b`` deliberately does not
 #: match a macro whose name merely ends in ``source`` (``my_source(``, ``foo_source(``):
-#: ``_`` is a word character, so there is no boundary before ``source`` there.
+#: ``_`` is a word character, so there is no boundary before ``source`` there. Counted
+#: against SQL-comment-stripped text (see :func:`strip_sql_comments`), because prose that
+#: merely *names* the function is not a call site.
 _SOURCE_CALL_RE = re.compile(r"\bsource\s*\(")
 _JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.DOTALL)
 _TRANSFORMS_PARTS = ("integration", "transforms", "dbt")
@@ -69,6 +71,55 @@ def strip_jinja_comments(text: str) -> str:
     never create a phantom dependency or a false blocking source diagnostic.
     """
     return _JINJA_COMMENT_RE.sub("", text)
+
+
+def strip_sql_comments(text: str) -> str:
+    """Remove ``-- ...`` line comments and ``/* ... */`` blocks, sparing string literals.
+
+    Used **only** to count ``source(`` call sites, never to extract pairs (#939). The
+    distinction is not fussiness: dbt renders Jinja before SQL is parsed, so a
+    ``{{ source('a', 'b') }}`` written inside a SQL comment still registers a real node
+    dependency, and dropping it from :func:`extract_sources`' pairs would emit a project
+    whose source is undeclared -- exactly the failure #584 fails closed on. Dropping it
+    from the *count* only ever costs a diagnostic.
+
+    That asymmetry is what makes a hand-written scanner safe here. It tracks ``'`` and
+    ``"`` so a literal containing ``--`` (``where code = 'A--B'``) is not truncated, and
+    skips ``/* ... */`` so an apostrophe in prose (``/* don't */``) cannot leave it
+    believing the rest of the file is a string. It does not model backslash escapes or
+    dialect-specific dollar quoting; on text they would mis-scan, the worst outcome is a
+    call site that goes uncounted, which is the same direction of failure as the bug this
+    replaces -- fail open, never a false ``dbt-source.source-unparsed``.
+    """
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    quote: str | None = None
+    while index < length:
+        char = text[index]
+        if quote is not None:
+            # Doubled quotes ('' inside '...') need no special case: the first closes the
+            # literal and the second immediately reopens it, which lands on the same state.
+            out.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+        elif char in "'\"":
+            quote = char
+            out.append(char)
+            index += 1
+        elif text.startswith("--", index):
+            newline = text.find("\n", index)
+            if newline < 0:
+                break
+            index = newline  # the newline itself survives, so line structure is kept
+        elif text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
 
 
 def extract_refs(text: str) -> frozenset[str]:
@@ -107,6 +158,14 @@ def extract_sources(text: str) -> SourceExtraction:
     compile-time diagnostic at all. Callers turn a non-zero count into
     ``dbt-source.source-unparsed``. Counting matched *spans* (not deduplicated pairs)
     keeps a file that legitimately repeats one identical call from looking unparsed.
+
+    Call sites are counted against text with SQL comments stripped as well (#939). A
+    line comment that names the function -- ``-- the two source() calls are written out
+    rather than generated`` -- used to count as one unreadable call site, so a model
+    whose calls were all literal and all resolved was rejected with a message that named
+    a defect it did not have and a fix its author could not apply. Pairs are still
+    extracted from Jinja-stripped text only; :func:`strip_sql_comments` explains why the
+    two must differ.
     """
     rendered = strip_jinja_comments(text)
     pairs = {(match.group(1), match.group(2)) for match in SOURCE_RE.finditer(rendered)}
@@ -117,7 +176,7 @@ def extract_sources(text: str) -> SourceExtraction:
     for match in _SOURCE_KW_TABLE_FIRST_RE.finditer(rendered):
         pairs.add((match.group(2), match.group(1)))
         matched += 1
-    call_sites = len(_SOURCE_CALL_RE.findall(rendered))
+    call_sites = len(_SOURCE_CALL_RE.findall(strip_sql_comments(rendered)))
     return SourceExtraction(frozenset(pairs), max(call_sites - matched, 0))
 
 

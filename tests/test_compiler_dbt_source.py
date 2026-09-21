@@ -480,6 +480,9 @@ def test_unreadable_source_call_fails_closed(tmp_path: Path, sql: str) -> None:
         "select * from {{ my_source('crm', anything) }} join {{ source('crm', 'customers') }}",
         # An unreadable call inside a Jinja comment is not a call site either.
         "{# {{ source(var('x'), 'y') }} #}\nselect * from {{ source('crm', 'customers') }}",
+        # #939: nor is a SQL line comment that merely names the function in prose.
+        "-- The two source() calls are written out rather than generated.\n"
+        "select * from {{ source('crm', 'customers') }}",
         # The same identical call twice must not look like one unparsed call.
         "select * from {{ source('crm', 'customers') }} "
         "union all select * from {{ source('crm', 'customers') }}",
@@ -506,6 +509,69 @@ def test_extract_sources_counts_unreadable_call_sites() -> None:
 
     assert extraction.pairs == frozenset({("crm", "customers")})
     assert extraction.unparsed == 1
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # The comment that provoked #939, on a model whose two calls both resolved.
+        "-- The two source() calls are written out rather than generated.\n"
+        "select * from {{ source('crm', 'customers') }}",
+        # Trailing on a line of real SQL, and with no newline after it.
+        "select * from {{ source('crm', 'customers') }} -- a second source() would go here",
+        # A block comment mentioning it, apostrophe and all: the apostrophe must not be
+        # read as opening a string literal that swallows the rest of the file.
+        "/* don't add a source() call here */\nselect * from {{ source('crm', 'customers') }}",
+    ],
+)
+def test_source_named_in_a_sql_comment_is_not_an_unparsed_call(sql: str) -> None:
+    """#939: prose that names the function is not a call site with unreadable arguments.
+
+    Only Jinja comments were stripped before counting, so a comment saying the word
+    `source(` was counted as a call whose arguments could not be resolved -- rejecting a
+    model whose actual calls were both literal and both resolved, with a message that
+    named a defect the model did not have and a remedy (rewrite the calls) that could not
+    have helped.
+    """
+    from kairos_ontology.core.compiler.dbt_source import extract_sources
+
+    extraction = extract_sources(sql)
+
+    assert extraction.pairs == frozenset({("crm", "customers")})
+    assert extraction.unparsed == 0
+
+
+def test_dashes_inside_a_string_literal_do_not_hide_a_call_site() -> None:
+    """Comment stripping must not truncate a literal and lose the call after it.
+
+    `--` inside a quoted value is data, not a comment. Stripping it naively would blank
+    the rest of that line, taking a genuinely unreadable `source()` call with it and
+    turning #584's fail-closed guarantee into a silent pass.
+    """
+    from kairos_ontology.core.compiler.dbt_source import extract_sources
+
+    extraction = extract_sources(
+        "select * from {{ source('crm', 'customers') }} "
+        "where code = 'A--B' and o = {{ source('crm', table_name='orders') }}"
+    )
+
+    assert extraction.pairs == frozenset({("crm", "customers")})
+    assert extraction.unparsed == 1
+
+
+def test_commented_out_source_call_still_counts_as_a_dependency() -> None:
+    """dbt renders Jinja before SQL is parsed, so a SQL comment is not a Jinja comment.
+
+    `{{ source(...) }}` inside a `--` comment is still a real node dependency in dbt's
+    DAG, which is why #939 strips SQL comments for the call-site *count* only: dropping
+    the pair as well would emit a project whose source was never declared.
+    """
+    from kairos_ontology.core.compiler.dbt_source import extract_sources
+
+    extraction = extract_sources("-- select * from {{ source('crm', 'customers') }}\nselect 1")
+
+    assert extraction.pairs == frozenset({("crm", "customers")})
+    assert extraction.unparsed == 0
 
 
 def test_seed_column_docs_sibling_joins_the_closure(tmp_path: Path) -> None:

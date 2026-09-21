@@ -54,6 +54,41 @@ def _write_binding(hub: Path, system: str, table: str) -> None:
     )
 
 
+def _write_dbt_model_binding(hub: Path, system: str, *tables: str) -> None:
+    """Bind through a contracted dbt model (DD-133 §3d) reading *tables*.
+
+    Only the two fields the audit reads are authored: the model's SQL is what states
+    which source tables the binding covers, and `sqlPath` is how it is found.
+    """
+    sql_relpath = "integration/transforms/dbt/models/intermediate/int_assignment.sql"
+    sql_path = hub / sql_relpath
+    sql_path.parent.mkdir(parents=True, exist_ok=True)
+    sql_path.write_text(
+        "-- The source() calls are written out rather than generated.\n"
+        + " union all ".join(
+            f"select * from {{{{ source('{system}', '{table}') }}}}" for table in tables
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    directory = hub / "integration" / "bindings"
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "apiVersion": "kairos.eu/v5",
+        "kind": "EntityBinding",
+        "metadata": {"name": "assignment", "domain": "party"},
+        "source": {
+            "dbtModel": {
+                "name": "int_assignment",
+                "sqlPath": sql_relpath,
+                "contractPath": "integration/transforms/dbt/models/intermediate/schema.yml",
+            }
+        },
+        "target": {"class": "https://example.com/ont/party#Assignment"},
+    }
+    (directory / "assignment.binding.yaml").write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+
 def test_load_source_tables_reads_table_name_and_row_count(tmp_path: Path) -> None:
     _write_source_table(tmp_path, "qargo", "companies", row_count=2293)
     assert load_source_tables(tmp_path / "integration" / "sources") == {
@@ -81,7 +116,77 @@ def test_toolkit_managed_directories_are_not_source_systems(tmp_path: Path) -> N
 
 def test_load_bound_relations_reads_source_relation(tmp_path: Path) -> None:
     _write_binding(tmp_path, "qargo", "companies")
-    assert load_bound_relations(tmp_path / "integration" / "bindings") == {("qargo", "companies")}
+    assert load_bound_relations(tmp_path / "integration" / "bindings", tmp_path) == {
+        ("qargo", "companies")
+    }
+
+
+def test_load_bound_relations_reads_contracted_dbt_model_sources(tmp_path: Path) -> None:
+    """#939: `source.dbtModel` binds every source table its SQL reads.
+
+    It is the documented mechanism for a binding whose grain needs relational work first,
+    and the tables it reads are mapped and emitted to Silver exactly as a `source.relation`
+    binding's are. Reading only `relation` made them invisible here.
+    """
+    _write_dbt_model_binding(tmp_path, "qargo", "assignments", "standing_orders")
+
+    assert load_bound_relations(tmp_path / "integration" / "bindings", tmp_path) == {
+        ("qargo", "assignments"),
+        ("qargo", "standing_orders"),
+    }
+
+
+def test_dbt_model_binding_with_an_unreadable_sql_path_is_skipped(tmp_path: Path) -> None:
+    """A binding the compiler will reject must not crash the advisory audit.
+
+    Same posture the function already takes toward unparseable YAML: a malformed binding
+    is the compiler's problem, and `validate` still has the rest of the ledger to report.
+    """
+    _write_dbt_model_binding(tmp_path, "qargo", "assignments")
+    (tmp_path / "integration/transforms/dbt/models/intermediate/int_assignment.sql").unlink()
+
+    assert load_bound_relations(tmp_path / "integration" / "bindings", tmp_path) == set()
+
+
+def test_table_bound_through_a_dbt_model_is_not_undecided(tmp_path: Path) -> None:
+    """The whole point of #939: `compile --emit` is clean, so `validate` must be too.
+
+    Both silencing options open to the hub were wrong — a table-grain disposition for a
+    table that *is* bound, which the ledger documents against, or an explicit `bound` row,
+    which it calls redundant and #881 made unwritable.
+    """
+    _write_source_table(tmp_path, "qargo", "assignments", row_count=72633)
+    _write_source_table(tmp_path, "qargo", "standing_orders", row_count=4211)
+    _write_dbt_model_binding(tmp_path, "qargo", "assignments", "standing_orders")
+
+    report = audit_source_dispositions(hub_root=tmp_path)
+
+    assert report.is_blocking is False
+    assert report.tables_bound == 2
+    assert report.coverage() == 1.0
+
+
+def test_dbt_model_bound_table_that_is_also_ruled_out_is_still_a_conflict(
+    tmp_path: Path,
+) -> None:
+    """#925's contradiction is computed from the same set, so it was lost too.
+
+    The binding wins whatever the ledger says — compile reads the bindings directory —
+    so a ruled-out table that a contracted model reads reaches Silver regardless.
+    """
+    _write_source_table(tmp_path, "qargo", "assignments", row_count=72633)
+    _write_dbt_model_binding(tmp_path, "qargo", "assignments")
+    record_disposition(
+        hub_root=tmp_path,
+        system="qargo",
+        table="assignments",
+        disposition="not-business-data",
+        rationale="Believed to be scratch data.",
+    )
+
+    report = audit_source_dispositions(hub_root=tmp_path)
+
+    assert [d.code for d in report.errors] == ["disposition.bound-and-ruled-out"]
 
 
 def test_bound_table_needs_no_disposition(tmp_path: Path) -> None:
