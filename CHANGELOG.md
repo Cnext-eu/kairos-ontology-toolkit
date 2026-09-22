@@ -5,33 +5,46 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.20.0** is the latest GA release (2026-09-20), superseding
-> **5.19.0** (2026-09-20). Where 5.19.0 fixed the plumbing between stages, this release
-> fixes what those stages *decide*: it is the output of taking one clean hub end to end
-> from source import to a validated Silver contract, which 5.19.0 had made possible for
-> the first time.
+> **Release status.** **5.21.0** is the latest GA release (2026-09-22), superseding
+> **5.20.0** (2026-09-20). 5.20.0 fixed what the pipeline's stages *decide*; this release
+> fixes what `propose-relationships` *proposes*. Every relationship finding in it was
+> measured on a real hub, and the command's output changes substantially as a result.
 >
-> **What to expect on the first run after upgrading from 5.19.0.** Three changes alter
-> output you may already have committed. All three are corrections; none needs a flag.
+> **What to expect on the first run after upgrading from 5.20.0.**
 >
 > | you will see | why |
 > |---|---|
-> | **`grain_columns` loses operational columns** on re-anchoring, and regenerated bindings lose the matching identity fields | A system-versioning column in the grain turns *one row per entity* into *one row per entity per version*. Measured: **21 of 39 tables** on one hub carried a row-validity timestamp in their grain, and five bindings had it as part of identity. This is a **Silver grain change** — re-emit deliberately rather than picking it up silently |
-> | **more glossary concepts, and different local names**, on the next `build-glossary` | Concepts were grouped by `linked_iri`, making the IRI the concept's identity. Sixteen party roles sharing one canonical class collapsed into one concept labelled with whichever was processed last; the glossary went **164 → 82 by adding the links the discovery skill asks for**. Grouping is now by label |
-> | **`generate-bindings` skipping tables** it used to write | A table recorded `not-business-data`, `blueprint-gap` or `deferred` no longer has a binding generated. `--force` used to resurrect every table-grain decision a hub had made |
+> | **`generate-bindings` deletes a binding**, naming it as retracted | A table you ruled out in the ledger was skipped on regeneration, but the binding written *before* the ruling stayed on disk — and `compile` globs the directory, so the table still reached Silver with no warning. Retraction is automatic on any run; `--dry-run` reports it first, and an explicit `--table` still regenerates one dispositioned table deliberately |
+> | **`validate` newly fails** with `disposition.bound-and-ruled-out` | The same contradiction, whatever wrote the file. This is an **error**, so a hub carrying a binding for a ruled-out table stops. Delete the binding if the ruling stands, or clear the ledger row if the table is genuinely in scope |
+> | **`validate` stops reporting `disposition.undecided-source-table`** for tables bound through `source.dbtModel` | The audit read only `source.relation`, so a DD-133 §3d binding contributed nothing to the bound set. If you silenced this with a ledger row, remove it — both available workarounds were ones the ledger's own documentation argues against |
+> | **fewer relationship proposals, with different join columns** | See below. Re-run `propose-relationships`; do not paste from a 5.20.0 run |
 >
-> **`anchor-tables` now reports two things it could always have seen.** Replication lanes
-> — a CDC copy of a table plus a watermark, which anchors identically to its twin and
-> reads downstream as a multi-source merge that does not exist (eight pairs on one hub,
-> 21% of anchored tables and 25% of the alignment spend). And grain collapses — two tables
-> with different candidate entities and different key arity on one class, which the
-> `conformance.group-required` gate notices and then asks you to *merge*, the one remedy
-> that must not be applied.
+> **Re-run `propose-relationships` before accepting anything from 5.20.0.** Three of its
+> defects produced proposals that looked derived and were not. Competing proposals are now
+> collapsed: a reference model declaring a generic "has party" alongside consignor,
+> consignee, carrier and notify party matched the same join five times, and accepting them
+> as printed asserted five mutually exclusive roles on one foreign key (nine proposals on
+> one hub were three distinct joins). `join.foreign` now names the column the parent
+> actually emits, cross-domain, and the parent's *source* column, same-domain — 5.20.0 got
+> the first right and thereby broke the second, and a same-domain proposal pasted from it
+> fails `safety.column-unresolved`. Where the command cannot derive an answer it now says
+> so with `<CONFIRM_PROPERTY>` or `<CONFIRM_JOIN_COLUMN>` rather than rendering a
+> plausible guess, and a proposal whose target class the child domain cannot import is
+> flagged instead of failing `compile` on paste.
 >
-> **The whole business glossary now reaches a prompt.** The cap was 120 and broke out of
-> the *file* loop, so a second glossary file could go unread and the survivors were chosen
-> alphabetically. On a hub with 201 authored concepts: **120 → 201 at alignment, 74 → 125
-> at anchoring**. The cap is now `GLOSSARY_PROMPT_LIMIT = 500` and truncation is reported.
+> **`compile <domain>` is roughly 2.5x faster**, and `compile --all` multiplies the saving
+> by the domain count. One domain's plan build read 36 Turtle files 13,464 times; the
+> prefix parse is now cached on file identity.
+>
+> **A same-domain relationship may now join on a composite key**, which the cross-domain
+> shape always could. A hub whose parent entity has a multi-column natural key could not
+> relate to it at all before this.
+>
+> **Upgrading from 5.19.0 or earlier?** 5.20.0's first-run notes still apply on top of the
+> above: re-anchoring drops operational columns from `grain_columns` (a **Silver grain
+> change** — re-emit deliberately), `build-glossary` regroups concepts by label, and
+> `generate-bindings` skips tables recorded `not-business-data`, `blueprint-gap` or
+> `deferred`.
 >
 > Everything recorded under the `5.18.0rc*` headings below shipped as part of 5.18.0 —
 > those are the per-change record of how it was built, not separate releases. The same
@@ -46,6 +59,200 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `--without-anchors` is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.21.0] — 2026-09-22
+
+### Added
+- **`propose-relationships` explains a relationship whose foreign key is on the other
+  side.** When an object property runs container-to-contained — `rdfs:domain` on the
+  container, `rdfs:range` on the contained side — the container becomes the child and
+  there is nothing on it to join with. v5's `cardinality` enum has no `one-to-many`, so
+  such an edge is not mis-cardinalitied but unauthorable on the side proposed; the only
+  correct entry is the inverse property on the key-carrying binding. The command now
+  tries the reverse direction and, when it resolves, names the binding that holds the key,
+  the columns that join, and what stands between that and a usable entry:
+  - no `owl:inverseOf` declared — declare one and re-run;
+  - an inverse declared and usable — author it there, named;
+  - an inverse declared whose own `rdfs:domain` excludes the class holding the key — which
+    is reported rather than silently failing, because reading the assertion is not enough
+    to know the endpoints fit. Observed on a real reference module whose inverse pair does
+    not have its domain and range swapped.
+
+  It stops short of emitting an entry for the other side: that needs a property URI, and
+  DD-160 §3 is explicit that the object property is read, not guessed.
+
+  Measured before building, as the issue asked: the reverse resolved for none of the
+  unresolved proposals on the hub that reported this, and for 3 of 11 on a second hub —
+  none of which could be turned into a proposal, for the two distinct reasons above.
+
+  Reported in the text output, in `--format json` as `reverse_join`, and summarised in the
+  run's notes.
+- **A same-domain relationship may now join on a composite key.** The cross-domain shape
+  always could — `externalReference.key` is a list and `target_columns` was built from all
+  of it — but the same-domain branch truncated to `relationship.on[0]` and two guards
+  rejected the shape before it got there, reporting
+  `safety.adapter-unsupported: composite relationship joins are deferred beyond the v5
+  first slice`.
+
+  Nothing downstream needed changing: `JoinSpec` already carried a source column per entry
+  in `relationship.on`, and the renderer already zipped those against `target_columns`
+  with `strict=True` and joined them with `AND`. A two-column join now emits
+  `on src.A = parent.A AND src.B = parent.B`, as the cross-domain form always did.
+
+  This matters for any hub whose parent entity has a composite natural key. On the hub
+  this was found against, the unit entity could not be related to the leg entity carrying
+  its route and sailing date — the leg's key is three columns — so the Power BI volume
+  model the hub exists to serve had every ingredient in Silver and no way to join them.
+
+  The join's local columns must still be materialized on the child, by a `fields:` entry
+  or a `technicalFields` carrier; that requirement is unchanged and the diagnostic already
+  names it.
+- **`propose-relationships` checks the target class against the child domain's import
+  closure.** A relationship is authored in the child's binding and resolved through the
+  child domain's `owl:imports`, so a proposal naming a class that domain cannot see fails
+  `compile` with `safety.relationship-endpoint` the moment it is pasted. Such proposals
+  are now flagged in the summary, carry `target_resolvable: false` in `--format json`, and
+  render with a comment naming what has to be imported first.
+
+### Changed
+- **`relationship.unrealized-technical-field` no longer points at a command that may have
+  nothing to offer.** The remedy read "Run `kairos-ontology propose-relationships` to
+  derive the entry, or keep the carrier deliberately if the parent is not bound yet",
+  which is true only when an object property links the two bound classes and a join key
+  matches. Measured on two hubs, that is often not the case: of nine warnings on one, five
+  named bindings that appear as a child in no proposal at all, and the single genuine hit
+  rendered a `<CONFIRM_PROPERTY>` choice rather than a pasteable entry. The causes the
+  command cannot resolve are structural — no object property exists between the two bound
+  classes, the carrier is polymorphic and can never be one relationship, or the property
+  is declared container-to-contained so the key sits on the parent — and none is fixed by
+  running it again. The message now says what the command does derive, what it only
+  reports, and that keeping the carrier is the right answer in those cases.
+- **`generate-bindings` prints why each table was skipped.** Every skip already carried a
+  written reason and the summary printed only the count, so a table vanishing between
+  `anchor-tables` and `compile` could not be explained without reading the report object
+  in a Python shell.
+- **A table dropped because anchoring and alignment disagree now says so.** When every
+  column the aligner matched sits on a class the anchor is not, the skip reason names the
+  anchor, names the class alignment chose, and gives the two available decisions. It
+  previously reported "no scalar fields mapped for this table (relationship wiring is
+  deferred to propose-relationships)" — which sent one operator after
+  `propose-relationships` for a sixty-column party and goods table that had nothing to do
+  with relationships.
+
+### Fixed
+- **A table you disposition out no longer keeps shipping to Silver.** `generate-bindings`
+  already skipped a table the ledger ruled out, but the binding written for it before the
+  ruling stayed on disk — and `compile` reads the directory, so the table still compiled
+  and still emitted a Silver model, with no warning anywhere. Measured on one hub: a
+  generic application-settings table, recorded `not-business-data`, emitting a Silver
+  model. `generate-bindings` now retracts that binding and says so; a dry run reports the
+  retraction without performing it. `validate` gained
+  `disposition.bound-and-ruled-out`, which catches the same contradiction whatever wrote
+  the file — previously a bound table returned before the ledger was ever read, so the
+  conflict counted as "bound" and passed silently.
+- **`scaffold-extensions` no longer renders properties for tables that are out of scope.**
+  It walked every anchored table in the domain with no disposition filter. On one hub, two
+  ruled-out tables contributed three properties whose `rdfs:domain` pointed at a namespace
+  the domain does not import, so `validate` failed an import rule on the strength of
+  tables the operator had already removed — and deleting the properties by hand did not
+  stick, because the next render produced them again.
+- **`generate-bindings --force` no longer destroys an authored `relationships:` block.**
+  `propose-relationships` writes nothing, so accepting a proposal means hand-editing a
+  generated file — and `--force` is the documented way to pick up a corrected anchor. The
+  two collided: regenerating any table in a domain silently discarded every relationship
+  authored anywhere in it, and nothing failed afterwards, because a missing relationship
+  only downgrades an error to the `relationship.unrealized-technical-field` warning. The
+  block is now carried across, counted in the per-row output, and re-validated against the
+  regenerated document.
+- **`propose-relationships` no longer emits one proposal per property for a single join.**
+  A reference model routinely declares a generic relationship and a set of typed
+  specialisations of it — a consignment's generic "has party" alongside consignor,
+  consignee, carrier, freight forwarder and notify party. All of them link the same two
+  classes, so every one matched the same endpoint pair and the same derived join, and each
+  was emitted as an independent, equally-confident proposal. They are mutually exclusive:
+  one foreign key cannot be the carrier *and* the consignee. Proposals are now grouped by
+  the join they share, a property that is an `rdfs:subPropertyOf` descendant of another in
+  the group is folded into it, and what remains is reported as one decision. Measured on
+  one hub: nine proposals with resolved joins were three distinct joins, and accepting
+  them as printed would have asserted five mutually exclusive party roles on one key.
+- **A genuine either/or is no longer pasteable as one of its arms.** When the competing
+  properties stand in no hierarchy — two directional properties on one non-directional
+  column, say — the rendered entry carries `<CONFIRM_PROPERTY>` and lists every candidate
+  above it. Naming one would make an arbitrary pick look derived, and a paste that skipped
+  the surrounding note would take it.
+- **`propose-relationships` now joins on the column the parent actually emits.** The two
+  sides of a relationship join are not in the same namespace: the emitted SQL reads the
+  child from the raw source CTE (`src.<local>`) and the parent from the built model
+  (`ref(parent).<foreign>`). `join.foreign` was derived from the parent's *source* key,
+  so every proposal against a parent that renames its key on the way into Silver — the
+  normal case, since a mapped field is emitted under the ontology property's name — named
+  a column the parent model does not have. Measured on one hub: a proposal joining
+  `parent.ACCOUNT_REF` where the parent emits `party_id` and no `ACCOUNT_REF`. It passed
+  `compile --check`, emitted, and `audit-silver-samples` reported no errors, because that
+  audit is offline and sample-based; it would have failed only when dbt ran.
+- **A parent that does not expose its key at all no longer gets a guessed column name.**
+  The fallback rendered the source column in snake_case, producing a plausible-looking
+  name for a column that does not exist — in a module whose stated contract is to emit a
+  sentinel rather than a guess. Such a match now reports `join_resolved: false` with the
+  reason, and carries `<CONFIRM_JOIN_COLUMN>` in both `join.foreign` and the
+  `externalReference` key.
+- **A pasted proposal no longer fails the compiler's key-equality check.** The
+  `externalReference` key and `join.foreign` are now derived from the same value, so they
+  match exactly, as `safety.relationship-endpoint` requires. Previously the key was
+  lowercased independently of the join, and a proposal pasted verbatim — as the command's
+  own advisory instructs — could not compile.
+- **A same-domain relationship proposal names the parent's source column again.** The
+  join-column fix in 5.20.0 made `propose-relationships` emit the parent's *output* column
+  for every proposal. That is right for a cross-domain join, where `join.foreign` must
+  equal the `externalReference` key and the emitter uses it verbatim — and wrong for a
+  same-domain one, where the compiler resolves `join.foreign` against the parent's
+  *source* relation and rejects anything else with `safety.column-unresolved`, translating
+  it to the output column itself. A same-domain proposal against a parent that renames its
+  key on the way into Silver therefore could not be pasted: it named a column the compiler
+  would not resolve. Measured on one hub, a proposal read `foreign: internal_location_id`
+  where the only accepted value was `locid`.
+
+  Both rules are now stated at the point of decision, each naming the diagnostic that
+  enforces it, so the next reader does not have to rediscover that the two shapes differ.
+  The existence check is unchanged and still applies to both: a parent key that reaches no
+  output column at all is unjoinable whichever shape the join takes.
+- **A table bound through a contracted dbt model no longer reports as undecided.** The
+  DD-164 audit read one authored source form, `source.relation`, so a binding using
+  `source.dbtModel` — DD-133 §3d's documented mechanism when the grain needs relational
+  work first — contributed nothing to the set of bound tables. `compile --all --emit` was
+  clean and the source tables were read, mapped and emitted to Silver, while `validate`
+  called each of them `disposition.undecided-source-table`. The only two ways to silence
+  it were both wrong: a table-grain disposition for a table that *is* bound, which the
+  ledger documents against, or an explicit `bound` row, which it calls redundant. The
+  audit now scans the selected model's SQL with the compiler's own extraction authority,
+  so the tables it reads count as bound — which also restores the `#925`
+  `disposition.bound-and-ruled-out` conflict for them, computed from the same set and,
+  until now, lost for `dbtModel` bindings. A source table reached only through an
+  upstream `ref()`ed model is still reported as undecided.
+- **A SQL comment that mentions `source()` no longer fails compilation.** Call sites were
+  counted against text from which only *Jinja* comments had been stripped, so the line
+  `-- The two source() calls are written out rather than generated.` was counted as a
+  call whose arguments could not be resolved statically. One comment rejected a model
+  whose calls were both literal and both resolved, with `dbt-source.source-unparsed`
+  naming a defect it did not have and a remedy — rewrite the calls — that could not have
+  helped. SQL line and block comments are now stripped before counting, sparing `--`
+  inside a string literal. Only the *count* changes: dbt renders Jinja before SQL is
+  parsed, so a `{{ source() }}` written inside a SQL comment is still a real dependency
+  and is still declared in the emitted project.
+
+### Performance
+- **`compile <domain>` is roughly 2.5x faster.** `_declared_prefixes` stats, reads and
+  regex-scans a whole Turtle file on every call, and one domain's plan build called it
+  13,464 times against 36 distinct files — each file read about 374 times, over the
+  vendored reference-model corpus. That was the largest single entry in the profile,
+  ~3.7s of self time in an 11.4s build. The parse is now cached on file identity, taking
+  the same build from 8.6s to 3.3s. `compile --all` pays this per domain, so the saving
+  multiplies by the domain count.
+
+  Cached on `(path, mtime_ns, size)` rather than path alone, so a file rewritten in the
+  same process is re-read and neither a test that edits a fixture nor a long-lived
+  process can be served a stale answer. The `stat` that produces the key replaces the
+  `is_file()` check the function already made.
 
 ## [5.20.0] — 2026-09-20
 
