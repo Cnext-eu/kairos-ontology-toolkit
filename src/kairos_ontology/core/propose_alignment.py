@@ -993,6 +993,7 @@ def extract_ref_model_inventory(
                 "name": cls_name,
                 "label": cls.get("label", cls_name),
                 "comment": cls.get("comment", ""),
+                **({"deprecated": True} if cls.get("deprecated") else {}),
                 "properties": props,
                 "_semantic": {
                     "semantic_profile": ref.get("semantic_profile", "kairos-design"),
