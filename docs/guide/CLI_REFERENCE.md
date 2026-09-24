@@ -251,6 +251,7 @@ kairos-ontology build-glossary [OPTIONS]
 | `--company-name` |  | Company display name for the scheme label. Default: auto-detect from hub README. |
 | `--glossary-namespace` |  | Glossary namespace IRI. Default: https://{company-domain}/glossary#. |
 | `--company-specific-only` |  | Only include terms flagged company_specific in the extractions. |
+| `--allow-empty` |  | Write even when the build yields no concepts and the output already holds some. Without it the command refuses, because the usual cause is that extraction has not run yet and the result would erase an authored glossary (#906). |
 
 
 ## bump-hub

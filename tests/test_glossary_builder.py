@@ -452,3 +452,126 @@ def test_cli_build_glossary_no_company(tmp_path: Path, monkeypatch):
     result = CliRunner().invoke(cli, ["build-glossary"])
     assert result.exit_code == 1
     assert "company domain" in result.output.lower()
+
+
+# --------------------------------------------------------------------------- #
+# A rebuild never destroys an authored glossary (#906)
+# --------------------------------------------------------------------------- #
+_NS = "https://acme.example/glossary#"
+_AUTHORED = """@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix g: <https://acme.example/glossary#> .
+
+g: a skos:ConceptScheme .
+g:Laytime a skos:Concept ; skos:inScheme g: ; skos:prefLabel "Laytime"@en ;
+    skos:definition "Time allowed for loading, as the client defines it." .
+g:Demurrage a skos:Concept ; skos:inScheme g: ; skos:prefLabel "Demurrage"@en .
+"""
+
+
+def _build(tmp_path: Path, output: Path, **kwargs):
+    from kairos_ontology.core.glossary_builder import build_glossary
+
+    return build_glossary(
+        extraction_dir=tmp_path / "_extractions",
+        output_path=output,
+        glossary_namespace=_NS,
+        scheme_label="Acme Business Glossary",
+        **kwargs,
+    )
+
+
+def _labels(path: Path) -> set[str]:
+    graph = Graph().parse(path, format="turtle")
+    return {str(o) for o in graph.objects(None, SKOS.prefLabel)}
+
+
+def test_zero_extractions_refuse_to_empty_an_authored_glossary(tmp_path: Path):
+    import pytest
+
+    from kairos_ontology.core.glossary_builder import GlossaryOverwriteRefused
+
+    (tmp_path / "_extractions").mkdir()
+    output = tmp_path / "acme-glossary.ttl"
+    output.write_text(_AUTHORED, encoding="utf-8")
+
+    with pytest.raises(GlossaryOverwriteRefused, match="already holds 2 concept"):
+        _build(tmp_path, output)
+
+    assert output.read_text(encoding="utf-8") == _AUTHORED
+
+
+def test_allow_empty_overwrites_deliberately(tmp_path: Path):
+    (tmp_path / "_extractions").mkdir()
+    output = tmp_path / "acme-glossary.ttl"
+    output.write_text(_AUTHORED, encoding="utf-8")
+
+    result = _build(tmp_path, output, allow_empty=True)
+
+    # Authored concepts still survive: --allow-empty permits a build with no generated
+    # concepts, it does not delete what a person wrote.
+    assert result.kept_authored == 2
+    assert _labels(output) == {"Laytime", "Demurrage"}
+
+
+def test_a_rebuild_merges_instead_of_replacing(tmp_path: Path):
+    """The field report: 52 authored terms, 164 built, 37 authored lost."""
+    _write_extraction(tmp_path / "_extractions", "doc", [
+        {"prefLabel": "Laytime", "definition": "Generated wording."},
+        {"prefLabel": "Bill of Lading"},
+    ])
+    output = tmp_path / "acme-glossary.ttl"
+    output.write_text(_AUTHORED, encoding="utf-8")
+
+    result = _build(tmp_path, output)
+
+    assert _labels(output) == {"Laytime", "Demurrage", "Bill of Lading"}
+    assert result.kept_authored == 2 and result.authored_overrides == 1
+    graph = Graph().parse(output, format="turtle")
+    definitions = {str(o) for o in graph.objects(URIRef(_NS + "Laytime"), SKOS.definition)}
+    assert definitions == {"Time allowed for loading, as the client defines it."}, (
+        "the client's own definition wins over the generated one"
+    )
+
+
+def test_authored_concepts_survive_every_later_rebuild(tmp_path: Path):
+    """After the first rebuild the file carries build-glossary's header, so the header
+    alone would forget the authored concepts on the second run."""
+    _write_extraction(tmp_path / "_extractions", "doc", [{"prefLabel": "Bill of Lading"}])
+    output = tmp_path / "acme-glossary.ttl"
+    output.write_text(_AUTHORED, encoding="utf-8")
+
+    _build(tmp_path, output)
+    _build(tmp_path, output)
+
+    assert _labels(output) == {"Laytime", "Demurrage", "Bill of Lading"}
+
+
+def test_a_generated_concept_the_extractions_dropped_is_not_kept(tmp_path: Path):
+    """Only authored concepts are sticky; a generated one follows the extractions."""
+    ext = tmp_path / "_extractions"
+    _write_extraction(ext, "doc", [{"prefLabel": "Bill of Lading"}, {"prefLabel": "Reefer"}])
+    output = tmp_path / "acme-glossary.ttl"
+    _build(tmp_path, output)
+    _write_extraction(ext, "doc", [{"prefLabel": "Bill of Lading"}])
+
+    _build(tmp_path, output)
+
+    assert _labels(output) == {"Bill of Lading"}
+
+
+def test_cli_refuses_and_exits_non_zero(tmp_path: Path, monkeypatch):
+    ext = tmp_path / "_extractions"
+    ext.mkdir()
+    (ext / "README.md").write_text("scaffolded", encoding="utf-8")
+    output = tmp_path / "acme-glossary.ttl"
+    output.write_text(_AUTHORED, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, [
+        "build-glossary", "--extraction-dir", str(ext), "--output", str(output),
+        "--company-domain", "acme.example",
+    ])
+
+    assert result.exit_code == 1
+    assert "--allow-empty" in result.output
+    assert output.read_text(encoding="utf-8") == _AUTHORED

@@ -259,6 +259,16 @@ class TestTheNoteInTheEngineeringPack:
 
         assert pack.index("Cross-check") < pack.index("## Global Inventory")
 
+    def test_the_note_is_separated_from_the_next_heading(self, tmp_path):
+        """#905: splitlines() ate the note's trailing blank line, so it ran into the
+        heading below it."""
+        from kairos_ontology.core.import_tmdl import generate_engineering_pack
+
+        note = render_crosscheck_note(crosscheck_parsed_model(_model(_table("Sales")), tmp_path), "M")
+        pack = generate_engineering_pack(_model(_table("Sales")), "src", note or "## Note\ntext\n")
+
+        assert "\n\n## Global Inventory" in pack
+
     def test_a_pack_with_no_note_is_unchanged(self, tmp_path):
         from kairos_ontology.core.import_tmdl import generate_engineering_pack
 

@@ -161,12 +161,10 @@ jobs:
           fi
           # GitHub does not infer pre-release status from the tag name, so an RC published
           # as a full release -- which defeats cutting one, and misleads a consumer that
-          # pins by release. Matches what the toolkit's own release.yml treats as a
-          # pre-release (rc/beta/alpha anywhere in the tag), plus the PEP 440 short forms
-          # (1.0.0a1, 1.0.0b1) that its regex also reaches through "alpha"/"beta" (#864).
+          # pins by release. Mirrors the toolkit's own release.yml.
           PRERELEASE=""
           case "$TAG" in
-            *rc*|*alpha*|*beta*|*[0-9]a[0-9]*|*[0-9]b[0-9]*) PRERELEASE="--prerelease" ;;
+            *-rc*|*rc[0-9]*|*-alpha*|*-beta*) PRERELEASE="--prerelease" ;;
           esac
           gh release create "$TAG" $ASSETS \
             --title "$TAG" \
