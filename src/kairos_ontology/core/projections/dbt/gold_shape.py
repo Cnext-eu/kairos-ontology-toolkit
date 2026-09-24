@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .bpa_profile import BpaIgnore, BpaIgnoreError, parse_bpa_ignore
+from .gold_bpa_checks import check_product
 from .calendar_columns import CALENDAR_COLUMN_NAMES, CALENDAR_DATE_TABLE_KEY
 from ..uri_utils import camel_to_snake
 from .gold_specs import (
@@ -1942,6 +1943,7 @@ def _shape_dimensional_product(
         has_calendar=calendar is not None and calendar.approved,
         defer=defer_bridges,
     )
+    advisories = check_product(ordered, ordered_measures, bpa_ignores)
     registry_names: list[tuple[str, str]] = []
     registry_columns: list[tuple[str, frozenset[str]]] = []
     for member in members:
@@ -1968,6 +1970,7 @@ def _shape_dimensional_product(
         unresolved_bridges=tuple(sorted(set(unresolved_bridges))),
         bpa_ignores=bpa_ignores,
         undecided_bridge_filters=undecided_bridge_filters,
+        advisories=tuple((item.code, item.message, item.resource_uri) for item in advisories),
     )
 
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date
 
 import yaml
@@ -149,8 +150,14 @@ def _bpa_ignore_index(spec: DimensionalGoldSpec) -> BpaIgnoreIndex:
     return {key: tuple(value) for key, value in index.items()}
 
 
+#: Control characters other than the line breaks replaced below. TMDL carries them, but
+#: BPA's AVOID_INVALID_DESCRIPTION_CHARACTERS flags them and no reader wants them (DD-238).
+_TMDL_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 def _tmdl_text(value: str) -> str:
-    return value.replace('"', '""').replace("\r", " ").replace("\n", " ")
+    text = value.replace('"', '""').replace("\r", " ").replace("\n", " ")
+    return _TMDL_CONTROL.sub("", text)
 
 
 def _dbt_table_sql(table: GoldTableSpec, physical: GoldPhysicalTablePlan) -> str:

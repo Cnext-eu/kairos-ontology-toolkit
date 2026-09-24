@@ -31,6 +31,15 @@ _ITEM_ORDINAL = re.compile(r"^\t\t\tordinal:\s*\d+\s*$", re.MULTILINE)
 _PARTITION = re.compile(r"^\tpartition\s", re.MULTILINE)
 
 _RULE = "DD-113-gold-semantics"
+_BPA_RULE = "DD-238-bpa-profile"
+
+#: One object's property block: its header line at one tab, properties at two.
+_TABLE_OBJECT = re.compile(r"^\t(?P<kind>column|measure)\s+(?P<name>.+?)(?:\s*=.*)?$")
+_NUMERIC_TYPES = {"int64", "decimal", "double"}
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_RELATIONSHIP_END = re.compile(
+    r"^\t(?P<side>from|to)Column:\s*(?P<table>'[^']+'|[^.\s]+)\.(?P<column>.+?)\s*$"
+)
 
 
 def assert_gold_semantics(artifacts: dict[str, str]) -> None:
@@ -48,6 +57,7 @@ def assert_gold_semantics(artifacts: dict[str, str]) -> None:
         _assert_calculation_group(path, content)
     if calculation_groups:
         _assert_discourages_implicit_measures(artifacts, calculation_groups)
+    _assert_best_practice(artifacts)
 
 
 def _assert_calculation_group(path: str, content: str) -> None:
@@ -96,6 +106,160 @@ def _assert_calculation_group(path: str, content: str) -> None:
             rule_id=_RULE,
             resource_uri=path,
         )
+
+
+def _objects(content: str) -> list[tuple[str, str, list[str]]]:
+    """``(kind, name, property lines)`` for each column and measure of one table file."""
+    objects: list[tuple[str, str, list[str]]] = []
+    for line in content.splitlines():
+        match = _TABLE_OBJECT.match(line)
+        if match is not None:
+            objects.append((match.group("kind"), match.group("name").strip("'"), [line]))
+        elif objects and line.startswith("\t\t"):
+            objects[-1][2].append(line.strip())
+        elif line.strip():
+            objects.append(("", "", []))
+    return [item for item in objects if item[0]]
+
+
+def _property(lines: list[str], name: str) -> str | None:
+    prefix = f"{name}:"
+    for line in lines:
+        if line == name:
+            return ""
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return None
+
+
+def _fail_bpa(code: str, message: str, path: str) -> None:
+    raise GoldContractError(code, message, rule_id=_BPA_RULE, resource_uri=path)
+
+
+def _assert_best_practice(artifacts: dict[str, str]) -> None:
+    """Assert the profile's by-construction and render-assert rules on emitted text.
+
+    DD-238. A by-construction rule is only as good as the construction, and the
+    construction is spread over a renderer that keeps growing; asserting the rendered
+    bytes is what keeps "cannot happen" true.
+    """
+    tables = {
+        path: content
+        for path, content in artifacts.items()
+        if "/definition/tables/" in path and path.endswith(".tmdl")
+    }
+    column_types: dict[tuple[str, str], str] = {}
+    for path, content in tables.items():
+        table = path.rsplit("/", 1)[1].removesuffix(".tmdl")
+        for line in content.splitlines():
+            if line.lstrip("\t").startswith("///") and _CONTROL.search(line):
+                _fail_bpa(
+                    "gold.description-control-character",
+                    f"{path} carries a control character in a description",
+                    path,
+                )
+        for kind, name, lines in _objects(content):
+            if kind == "column":
+                column_types[(table, name)] = (_property(lines, "dataType") or "").casefold()
+                if _property(lines, "sourceColumn") is None:
+                    _fail_bpa(
+                        "gold.column-source-missing",
+                        f"{path}: column {name} names no sourceColumn",
+                        path,
+                    )
+                if (
+                    column_types[(table, name)] in _NUMERIC_TYPES
+                    and _property(lines, "isHidden") is None
+                    and _property(lines, "summarizeBy") != "none"
+                ):
+                    _fail_bpa(
+                        "gold.column-summarized",
+                        (
+                            f"{path}: visible numeric column {name} is not summarizeBy: none, "
+                            "so Power BI would sum it by default"
+                        ),
+                        path,
+                    )
+            else:
+                header = lines[0].split("=", 1)
+                if len(header) < 2 or not header[1].strip():
+                    _fail_bpa(
+                        "gold.measure-expression-missing",
+                        f"{path}: measure {name} has no expression",
+                        path,
+                    )
+                if not _property(lines, "formatString"):
+                    _fail_bpa(
+                        "gold.measure-format-missing",
+                        f"{path}: measure {name} has no formatString",
+                        path,
+                    )
+    date_table = next((c for p, c in tables.items() if p.endswith("/tables/dim_date.tmdl")), None)
+    if date_table is not None:
+        keyed = [
+            name
+            for kind, name, lines in _objects(date_table)
+            if kind == "column"
+            and _property(lines, "isKey") is not None
+            and (_property(lines, "dataType") or "").casefold() == "datetime"
+        ]
+        if "\tdataCategory: Time" not in date_table or len(keyed) != 1:
+            _fail_bpa(
+                "gold.date-table-not-marked",
+                (
+                    "dim_date must carry dataCategory: Time and exactly one DateTime isKey "
+                    "column, or Power BI does not treat it as a date table"
+                ),
+                "dim_date",
+            )
+        month = next(
+            (lines for kind, name, lines in _objects(date_table) if name == "month_name"), None
+        )
+        if month is not None and _property(month, "sortByColumn") is None:
+            _fail_bpa(
+                "gold.calendar-unsorted",
+                "dim_date.month_name has no sortByColumn, so months sort alphabetically",
+                "dim_date",
+            )
+    for path, content in artifacts.items():
+        if path.endswith("/definition/relationships.tmdl"):
+            _assert_relationship_types(path, content, column_types)
+
+
+def _assert_relationship_types(
+    path: str, content: str, column_types: dict[tuple[str, str], str]
+) -> None:
+    """Direct Lake refuses, and DirectQuery silently casts, a join across types.
+
+    Active relationships only. An inactive edge with mismatched types exists today where
+    a #794 unproven key fell back to a non-key column; blocking it would fail hubs whose
+    model loads and answers correctly through its active paths, so it is left to the
+    post-deploy BPA run, which reports every relationship.
+    """
+    for block in content.split("\nrelationship "):
+        if "\tisActive: false" in block:
+            continue
+        ends: dict[str, tuple[str, str]] = {}
+        for line in block.splitlines():
+            match = _RELATIONSHIP_END.match(line)
+            if match is not None:
+                ends[match.group("side")] = (
+                    match.group("table").strip("'"),
+                    match.group("column").strip("'"),
+                )
+        if set(ends) != {"from", "to"}:
+            continue
+        left, right = column_types.get(ends["from"]), column_types.get(ends["to"])
+        if left and right and left != right:
+            _fail_bpa(
+                "gold.relationship-type-mismatch",
+                (
+                    f"{path}: {'.'.join(ends['from'])} ({left}) joins "
+                    f"{'.'.join(ends['to'])} ({right}); relationship columns must share a "
+                    "data type"
+                ),
+                path,
+            )
 
 
 def _assert_discourages_implicit_measures(

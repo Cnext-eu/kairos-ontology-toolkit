@@ -265,6 +265,9 @@ class DimensionalGoldSpec:
     #: Their edges stay single-direction, so a filter on either endpoint stops at the
     #: bridge; reported because that is rarely what a report author expects.
     undecided_bridge_filters: tuple[str, ...] = ()
+    #: Non-blocking BPA findings from shaping (DD-238), ``(code, message, resource)``.
+    #: `compile --check` reports each as a warning; nothing here changes an artifact.
+    advisories: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
