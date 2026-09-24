@@ -26,6 +26,7 @@ from .gold_specs import (
     GoldTableSpec,
 )
 from .policy_specs import (
+    BridgeCardinality,
     CanonicalTypeKind,
     DimensionExposure,
     DimensionVersionBinding,
@@ -945,11 +946,11 @@ def _shape_relationships(
                     source_column=column_name,
                     target_table=target.name,
                     target_column=target.primary_key,
-                    cardinality=(
-                        bridge.bridge_cardinality.value
-                        if bridge.bridge_cardinality is not None
-                        else ""
-                    ),
+                    # The edge's own cardinality, not the bridge's (DD-238): many bridge
+                    # rows per endpoint key, one endpoint row per key. `bridgeCardinality`
+                    # relates the two endpoints and stays on the table; rendering it here
+                    # would declare the endpoint's unique key non-unique.
+                    cardinality="many-to-one",
                     version_binding=None,
                 )
             )
@@ -1499,6 +1500,108 @@ def _sole(
     return declaring[0] if declaring else None
 
 
+_CROSS_FILTER = re.compile(
+    r"^(?P<edge>.+?)\s*=\s*(?P<direction>both|single)$",
+)
+
+
+def _bridge_cross_filters(
+    members: tuple["GoldDomainInput", ...],
+    tables: tuple[GoldTableSpec, ...],
+    relationships: tuple[GoldRelationshipSpec, ...],
+    *,
+    defer: bool = False,
+) -> tuple[tuple[GoldRelationshipSpec, ...], tuple[str, ...]]:
+    """Decide which edges filter both ways, and name the bridges left undecided (DD-238).
+
+    A bridge is two many-to-one edges. With both single-direction, a filter on one
+    endpoint reaches the bridge and stops: the bridge cannot filter the other endpoint,
+    so a slicer on the far side never reaches the fact and that path returns wrong
+    numbers. The edge towards the fact-side endpoint must filter both ways.
+
+    An endpoint is fact-side when it is a fact, or the target of an active relationship
+    from a fact. Exactly one fact-side endpoint decides the default; none or two leave it
+    undecided, because guessing a direction changes numbers. The author decides it with
+    ``goldRelationshipCrossFilter``, fail-closed like ``goldPrimaryRelationship`` -- except
+    on a single-domain compile (*defer*), where the edge may join another domain's table
+    and is checked at product level instead (#763).
+
+    Every active relationship set is a spanning forest (#792), so no direction choice can
+    make a path ambiguous: there is no second path for a filter to take.
+    """
+    by_name = {table.name: table for table in tables}
+    facts = {table.name for table in tables if table.role is GoldTableRole.FACT}
+    fact_targets = {
+        item.target_table
+        for item in relationships
+        if item.is_active and item.source_table in facts
+    }
+    decided: dict[int, tuple[bool, str]] = {}
+    undecided: list[str] = []
+    for bridge in tables:
+        if (
+            bridge.role is not GoldTableRole.BRIDGE
+            or bridge.bridge_cardinality is not BridgeCardinality.MANY_TO_MANY
+        ):
+            continue
+        edges = [
+            item
+            for item in relationships
+            if item.source_table == bridge.name and item.target_table in by_name
+        ]
+        fact_side = [
+            item for item in edges if item.target_table in facts | fact_targets
+        ]
+        if len(fact_side) == 1 and fact_side[0].is_active:
+            decided[id(fact_side[0])] = (True, "bridge-default")
+        else:
+            undecided.append(bridge.name)
+
+    keyed = {_relationship_key(item): item for item in relationships}
+    authored_bridges: set[str] = set()
+    for member in members:
+        for value in tuple(getattr(member.policy.gold, "relationship_cross_filters", ()) or ()):
+            match = _CROSS_FILTER.fullmatch(value.strip())
+            edge = _PRIMARY_RELATIONSHIP.fullmatch(match.group("edge")) if match else None
+            if edge is None:
+                _fail(
+                    "gold.unknown-relationship-cross-filter",
+                    (
+                        f"goldRelationshipCrossFilter {value!r} must read "
+                        '"Table.column -> Table.column = both|single"'
+                    ),
+                    rule_id="DD-238-relationship-direction",
+                    resource_uri=member.policy.gold.ontology_uri,
+                )
+            target = keyed.get(
+                (
+                    edge.group("from_table").casefold(),
+                    edge.group("from_column").casefold(),
+                    edge.group("to_table").casefold(),
+                    edge.group("to_column").casefold(),
+                )
+            )
+            if target is None:
+                if defer:
+                    continue
+                _fail(
+                    "gold.unknown-relationship-cross-filter",
+                    f"goldRelationshipCrossFilter {value!r} names no emitted relationship",
+                    rule_id="DD-238-relationship-direction",
+                    resource_uri=member.policy.gold.ontology_uri,
+                )
+            decided[id(target)] = (match.group("direction") == "both", "authored")
+            authored_bridges.add(target.source_table)
+
+    shaped = tuple(
+        replace(item, bidirectional=decided[id(item)][0], cross_filter_reason=decided[id(item)][1])
+        if id(item) in decided
+        else item
+        for item in relationships
+    )
+    return shaped, tuple(sorted(set(undecided) - authored_bridges))
+
+
 def _relationship_key(item: GoldRelationshipSpec) -> tuple[str, str, str, str]:
     return (
         item.source_table.casefold(),
@@ -1684,6 +1787,9 @@ def _shape_dimensional_product(
     for member in members:
         declared_primary |= _primary_relationship_keys(member.policy, relationships)
     relationships = _resolve_ambiguous_paths(relationships, declared_primary)
+    relationships, undecided_bridge_filters = _bridge_cross_filters(
+        members, ordered, relationships, defer=defer_bridges
+    )
     security_owner = _sole(
         members,
         lambda member: member.policy.gold.security,
@@ -1775,6 +1881,7 @@ def _shape_dimensional_product(
         unresolved_relationships=unresolved,
         unresolved_bridges=tuple(sorted(set(unresolved_bridges))),
         bpa_ignores=bpa_ignores,
+        undecided_bridge_filters=undecided_bridge_filters,
     )
 
 
