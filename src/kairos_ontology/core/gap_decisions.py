@@ -44,6 +44,7 @@ from typing import Any
 
 import yaml
 
+from . import analysis_paths
 from .alignment_report import (
     REASON_OPERATIONAL,
     REASON_VENDOR_SLOT,
@@ -71,7 +72,7 @@ from .tracing import call_metadata, flush_tracing, new_session_id
 logger = logging.getLogger(__name__)
 
 #: Where the drafted sheet lands, beside the other analysis artifacts.
-DECISION_SHEET_FILENAME = "gap-decisions.yaml"
+DECISION_SHEET_FILENAME = analysis_paths.hub_path(Path("."), analysis_paths.GAP_DECISIONS).name
 
 #: Reason codes that are decidable by rule, and the disposition each implies.
 #:
@@ -517,7 +518,7 @@ def load_alignment_facts(
     directory = Path(analysis_dir)
     if not directory.is_dir():
         return mapped, anchors
-    for path in sorted(directory.glob("*-alignment.yaml")):
+    for path in analysis_paths.iter_keyed_paths(directory, analysis_paths.ALIGNMENT):
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception:  # defensive: one broken file must not disable the guard
@@ -682,7 +683,7 @@ def find_disposition_conflicts(
         # place the suppression is visible from a stage that reads conflicts alone.
         logger.info(
             "%d candidate conflict(s) across %d table(s) skipped: the anchoring screen "
-            "excluded them as schema catalogues; see 'excluded' in table-anchors.yaml.",
+            "excluded them as schema catalogues; see 'excluded' in hub.table-anchors.yaml.",
             len(suppressed),
             len({(system, table) for system, table, _ in suppressed}),
         )
@@ -834,7 +835,7 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             "cross-check existed — re-read those against the raw profile. "
             "'gap_columns_in_excluded_tables' counts entries below that belong to a "
             "table the anchoring screen already ruled not business data (listed under "
-            "'excluded' in table-anchors.yaml): decide each such table in one command "
+            "'excluded' in hub.table-anchors.yaml): decide each such table in one command "
             "with 'kairos-ontology source-disposition set --system <s> --table <t> "
             "--disposition not-business-data', or, if the screen is wrong about it, "
             "give the table any other disposition and re-run anchor-tables."
@@ -1218,10 +1219,12 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
 
 def write_decision_sheet(hub_root: Path, sheet: dict[str, Any]) -> Path:
     """Write the sheet, preserving any 'decision' values already filled in."""
-    path = Path(hub_root) / "integration" / "sources" / "_analysis" / DECISION_SHEET_FILENAME
-    if path.is_file():
+    directory = analysis_paths.analysis_dir(Path(hub_root))
+    previous_path = analysis_paths.read_hub_path(directory, analysis_paths.GAP_DECISIONS)
+    path = analysis_paths.hub_path(directory, analysis_paths.GAP_DECISIONS)
+    if previous_path.is_file():
         try:
-            previous = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            previous = yaml.safe_load(previous_path.read_text(encoding="utf-8")) or {}
             kept_names = {
                 (str(e.get("domain") or ""), str(e.get("column"))): str(e.get("decision") or "")
                 for e in previous.get("decisions") or []
@@ -1241,11 +1244,12 @@ def write_decision_sheet(hub_root: Path, sheet: dict[str, Any]) -> Path:
                 if key in kept_families:
                     entry["decision"] = kept_families[key]
         except Exception:  # noqa: BLE001 - a broken previous sheet must not lose work
-            logger.warning("Could not merge previous decisions from %s", path)
+            logger.warning("Could not merge previous decisions from %s", previous_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         yaml.safe_dump(sheet, sort_keys=False, allow_unicode=True), encoding="utf-8"
     )
+    analysis_paths.retire_legacy_hub(directory, analysis_paths.GAP_DECISIONS)
     return path
 
 
@@ -1262,7 +1266,7 @@ def apply_decision_sheet(
     ``autopilot``, and recording that as ``user`` would put a false attribution in
     a ledger whose whole value is being auditable.
     """
-    path = Path(hub_root) / "integration" / "sources" / "_analysis" / DECISION_SHEET_FILENAME
+    path = analysis_paths.read_hub_path(analysis_paths.analysis_dir(Path(hub_root)), analysis_paths.GAP_DECISIONS)
     if not path.is_file():
         raise FileNotFoundError(f"No decision sheet at {path}. Draft one first.")
     sheet = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

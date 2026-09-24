@@ -47,7 +47,7 @@ one into the other.
 ### Stage A — `design-domain` (build the model)
 
 You decide what classes/properties the domain should have. To avoid modeling in a
-vacuum, it reads `*-alignment.yaml` to pre-populate a **Source Evidence Table**:
+vacuum, it reads `dom-*.alignment.yaml` to pre-populate a **Source Evidence Table**:
 "your sources contain `IsActive`, `NationalID`, `Type`… so the domain probably
 needs `isActive`, `nationalID`, and maybe subclasses by `Type`." This is
 **pre-modeling** — alignment is used as *evidence for what to model*. Output:
@@ -61,7 +61,7 @@ which domain property it maps to (SKOS predicate) and the SQL transform. Output:
 read bronze + ontology independently, must confirm every mapping with the human,
 write TTL only after confirmation).
 
-> **One artifact, two consumers.** The same `*-alignment.yaml` feeds *both* stages:
+> **One artifact, two consumers.** The same `dom-*.alignment.yaml` feeds *both* stages:
 > Stage A uses it to decide *what to model*; Stage B uses it to decide *how to
 > bind*. This is why the alignment output cannot be restructured or deprecated
 > without coupling two separate lifecycle stages (see DD-043, DD-045).
@@ -178,7 +178,7 @@ trustworthy at the same time.
 ## Related design decisions
 
 - **DD-043** — `propose-alignment` as a pre-modeling artifact (the shared
-  `*-alignment.yaml`).
+  `dom-*.alignment.yaml`).
 - **DD-044** — deterministic reference-model inventories + specialization discovery
   (Tier 1).
 - **DD-045** — mapping hints for `propose-alignment`: Tier-1 SKOS derivation,

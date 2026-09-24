@@ -14,6 +14,7 @@ import yaml
 from rdflib import Graph, URIRef
 from rdflib.namespace import SKOS
 
+from . import analysis_paths
 from .source_catalog import SourceCatalog, build_source_catalog
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ def load_affinity_assignments(
     if not analysis_dir.is_dir():
         return ()
     excluded = excluded_systems or set()
-    for affinity_file in sorted(analysis_dir.glob("*-affinity.yaml")):
+    for affinity_file in analysis_paths.iter_keyed_paths(analysis_dir, analysis_paths.AFFINITY):
         try:
             data = yaml.safe_load(affinity_file.read_text(encoding="utf-8"))
         except Exception as exc:  # pragma: no cover - defensive
@@ -82,7 +83,7 @@ def load_affinity_assignments(
             continue
         if not isinstance(data, dict) or data.get("schema_version") != 2:
             continue
-        system = str(data.get("system", affinity_file.stem.replace("-affinity", "")) or "")
+        system = str(data.get("system", analysis_paths.key_of(affinity_file, analysis_paths.AFFINITY)) or "")
         if system in excluded:
             continue
         for raw_table in data.get("tables", []):

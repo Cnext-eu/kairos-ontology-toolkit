@@ -32,6 +32,8 @@ from typing import Iterable
 
 import yaml
 
+from . import analysis_paths
+
 
 @dataclass(frozen=True, slots=True)
 class ClosureDrift:
@@ -54,11 +56,8 @@ class ClosureDrift:
             parts.append(
                 f"{len(self.removed)} module(s) removed since: {', '.join(self.removed)}"
             )
-        # A hand-edited artifact without a `domain` key falls back to the file stem, which
-        # already ends in `-alignment`; do not say `-alignment-alignment.yaml`.
-        name = self.domain.removesuffix("-alignment")
         return (
-            f"{name}-alignment.yaml is stale against the domain's activated module list -- "
+            f"{analysis_paths.keyed_path(Path(), analysis_paths.ALIGNMENT, self.domain).name} is stale against the domain's activated module list -- "
             + "; ".join(parts)
             + ". Nothing in it could have referenced an added module, so an "
             "'unused import' finding for one is a staleness gap, not a sourcing gap. "
@@ -105,7 +104,9 @@ def detect_closure_drift(
         # Nothing resolved for the domain now: that is a different problem, and calling
         # every module "removed" would be a misleading way to report it.
         return None
-    domain = str(document.get("domain") or Path(alignment_path).stem)
+    domain = str(
+        document.get("domain") or analysis_paths.key_of(Path(alignment_path), analysis_paths.ALIGNMENT)
+    )
     drift = ClosureDrift(
         domain=domain,
         added=tuple(sorted(now - was)),

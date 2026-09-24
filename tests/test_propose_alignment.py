@@ -2263,7 +2263,7 @@ class TestFallbackOnlySkipLeavesNoStaleFile:
 
         self._no_ref_model(analysis_dir, sources_dir, out, allow_fallback_output=True)
 
-        assert (out / "commercial-alignment.yaml").exists()
+        assert (out / "dom-commercial.alignment.yaml").exists()
 
     def test_no_file_is_written_when_there_was_nothing_to_remove(
         self, analysis_dir, sources_dir, tmp_path
@@ -2274,6 +2274,7 @@ class TestFallbackOnlySkipLeavesNoStaleFile:
 
         self._no_ref_model(analysis_dir, sources_dir, out)
 
+        assert not (out / "dom-commercial.alignment.yaml").exists()
         assert not (out / "commercial-alignment.yaml").exists()
 
 

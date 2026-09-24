@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from . import analysis_paths
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +163,7 @@ class UnresolvedAnchor:
 
 def unresolved_anchors_path(claims_dir: Path, domain: str) -> Path:
     """Path of a domain's unresolved-anchors document (sibling of its claims file)."""
-    return Path(claims_dir) / f"{domain}-unresolved-anchors.yaml"
+    return analysis_paths.keyed_path(Path(claims_dir), analysis_paths.UNRESOLVED_ANCHORS, domain)
 
 
 def load_unresolved_anchors_doc(
@@ -252,4 +253,5 @@ def write_unresolved_anchors_doc(path: Path, domain: str, anchors: list[Unresolv
         yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, default_flow_style=False),
         encoding="utf-8",
     )
+    analysis_paths.retire_legacy_keyed(path.parent, analysis_paths.UNRESOLVED_ANCHORS, domain)
     return path

@@ -52,6 +52,7 @@ from typing import Any
 
 import yaml
 
+from . import analysis_paths
 from ._provenance import ai_attribution, provenance_comment
 from .ai_provider import (
     ROLE_ALIGNMENT,
@@ -73,7 +74,7 @@ from .tracing import call_metadata, flush_tracing, new_session_id
 logger = logging.getLogger(__name__)
 
 #: Output artifact, alongside the affinity and alignment files.
-ANCHORS_FILENAME = "table-anchors.yaml"
+ANCHORS_FILENAME = analysis_paths.hub_path(Path("."), analysis_paths.TABLE_ANCHORS).name
 
 #: Sheet review statuses (DD-190). ``proposed`` is machine-written; humans move
 #: an entry to ``confirmed``/``edited`` (both pin it) or ``rejected`` (re-anchor
@@ -165,7 +166,7 @@ def probe_anchors(analysis_dir: Path) -> tuple[ArtifactState, int]:
     ``anchor-tables`` first" instead of silently aligning without anchors.
     """
     state, payload = _read_yaml_artifact(
-        Path(analysis_dir) / ANCHORS_FILENAME, what="global anchors"
+        analysis_paths.read_hub_path(Path(analysis_dir), analysis_paths.TABLE_ANCHORS), what="global anchors"
     )
     tables = payload.get("tables") or []
     count = sum(1 for t in tables if isinstance(t, dict))
@@ -529,7 +530,7 @@ def load_excluded_tables(analysis_dir: Path) -> dict[tuple[str, str], str]:
     """``(system, table) -> evidence`` for tables the anchoring screen routed out.
 
     Reads back the ``excluded`` block :func:`run_anchor_tables` writes into
-    ``table-anchors.yaml``. The companion to :func:`load_excluded_columns` one
+    ``hub.table-anchors.yaml``. The companion to :func:`load_excluded_columns` one
     grain up: that one reads a human-governed ledger, this one reads what the
     schema-catalogue screen decided on the last anchoring run.
 
@@ -543,7 +544,7 @@ def load_excluded_tables(analysis_dir: Path) -> dict[tuple[str, str], str]:
     screen is a heuristic: a stage that honours an exclusion should be able to say
     which table it dropped and on what grounds instead of making rows vanish.
     """
-    path = Path(analysis_dir) / ANCHORS_FILENAME
+    path = analysis_paths.read_hub_path(Path(analysis_dir), analysis_paths.TABLE_ANCHORS)
     _state, payload = _read_yaml_artifact(path, what="the schema-catalogue screen")
     excluded: dict[tuple[str, str], str] = {}
     for entry in payload.get("excluded") or []:
@@ -1251,9 +1252,9 @@ def load_affinity_entities(analysis_dir: Path) -> dict[tuple[str, str], str]:
 def _load_affinity(analysis_dir: Path) -> dict[tuple[str, str], tuple[str, str]]:
     """``(system, table) -> (primary_domain, likely_entity)`` from the affinity artifacts."""
     out: dict[tuple[str, str], tuple[str, str]] = {}
-    for path in sorted(Path(analysis_dir).glob("*-affinity.yaml")):
+    for path in analysis_paths.iter_keyed_paths(Path(analysis_dir), analysis_paths.AFFINITY):
         _state, doc = _read_yaml_artifact(path, what="this affinity prior")
-        system = str(doc.get("system") or path.stem.removesuffix("-affinity"))
+        system = str(doc.get("system") or analysis_paths.key_of(path, analysis_paths.AFFINITY))
         for table in doc.get("tables") or []:
             if isinstance(table, dict) and table.get("table"):
                 out[(system, str(table["table"]))] = (
@@ -1275,7 +1276,7 @@ def run_anchor_tables(
     report=None,
     screen_schema_catalogues: bool = True,
 ) -> Path:
-    """Run the global anchor call(s) and write ``table-anchors.yaml``.
+    """Run the global anchor call(s) and write ``hub.table-anchors.yaml``.
 
     Tables that describe the source's own schema are screened out first and
     recorded under ``excluded`` with the evidence that excluded them; anchored
@@ -1313,7 +1314,7 @@ def run_anchor_tables(
         for entry in catalogue:
             say(f"       {entry['system']}.{entry['table']} — {entry['reason']}")
         say(
-            "       recorded under 'excluded' in table-anchors.yaml and honoured by "
+            "       recorded under 'excluded' in hub.table-anchors.yaml and honoured by "
             "the disposition-conflict check; if one of these is real business data, "
             "re-run with --no-schema-catalogue-screen or record a table-grain "
             "disposition for it"
@@ -1640,12 +1641,13 @@ def run_anchor_tables(
         ),
         ai_generated=True,
     )
-    out_path = Path(analysis_dir) / ANCHORS_FILENAME
+    out_path = analysis_paths.hub_path(Path(analysis_dir), analysis_paths.TABLE_ANCHORS)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
         header + yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
+    analysis_paths.retire_legacy_hub(Path(analysis_dir), analysis_paths.TABLE_ANCHORS)
     flush_tracing()
     return out_path
 
@@ -1704,7 +1706,7 @@ def regroup_by_anchor(
 
 def load_table_anchors(analysis_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
     """Read the anchors artifact, keyed ``(system, table)``. Empty when absent."""
-    path = Path(analysis_dir) / ANCHORS_FILENAME
+    path = analysis_paths.read_hub_path(Path(analysis_dir), analysis_paths.TABLE_ANCHORS)
     _state, doc = _read_yaml_artifact(path, what="global anchors")
     return {
         (str(t.get("system") or ""), str(t.get("table") or "")): t

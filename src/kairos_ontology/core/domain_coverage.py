@@ -40,6 +40,7 @@ from typing import Any, Iterable, Optional
 
 import yaml
 
+from . import analysis_paths
 from .analyse_sources import load_data_domains
 from .catalog_utils import _declared_ontology_iri
 from .hub_inspection import _binding_domains, _ontology_domains
@@ -192,7 +193,7 @@ def load_source_affinity(analysis_dir: Optional[Path]) -> SourceAffinityEvidence
     if analysis_dir is None or not Path(analysis_dir).is_dir():
         return SourceAffinityEvidence(False, primary, secondary, ())
 
-    for affinity_file in sorted(Path(analysis_dir).glob("*-affinity.yaml")):
+    for affinity_file in analysis_paths.iter_keyed_paths(Path(analysis_dir), analysis_paths.AFFINITY):
         try:
             with open(affinity_file, encoding="utf-8") as handle:
                 data = yaml.safe_load(handle)
@@ -202,7 +203,7 @@ def load_source_affinity(analysis_dir: Optional[Path]) -> SourceAffinityEvidence
             continue
 
         found = True
-        system = data.get("system") or affinity_file.stem.replace("-affinity", "")
+        system = data.get("system") or analysis_paths.key_of(affinity_file, analysis_paths.AFFINITY)
         for table in data.get("tables") or []:
             if not isinstance(table, dict):
                 continue
@@ -238,7 +239,7 @@ def load_source_affinity_tables(analysis_dir: Optional[Path]) -> dict[str, dict[
     tables: dict[str, dict[str, Any]] = {}
     if analysis_dir is None or not Path(analysis_dir).is_dir():
         return tables
-    for affinity_file in sorted(Path(analysis_dir).glob("*-affinity.yaml")):
+    for affinity_file in analysis_paths.iter_keyed_paths(Path(analysis_dir), analysis_paths.AFFINITY):
         try:
             with open(affinity_file, encoding="utf-8") as handle:
                 data = yaml.safe_load(handle)
@@ -246,7 +247,7 @@ def load_source_affinity_tables(analysis_dir: Optional[Path]) -> dict[str, dict[
             continue
         if not isinstance(data, dict) or data.get("schema_version") != 2:
             continue
-        system = data.get("system") or affinity_file.stem.replace("-affinity", "")
+        system = data.get("system") or analysis_paths.key_of(affinity_file, analysis_paths.AFFINITY)
         for table in data.get("tables") or []:
             if not isinstance(table, dict) or not table.get("table"):
                 continue

@@ -10,7 +10,7 @@ have none:
 
 1. **Source coverage** — :func:`kairos_ontology.core.fit_report.run_fit_report`,
    generalized from one table (its original scope) to every ``<system>.<table>`` already
-   recorded in a ``propose-alignment`` output (``integration/sources/_analysis/*-alignment.yaml``).
+   recorded in a ``propose-alignment`` output (``integration/sources/_analysis/dom-*.alignment.yaml``).
 2. **Business-discovery demand** — the committed ``discovery-conformance`` artifact
    (``integration/discovery/core-concepts-conformance.yaml``, DD-090), whose
    ``core_concepts[].uri`` are already full accelerator class URIs.
@@ -44,6 +44,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from . import analysis_paths
 from .anchor_tables import load_table_anchors
 from .compiler.kernel import _binding_domain, _binding_target_class, _binding_tier
 from .conformance_artifact import ARTIFACT_RELPATH, ConformanceArtifactError, read_artifact
@@ -356,7 +357,7 @@ def _resolve_alignment_class(
 
     # #564: an alignment artifact generated before likely_entity_uri carried the
     # global-anchor URI forward has no way to disambiguate here on its own — but
-    # table-anchors.yaml's own class-copy disambiguation already resolved this
+    # hub.table-anchors.yaml's own class-copy disambiguation already resolved this
     # exact table to a URI. Fall back to it, but ONLY when the sheet's own anchor
     # name matches this ref_class exactly: a mismatch (stale sheet, edited
     # alignment, different table) must never silently substitute a different
@@ -612,10 +613,10 @@ def run_design_landscape(
     tables_by_class: dict[str, set[tuple[str, str]]] = {}
     if analysis_dir.is_dir():
         sheet_anchors = load_table_anchors(analysis_dir)
-        alignment_files = sorted(analysis_dir.glob("*-alignment.yaml"))
+        alignment_files = analysis_paths.iter_keyed_paths(analysis_dir, analysis_paths.ALIGNMENT)
         if not alignment_files:
             gaps.append(
-                f"no propose-alignment output (*-alignment.yaml) found under {analysis_dir}."
+                f"no propose-alignment output (dom-*.alignment.yaml) found under {analysis_dir}."
             )
         # An alignment records the closure it was generated against and nothing compared
         # the two, so a refmodels upgrade that widened owl:imports left the file silently
@@ -625,7 +626,7 @@ def run_design_landscape(
         for alignment_path in alignment_files:
             drift = detect_closure_drift(
                 alignment_path,
-                current_domain_uris.get(alignment_path.stem.removesuffix("-alignment"), ()),
+                current_domain_uris.get(analysis_paths.key_of(alignment_path, analysis_paths.ALIGNMENT), ()),
             )
             if drift is not None:
                 gaps.append(drift.describe())

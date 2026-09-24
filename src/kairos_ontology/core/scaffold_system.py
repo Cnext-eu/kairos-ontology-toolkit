@@ -40,6 +40,7 @@ heuristic is wrong.
 
 from __future__ import annotations
 
+from . import analysis_paths
 from .adapters import FABRIC_WAREHOUSE
 
 from dataclasses import dataclass, replace
@@ -176,7 +177,7 @@ def _find_alignment_entry(
     ``domain_uris`` (fit-report's per-table evidence does not). Returns ``None`` when no
     ``*-alignment.yaml`` under *analysis_dir* records this ``(system, table)``.
     """
-    for path in sorted(analysis_dir.glob("*-alignment.yaml")):
+    for path in analysis_paths.iter_keyed_paths(analysis_dir, analysis_paths.ALIGNMENT):
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError:

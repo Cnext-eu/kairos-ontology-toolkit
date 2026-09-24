@@ -38,6 +38,7 @@ from typing import Any
 
 import yaml
 
+from . import analysis_paths
 from .source_analysis import (
     ALIGNMENT_ALGORITHM_VERSION,
     ALIGNMENT_HASH_SCHEMA_VERSION,
@@ -737,7 +738,7 @@ def load_affinity_reports(
     domain_tables: dict[str, list[dict[str, Any]]] = {}
     unassigned: list[str] = []
 
-    for affinity_file in sorted(analysis_dir.glob("*-affinity.yaml")):
+    for affinity_file in analysis_paths.iter_keyed_paths(analysis_dir, analysis_paths.AFFINITY):
         try:
             with open(affinity_file, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
@@ -749,7 +750,7 @@ def load_affinity_reports(
             logger.debug("Skipping %s (not schema_version 2)", affinity_file.name)
             continue
 
-        system = data.get("system", affinity_file.stem.replace("-affinity", ""))
+        system = data.get("system", analysis_paths.key_of(affinity_file, analysis_paths.AFFINITY))
         for tbl in data.get("tables", []):
             domain = tbl.get("domain", "")
             if not domain:
@@ -4299,7 +4300,7 @@ def _propose_alignments(
         analysis_dir: Directory containing *-affinity.yaml files.
         sources_dir: Directory containing source system subdirs with *.vocabulary.ttl.
         catalog_path: Path to the hub's catalog-v001.xml.
-        output_dir: Where to write *-alignment.yaml files.
+        output_dir: Where to write dom-*.alignment.yaml files.
         model: LLM model name. Authoritative for this run: the caller (the CLI)
             owns model precedence (explicit ``--model`` > ``--high-accuracy``
             preset > ``KAIROS_AI_{ROLE}_MODEL`` > default), and the per-role
@@ -4351,15 +4352,15 @@ def _propose_alignments(
             leaves this run's output byte-identical to before this feature.
         honour_table_exclusions: #528 follow-up — when True (default), tables the
             schema-catalogue screen recorded under ``excluded`` in
-            ``table-anchors.yaml`` are not aligned. They describe another table's
+            ``hub.table-anchors.yaml`` are not aligned. They describe another table's
             columns, so every claim made about them is a claim about metadata.
             Each one is reported with its evidence and recorded in the owning
             domain's ``excluded_tables`` block rather than silently dropped. Set
             False to align every affinity table regardless (the counterpart of
             ``anchor-tables --no-schema-catalogue-screen``, for when the screen
-            has a false positive). A hub with no ``table-anchors.yaml`` has no
+            has a false positive). A hub with no ``hub.table-anchors.yaml`` has no
             exclusions to honour and is unaffected either way.
-        without_anchors: proceed even though ``table-anchors.yaml`` is absent.
+        without_anchors: proceed even though ``hub.table-anchors.yaml`` is absent.
             Anchoring is a precondition, not a nicety: without it the DD-185
             regrouping below is skipped, affinity becomes a hard constraint rather
             than a prior, and the schema-catalogue screen has nothing to read
@@ -4527,7 +4528,7 @@ def _propose_alignments(
     # work from the affinity reports, which are written before anchoring and know
     # nothing about it, so a table already judged "not business data at all" was
     # still aligned and its columns still landed in the registry as claims about
-    # a reference class. That verdict lives in table-anchors.yaml; read it here,
+    # a reference class. That verdict lives in hub.table-anchors.yaml; read it here,
     # once, so the exclusion is honoured at the point work is enumerated instead
     # of being filtered out again by every downstream stage.
     #
@@ -4786,7 +4787,7 @@ def _propose_alignments(
         # params hash must also match so an algorithm/model/floor change forces a
         # rebuild (issue #182). Only applies when emitting claims to disk.
         if emit_output and not force:
-            out_path = output_dir / f"{domain_id}-alignment.yaml"
+            out_path = analysis_paths.read_keyed_path(output_dir, analysis_paths.ALIGNMENT, domain_id)
             if out_path.exists():
                 existing_hash = _read_alignment_affinity_hash(out_path)
                 if existing_hash and existing_hash == affinity_hash:
@@ -4921,7 +4922,9 @@ def _propose_alignments(
         anchor_doc_path: Path | None = None
         if emit_output and output_dir is not None:
             anchor_doc_path = unresolved_anchors_path(output_dir, domain_id)
-            existing_anchors, anchor_load_diagnostics = load_unresolved_anchors_doc(anchor_doc_path)
+            existing_anchors, anchor_load_diagnostics = load_unresolved_anchors_doc(
+                analysis_paths.read_keyed_path(output_dir, analysis_paths.UNRESOLVED_ANCHORS, domain_id)
+            )
             for diag in anchor_load_diagnostics:
                 report(f"     ⚠ {diag}", level="verbose")
         resolved_anchor_overrides: dict[str, str] = {
@@ -5695,7 +5698,7 @@ def _propose_alignments(
                 # branch above, which preserves a possibly-good file because a failed
                 # call says nothing about the previous content -- here the run *did*
                 # complete and its verdict is "this domain resolves to nothing".
-                stale_path = output_dir / f"{domain_id}-alignment.yaml"
+                stale_path = analysis_paths.read_keyed_path(output_dir, analysis_paths.ALIGNMENT, domain_id)
                 removed = ""
                 if stale_path.exists():
                     try:
@@ -5794,7 +5797,7 @@ def run_propose_alignment(
     output_dir: Path,
     **kwargs: Any,
 ) -> list[Path]:
-    """Run source alignment and write advisory ``*-alignment.yaml`` files."""
+    """Run source alignment and write advisory ``dom-*.alignment.yaml`` files."""
     kwargs.pop("emit_output", None)
     paths, _ = _propose_alignments(
         analysis_dir,
@@ -6165,7 +6168,7 @@ def write_alignment_output(
     than relying on whoever opens it remembering how it was made.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / f"{alignment.domain}-alignment.yaml"
+    target = analysis_paths.keyed_path(output_dir, analysis_paths.ALIGNMENT, alignment.domain)
     header = provenance_comment(
         "propose-alignment",
         extra=ai_attribution(
@@ -6181,4 +6184,5 @@ def write_alignment_output(
         + yaml.safe_dump(alignment_to_dict(alignment), sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
+    analysis_paths.retire_legacy_keyed(output_dir, analysis_paths.ALIGNMENT, alignment.domain)
     return target

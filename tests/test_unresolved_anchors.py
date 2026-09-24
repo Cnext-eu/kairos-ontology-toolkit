@@ -214,7 +214,7 @@ class TestMergePreservingAnchorResolutions:
 class TestWriteUnresolvedAnchorsDoc:
     def test_write_then_load_round_trip(self, tmp_path):
         path = unresolved_anchors_path(tmp_path, "domainx")
-        assert path.name == "domainx-unresolved-anchors.yaml"
+        assert path.name == "dom-domainx.unresolved-anchors.yaml"
         write_unresolved_anchors_doc(path, "domainx", [_anchor()])
         assert path.is_file()
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))

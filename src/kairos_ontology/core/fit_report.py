@@ -26,6 +26,7 @@ from typing import Any
 
 import yaml
 
+from . import analysis_paths
 from .compiler.bindings import EntityBinding, ExprColumn, load_entity_binding
 from .compiler.result import CompileError
 from .ontology_loader import SemanticProfile, load_ontology
@@ -336,7 +337,7 @@ def find_source_alignment(
 def _find_source_alignment(
     analysis_dir: Path, system: str, table: str
 ) -> tuple[Path, dict[str, Any]] | None:
-    for alignment_path in sorted(analysis_dir.glob("*-alignment.yaml")):
+    for alignment_path in analysis_paths.iter_keyed_paths(analysis_dir, analysis_paths.ALIGNMENT):
         try:
             document = yaml.safe_load(alignment_path.read_text(encoding="utf-8"))
         except yaml.YAMLError:

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from kairos_ontology.core.alignment_closure import (
@@ -114,12 +115,16 @@ def test_the_written_artifact_carries_the_fingerprint(tmp_path):
     assert document["closure_sha256"] == closure_fingerprint(_WAS)
 
 
-def test_a_stem_fallback_domain_is_not_suffixed_twice():
-    """A hand-edited artifact without a `domain` key falls back to the file stem, which
-    already ends in `-alignment`; the message said `equipment-alignment-alignment.yaml`."""
-    from kairos_ontology.core.alignment_closure import ClosureDrift
+@pytest.mark.parametrize("name", ["equipment-alignment.yaml", "dom-equipment.alignment.yaml"])
+def test_a_file_name_fallback_domain_is_the_bare_domain(tmp_path, name):
+    """A hand-edited artifact without a `domain` key takes it from the file name, under
+    either naming convention; the message once said `equipment-alignment-alignment.yaml`."""
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump({"domain_uris": list(_WAS)}), encoding="utf-8")
 
-    message = ClosureDrift(domain="equipment-alignment", added=("x",), removed=()).describe()
+    drift = detect_closure_drift(path, [*_WAS, "https://example.org/added"])
 
-    assert message.startswith("equipment-alignment.yaml is stale")
+    assert drift is not None and drift.domain == "equipment"
+    message = drift.describe()
+    assert message.startswith("dom-equipment.alignment.yaml is stale")
     assert "alignment-alignment" not in message

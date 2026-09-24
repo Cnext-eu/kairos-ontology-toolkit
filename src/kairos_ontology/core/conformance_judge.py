@@ -40,6 +40,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+from . import analysis_paths
 
 logger = logging.getLogger(__name__)
 
@@ -484,7 +485,7 @@ def concepts_named_by_affinity(concept_uris: Iterable[str], analysis_dir: Path) 
         return "".join(ch for ch in str(text).lower() if ch.isalnum())
 
     named: set[str] = set()
-    for path in sorted(Path(analysis_dir).glob("*-affinity.yaml")):
+    for path in analysis_paths.iter_keyed_paths(Path(analysis_dir), analysis_paths.AFFINITY):
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception:  # defensive: a broken report must not fail the judgment

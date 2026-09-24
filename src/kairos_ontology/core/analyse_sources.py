@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 
+from . import analysis_paths
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from .ontology_loader import stable_value
 from ._cache import SidecarCache, compute_entry_hash, open_cache
@@ -1724,9 +1725,10 @@ def write_analysis_output(analysis: SourceAnalysis, output_dir: Path) -> Path:
 
     data["domain_summary"] = sorted(summary.values(), key=lambda e: e["table_count"], reverse=True)
 
-    output_file = output_dir / f"{analysis.system}-affinity.yaml"
+    output_file = analysis_paths.keyed_path(output_dir, analysis_paths.AFFINITY, analysis.system)
     with open(output_file, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    analysis_paths.retire_legacy_keyed(output_dir, analysis_paths.AFFINITY, analysis.system)
 
     return output_file
 
@@ -1758,9 +1760,10 @@ def write_affinity_matrix(analyses: list[SourceAnalysis], output_dir: Path) -> P
         ]
         matrix["systems"].append({"system": analysis.system, "domains": domains})
 
-    output_file = output_dir / "affinity-matrix.yaml"
+    output_file = analysis_paths.hub_path(output_dir, analysis_paths.AFFINITY_MATRIX)
     with open(output_file, "w", encoding="utf-8") as f:
         yaml.dump(matrix, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    analysis_paths.retire_legacy_hub(output_dir, analysis_paths.AFFINITY_MATRIX)
 
     return output_file
 
@@ -1839,8 +1842,8 @@ def run_analyse_sources(
     )
     for stems, archive_name, reason in obsolete_reports:
         for stem in sorted(stems):
-            legacy_report = output_dir / f"{stem}-affinity.yaml"
-            if not legacy_report.is_file():
+            legacy_report = analysis_paths.find_keyed(output_dir, analysis_paths.AFFINITY, stem)
+            if legacy_report is None:
                 continue
             archive_dir = output_dir / "archive" / archive_name
             archive_dir.mkdir(parents=True, exist_ok=True)

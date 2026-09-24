@@ -5,6 +5,7 @@
 import json
 import click
 
+from ..core import analysis_paths
 from .gates import escape_option
 from pathlib import Path
 from typing import Any
@@ -3529,12 +3530,12 @@ def _gap_columns_for_table(hub_root, system: str, table: str):
 
 
 def _alignment_covers_table(hub_root, system: str, table: str) -> bool:
-    """Whether any ``*-alignment.yaml`` carries an entry for this exact relation."""
+    """Whether any ``dom-*.alignment.yaml`` carries an entry for this exact relation."""
     import yaml as _yaml
 
     analysis = hub_root / "integration" / "sources" / "_analysis"
     try:
-        paths = sorted(analysis.glob("*-alignment.yaml"))
+        paths = analysis_paths.iter_keyed_paths(analysis, analysis_paths.ALIGNMENT)
     except OSError:
         return False
     for path in paths:
@@ -4062,7 +4063,7 @@ def _emit_pattern_coverage(root, ledger, output_format):
     "analysis_opt",
     default=None,
     help="Path to the _analysis/ directory to read affinity from and write "
-    "table-anchors.yaml into (default: auto-detect).",
+    "hub.table-anchors.yaml into (default: auto-detect).",
 )
 @click.option(
     "--catalog",
@@ -4108,7 +4109,7 @@ def anchor_tables_cmd(
     """Anchor every source table against the full reference class catalog (DD-185).
 
     One global model call: all tables' column names against a one-line-per-class
-    catalog marked with blueprint ownership. Writes table-anchors.yaml — anchor
+    catalog marked with blueprint ownership. Writes hub.table-anchors.yaml — anchor
     class, alternate, confidence, derived domain, grain columns, natural key and
     load hint per table, plus anchor_properties and anchor_column_overlap (how the
     duplicate copy of a class name was chosen) and a warning on any anchor whose
@@ -4237,7 +4238,7 @@ def draft_gap_decisions_cmd(
 ):
     """Draft the DD-169 gap-gate decisions, grouped by column name (DD-186).
 
-    Without flags: writes gap-decisions.yaml — one reviewable entry per distinct
+    Without flags: writes hub.gap-decisions.yaml — one reviewable entry per distinct
     unmapped column name, with a proposed disposition, the reasoning, and the
     tables it appears in. Fill in 'decision' on each entry, then re-run with
     --apply.
@@ -4248,7 +4249,7 @@ def draft_gap_decisions_cmd(
     reported as a count — not-business-data drops a column out of the DD-169 gate
     for good, so a disagreement between the two stages is answered by a human, not
     by whichever ran first. The withheld columns land in the 'conflicts:' block of
-    gap-decisions.yaml; settle each with 'source-disposition set'.
+    hub.gap-decisions.yaml; settle each with 'source-disposition set'.
 
     Proposals are never applied on their own: blueprint-gap, deferred and
     registered-extension shape the model, and choosing them is the reviewer's.
@@ -4291,7 +4292,7 @@ def draft_gap_decisions_cmd(
             )
             click.echo(
                 "     Read them under 'conflicts:' in "
-                "integration/sources/_analysis/gap-decisions.yaml (run "
+                "integration/sources/_analysis/hub.gap-decisions.yaml (run "
                 "'kairos-ontology draft-gap-decisions' to refresh it), then decide "
                 "each with 'kairos-ontology source-disposition set --system <s> "
                 '--table <t> --column <c> --disposition <d> --rationale "..."\'.'
@@ -4314,10 +4315,9 @@ def draft_gap_decisions_cmd(
 
         sheet = build_decision_sheet(hub, min_occurrences=min_occurrences)
         # Preserve anything already decided, then fill the rest from the drafts.
-        write_decision_sheet(hub, sheet)
+        path = write_decision_sheet(hub, sheet)
         import yaml as _yaml
 
-        path = hub / "integration" / "sources" / "_analysis" / "gap-decisions.yaml"
         sheet = _yaml.safe_load(path.read_text(encoding="utf-8"))
         counts = _accept(sheet)
         if not dry_run:
@@ -4413,7 +4413,7 @@ def draft_gap_decisions_cmd(
                 f"   ↪ {s['gap_columns_in_excluded_tables']} of the covered column(s) "
                 f"belong to {s['schema_catalogue_tables_excluded']} table(s) the "
                 "anchoring screen ruled not business data ('excluded' in "
-                "table-anchors.yaml). Clear them per table with 'source-disposition "
+                "hub.table-anchors.yaml). Clear them per table with 'source-disposition "
                 "set --system <s> --table <t> --disposition not-business-data'."
             )
 
