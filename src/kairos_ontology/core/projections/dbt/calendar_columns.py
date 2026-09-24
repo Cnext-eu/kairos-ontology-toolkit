@@ -48,19 +48,33 @@ class CalendarColumn:
     #: False for the governance columns, which carry the profile's declared policy on
     #: every row rather than a property of the date.
     is_date_attribute: bool = True
+    #: The warehouse primary key: the DDL, the ERD and the dbt tests key on it.
     is_key: bool = False
     nullable: bool = False
+    #: The semantic model's key (DD-238). Power BI and the BPA rules recognise a date
+    #: table by a DateTime ``isKey`` column in a ``dataCategory: Time`` table, and every
+    #: role relationship already joins ``full_date``, so this -- not the Int64
+    #: ``date_key`` -- is what the TMDL marks.
+    marks_date_table: bool = False
+    #: The column a text column sorts by in the semantic model, so ``month_name`` reads
+    #: January..December rather than alphabetically.
+    sort_by: str = ""
 
 
 #: Ordered exactly as the generated ``select`` emits them, which is also the order the DDL
 #: declares and the order a reader of the TMDL sees.
 CALENDAR_COLUMNS: tuple[CalendarColumn, ...] = (
     CalendarColumn("date_key", "int64", "YYYYMMDD date key.", is_key=True),
-    CalendarColumn("full_date", "date", "Calendar date."),
+    CalendarColumn("full_date", "date", "Calendar date.", marks_date_table=True),
     CalendarColumn("year_number", "int32", "Calendar year."),
     CalendarColumn("quarter_number", "int32", "Calendar quarter, 1-4."),
     CalendarColumn("month_number", "int32", "Calendar month, 1-12."),
-    CalendarColumn("month_name", "string", "Full month name, in the calendar locale."),
+    CalendarColumn(
+        "month_name",
+        "string",
+        "Full month name, in the calendar locale.",
+        sort_by="month_number",
+    ),
     CalendarColumn("day_of_month", "int32", "Day of the month, 1-31."),
     CalendarColumn("week_number", "int32", "ISO 8601 week of the year, 1-53."),
     CalendarColumn(
@@ -110,3 +124,7 @@ CALENDAR_COLUMNS: tuple[CalendarColumn, ...] = (
 #: ``dim_date.<column>`` reference against what the product carries; callers prefix the
 #: table themselves.
 CALENDAR_COLUMN_NAMES: frozenset[str] = frozenset(item.name for item in CALENDAR_COLUMNS)
+
+#: The one column the semantic model keys ``dim_date`` on, and so the one every calendar
+#: role relationship must join (DD-238).
+CALENDAR_DATE_TABLE_KEY: str = next(item.name for item in CALENDAR_COLUMNS if item.marks_date_table)

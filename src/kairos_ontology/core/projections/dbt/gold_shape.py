@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .bpa_profile import BpaIgnore, BpaIgnoreError, parse_bpa_ignore
-from .calendar_columns import CALENDAR_COLUMN_NAMES
+from .calendar_columns import CALENDAR_COLUMN_NAMES, CALENDAR_DATE_TABLE_KEY
 from ..uri_utils import camel_to_snake
 from .gold_specs import (
     DimensionalGoldSpec,
@@ -80,7 +80,7 @@ _CALENDAR_ROLE = re.compile(
 #: synthesized by the renderer rather than shaped as a `GoldTableSpec`, so the ambiguity
 #: graph has to carry it as a node that no table lookup will ever resolve.
 CALENDAR_TABLE = "dim_date"
-CALENDAR_COLUMN = "full_date"
+CALENDAR_COLUMN = CALENDAR_DATE_TABLE_KEY
 
 _DAX_REFERENCE = re.compile(r"\[([^\]]+)\]")
 # #619 Bug 11: a DAX table reference is either a single-quoted name (DAX never uses single
