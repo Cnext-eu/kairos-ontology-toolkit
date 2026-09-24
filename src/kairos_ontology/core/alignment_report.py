@@ -99,6 +99,9 @@ class UnmappedColumn:
     #: DD-170 hub-local property the aligner proposes for this column, when it could
     #: state one. Never a reference IRI — the hub mints that at design time.
     proposal: dict[str, str] = field(default_factory=dict)
+    #: DD-179 role token when this column is one member of a role group (#938), e.g.
+    #: ``consignee`` for ``CONSIGNEE_ZIP``. Empty when alignment found no group.
+    role_group: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +113,7 @@ class UnmappedColumn:
             "suggestion": self.suggestion,
             "recommended_disposition": self.recommended_disposition,
             "proposed_local_property": self.proposal or None,
+            **({"role_group": self.role_group} if self.role_group else {}),
         }
 
 
@@ -774,6 +778,7 @@ def _build_alignment_report_uncached(
                         suggestion=str(entry.get("suggested_property") or ""),
                         recommended_disposition=str(entry.get("recommended_disposition") or ""),
                         proposal=dict(entry.get("proposed_local_property") or {}),
+                        role_group=str(entry.get("role_group") or ""),
                     )
                 )
         report.domains.append(coverage)

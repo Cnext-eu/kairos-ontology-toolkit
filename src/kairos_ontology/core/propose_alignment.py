@@ -623,6 +623,11 @@ class TableAlignment:
     #: coarser model is a legitimate design choice, so these flag rather than
     #: block. Emitted only when a rule fires, so default output is unchanged.
     consistency_flags: list[str] = field(default_factory=list)
+    #: DD-179 role groups (``[{"role": token, "columns": [...]}]``), persisted (#938).
+    #: ``group_columns_by_role`` already computed them for the prompt and then threw
+    #: them away, so the gap gate ruled 78 denormalised party columns one name at a time
+    #: with no sign that they were three roles of one entity.
+    role_groups: list[dict[str, Any]] = field(default_factory=list)
     #: F6 (toolkit-optimizations) — the true source-vocabulary column count and a
     #: deterministic digest of the sorted source column names, captured before any
     #: prompt truncation. Persisted so ``check-claims`` can detect columns that were
@@ -5514,6 +5519,18 @@ def _propose_alignments(
             )
             for flag in consistency_flags:
                 logger.info("Alignment consistency (%s.%s): %s", system, table, flag)
+            # #938: keep the role groups, and tag each unmapped member with its role, so
+            # the gap sheet can present them as one shape instead of N loose names.
+            role_groups, _ungrouped = group_columns_by_role(columns)
+            role_of = {
+                str(member.get("name", "")): token
+                for token, members in role_groups
+                for member in members
+            }
+            for custom in custom_cols:
+                token = role_of.get(str(custom.get("column") or ""))
+                if token:
+                    custom["role_group"] = token
 
             ta = TableAlignment(
                 system=system,
@@ -5523,6 +5540,10 @@ def _propose_alignments(
                 columns=col_alignments,
                 custom_columns=custom_cols,
                 consistency_flags=consistency_flags,
+                role_groups=[
+                    {"role": token, "columns": sorted(str(m.get("name", "")) for m in members)}
+                    for token, members in role_groups
+                ],
                 ref_class_status=result.get("ref_class_status", "matched"),
                 rejected_ref_class=result.get("rejected_ref_class"),
                 source_column_count=src_count,
@@ -6084,6 +6105,8 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         # so a clean table's output stays byte-identical.
         if ta.consistency_flags:
             table_dict["consistency_flags"] = list(ta.consistency_flags)
+        if ta.role_groups:
+            table_dict["role_groups"] = [dict(group) for group in ta.role_groups]
         # Alignment-reliability: emit the generation outcome + safe metadata only
         # when it is not the happy path, so a fully-successful run's output stays
         # byte-identical to before. ``generation_error`` is already sanitized.
