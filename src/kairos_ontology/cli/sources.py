@@ -1108,6 +1108,7 @@ def analyse_sources_cmd(
             )
             for f in output_files:
                 click.echo(f"   📄 {f.name}")
+            _report_feedback_mentions(output_path)
     except EnvironmentError as e:
         click.echo(f"\n❌ {e}", err=True)
         raise SystemExit(1)
@@ -1117,6 +1118,36 @@ def analyse_sources_cmd(
     except AffinityTotalFailureError as e:
         click.echo(f"\n⛔ {e}", err=True)
         raise SystemExit(1)
+
+
+def _report_feedback_mentions(analysis_dir: Path) -> None:
+    """After analyse-sources: tables an open feedback record discusses, with their new domain.
+
+    #695: a re-run silently contradicted recorded human review. This names each
+    overlap so a reviewer can check the assignment against the record; the records are
+    prose, so judging agreement is theirs. Advisory, never fatal.
+    """
+    from ..core.feedback_crosscheck import load_assignments, tables_in_open_feedback
+    from ..core.hub_utils import find_hub_root
+
+    try:
+        hub_root = find_hub_root(Path.cwd(), require_model=False)
+        if hub_root is None:
+            return
+        mentions = tables_in_open_feedback(hub_root, load_assignments(analysis_dir))
+    except Exception:  # noqa: BLE001 - advisory only
+        return
+    if not mentions:
+        return
+    click.echo(
+        f"\n📝 {len(mentions)} table assignment(s) touch tables an open feedback record "
+        "discusses. Check each against the record; a durable override belongs in "
+        "integration/discovery/design-rulings.yaml (DD-192):"
+    )
+    for mention in mentions[:25]:
+        click.echo(f"   {mention.describe()}")
+    if len(mentions) > 25:
+        click.echo(f"   ... and {len(mentions) - 25} more")
 
 
 @click.command(name="audit-silver-samples")
