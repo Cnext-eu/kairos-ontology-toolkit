@@ -17,6 +17,7 @@ import yaml
 
 from kairos_ontology import __version__
 
+from .. import yaml_io
 from ..adapters import UnsupportedAdapterError, resolve_adapter
 from ..hub_config import HubConfigError, load_hub_config
 from ..ontology_loader import SemanticProfile, load_ontology
@@ -417,8 +418,33 @@ def _compute_declared_prefix_aliases(
     return tuple(sorted(aliases))
 
 
+#: Parsed bronze source files, keyed ``(resolved path, mtime_ns, size)`` (#968). Under
+#: ``compile --all`` every domain re-parsed the same unchanged ``.ttl`` files -- 187
+#: parses on a 15-domain hub, 17% of the run. ``ResolvedRelation`` tuples are immutable,
+#: so one parse can be shared by every domain in the process.
+_SOURCE_RELATIONS_CACHE: dict[tuple[str, int, int], tuple[ResolvedRelation, ...]] = {}
+
+
 def _source_relations_for_path(path: Path) -> tuple[ResolvedRelation, ...]:
-    """Parse one bronze source file exactly once into its ``ResolvedRelation`` set."""
+    """Parse one bronze source file once per process into its ``ResolvedRelation`` set.
+
+    The memo key includes the file's modification time and size, so a file changed
+    within the same process is parsed again rather than served stale.
+    """
+    try:
+        stat = Path(path).stat()
+        key = (str(Path(path).resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return _parse_source_relations(path)
+    cached = _SOURCE_RELATIONS_CACHE.get(key)
+    if cached is None:
+        cached = _parse_source_relations(path)
+        _SOURCE_RELATIONS_CACHE[key] = cached
+    return cached
+
+
+def _parse_source_relations(path: Path) -> tuple[ResolvedRelation, ...]:
+    """Parse one bronze source file into its ``ResolvedRelation`` set."""
     relations: list[ResolvedRelation] = []
     graph = Graph()
     graph.parse(path, format="turtle")
@@ -522,7 +548,7 @@ def _could_match_any_source_pair(text: str, pairs: set[tuple[str, str]]) -> bool
 
 def _binding_source_ref(text: str) -> str:
     try:
-        document = yaml.safe_load(text)
+        document = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return ""
     if not isinstance(document, dict) or not isinstance(document.get("source"), dict):
@@ -532,7 +558,7 @@ def _binding_source_ref(text: str) -> str:
 
 def _binding_dbt_paths(text: str) -> tuple[str, str]:
     try:
-        document = yaml.safe_load(text)
+        document = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return "", ""
     source = document.get("source") if isinstance(document, dict) else None
@@ -2967,7 +2993,7 @@ def _technical_field_safety_diagnostics(
 def _binding_domain(text: str) -> str | None:
     """Read only the scope discriminator before full closed-schema validation."""
     try:
-        document = yaml.safe_load(text)
+        document = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return None
     if not isinstance(document, dict):
@@ -2984,7 +3010,7 @@ def _binding_relationship_targets(text: str) -> frozenset[str]:
     parent's declared ``modelName`` is authoritative for this domain's column names.
     """
     try:
-        document = yaml.safe_load(text)
+        document = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return frozenset()
     if not isinstance(document, dict):
@@ -3019,7 +3045,7 @@ def discover_contract_paths(
         if path == own:
             continue
         try:
-            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            document = yaml_io.safe_load(path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError):
             continue
         if not isinstance(document, dict):
@@ -3043,7 +3069,7 @@ def _binding_tier(text: str) -> str:
     Absence means ``canonical`` (today's only behavior before ``metadata.tier`` existed).
     """
     try:
-        document = yaml.safe_load(text)
+        document = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return "canonical"
     if not isinstance(document, dict):
@@ -3056,7 +3082,7 @@ def _binding_tier(text: str) -> str:
 
 def _binding_target_class(text: str) -> str:
     try:
-        document = yaml.safe_load(text)
+        document = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return ""
     if not isinstance(document, dict):
@@ -3075,7 +3101,7 @@ def _binding_referenced_class_tokens(text: str) -> tuple[str, ...]:
     tokens here and is reported through the normal schema-validation diagnostics instead.
     """
     try:
-        document = yaml.safe_load(text)
+        document = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return ()
     if not isinstance(document, dict):
@@ -3104,7 +3130,7 @@ def _binding_referenced_property_tokens(text: str) -> tuple[str, ...]:
     they carry no ontology property by construction (DD-139).
     """
     try:
-        document = yaml.safe_load(text)
+        document = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return ()
     if not isinstance(document, dict):

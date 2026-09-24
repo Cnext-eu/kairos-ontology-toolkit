@@ -21,6 +21,7 @@ rather than the absence of one.
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 from collections.abc import Callable, Iterable
@@ -30,7 +31,7 @@ from typing import Any
 
 import yaml
 
-from . import analysis_paths
+from . import analysis_paths, yaml_io
 
 SCHEMA_VERSION = 1
 
@@ -343,8 +344,7 @@ def _yaml_load(text: str) -> Any:
     ``generate-bindings`` reads it. The C loader parses the same document to the same
     value about five times faster; the pure-Python one is the fallback.
     """
-    loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-    return yaml.load(text, Loader=loader)  # noqa: S506 - a SafeLoader either way
+    return yaml_io.safe_load(text)
 
 
 def _yaml_dump(payload: Any) -> str:
@@ -443,15 +443,49 @@ def split_legacy_ledger(hub_root: Path, *, dry_run: bool = False) -> dict[str, i
     return moved
 
 
+#: ``load_dispositions`` results, keyed by every ledger file's ``(path, mtime_ns, size)``
+#: (#968). ``compile --all`` asked for the ledger twice per domain -- 30 parses of a
+#: 0.99 MB file on a 15-domain hub, 36% of the run -- and nothing in between changed it.
+_DISPOSITIONS_CACHE: dict[tuple, dict[tuple[str, str, str], dict[str, Any]]] = {}
+
+
+def _ledger_stamp(paths: list[Path]) -> tuple:
+    stamp = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        stamp.append((str(path.resolve()), stat.st_mtime_ns, stat.st_size))
+    return tuple(stamp)
+
+
 def load_dispositions(hub_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
     """Read every ledger file, or ``{}`` when the hub has not written one yet.
 
     Keys are ``(system, table, column)``, with ``""`` for a table-grain entry. An
     unreadable file contributes nothing rather than failing the reader; the writers,
     which must not silently drop a file's contents, refuse instead.
+
+    Memoised per process on each file's path, modification time and size, so a write
+    in the same process (``record_dispositions``) is seen by the next read. A deep copy
+    is returned: callers may mutate what they get without touching the cache.
     """
+    paths = ledger_files(analysis_paths.analysis_dir(hub_root))
+    stamp = _ledger_stamp(paths)
+    cached = _DISPOSITIONS_CACHE.get(stamp)
+    if cached is None:
+        cached = _load_dispositions_uncached(paths)
+        _DISPOSITIONS_CACHE.clear()
+        _DISPOSITIONS_CACHE[stamp] = cached
+    return copy.deepcopy(cached)
+
+
+def _load_dispositions_uncached(
+    paths: list[Path],
+) -> dict[tuple[str, str, str], dict[str, Any]]:
     recorded: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for path in ledger_files(analysis_paths.analysis_dir(hub_root)):
+    for path in paths:
         try:
             rows = _read_rows(path)
         except Exception:

@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 from jsonschema import Draft7Validator
 
+from .. import yaml_io
 from ..projections.uri_utils import camel_to_snake
 from .bindings import _MarkResolver, _collect_duplicate_key_diagnostics
 from .result import CompileDiagnostic, CompileError, SourceLocation
@@ -528,7 +529,7 @@ def load_silver_contract(text: str, *, path: str = "<contract>") -> SilverContra
                 location=item.location,
             )
 
-    data = yaml.safe_load(text)
+    data = yaml_io.safe_load(text)
     if not isinstance(data, dict):
         diagnostics.append(
             CompileDiagnostic(

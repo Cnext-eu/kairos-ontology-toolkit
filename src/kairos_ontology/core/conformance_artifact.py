@@ -46,6 +46,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from . import yaml_io
 from .archetype_loader import Archetype, VALID_TIERS
 from .hub_utils import is_authored_discovery_ttl, is_scaffold_placeholder_text
 
@@ -715,7 +716,7 @@ def read_artifact(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise ConformanceArtifactError(f"Conformance artifact not found: {path}")
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = yaml_io.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ConformanceArtifactError(
             f"Could not parse conformance artifact {path}: {exc}"
