@@ -372,6 +372,25 @@ class TestInitDataplatform:
         assert content.count("GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}") == 2
         assert "GH_TOKEN: ${{ github.token }}" in content
 
+    @pytest.mark.parametrize(
+        "workflow", ("deploy-powerbi-semantic-model.yml", "pr-validate.yml")
+    )
+    def test_every_uv_run_follows_uv_setup_and_locked_sync(self, dataplatform_output, workflow):
+        """#983: the deploy workflow's connection-override step called `uv run` in a job
+        that never installed uv nor synced the locked environment, so the deploy failed
+        before publishing. Every `uv run` must come after both steps.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / workflow
+        lines = wf.read_text(encoding="utf-8").splitlines()
+        executable = [
+            (i, line) for i, line in enumerate(lines) if not line.lstrip().startswith("#")
+        ]
+        setup = next(i for i, line in executable if "astral-sh/setup-uv@" in line)
+        sync = next(i for i, line in executable if "uv sync --locked" in line)
+        uv_runs = [i for i, line in executable if "uv run" in line]
+        assert uv_runs, f"{workflow} no longer runs anything through uv"
+        assert setup < sync < min(uv_runs)
+
     def test_pr_validate_workflow_explains_private_hub_failure_mode(self, dataplatform_output):
         """#760: a public hub is legitimate (exit 0 stays), but the message must say what a
         private-hub operator will see and do."""

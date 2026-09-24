@@ -190,7 +190,7 @@ _LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
     "dataplatform/.github/workflows/pr-validate.yml.template":
         "a8512836f7412d6a2d2d954bbe5ee9d63cff1d48103cc911bdce6a6b4e33d211",
     "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template":
-        "b04bbc1fce0915184fbdca4b06aea4e2f3bf086d2849d49935cdc1f5555d6cb0",
+        "d4f3df3d3a62e38390e7f89aad3abb593ffbf09c3170afed8ba643e0d71b1a41",
 }
 
 

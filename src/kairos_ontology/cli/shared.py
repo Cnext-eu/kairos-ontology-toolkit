@@ -2630,6 +2630,11 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "hub-release-projections/2.template",
         "hub-release-projections/3.template",
     ),
+    # Pre-#983 generation, whose connection-override step called `uv run` without ever
+    # installing uv or syncing the locked environment.
+    ".github/workflows/deploy-powerbi-semantic-model.yml": (
+        "dataplatform-deploy-powerbi-semantic-model/1.template",
+    ),
 }
 
 
