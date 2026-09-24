@@ -53,7 +53,7 @@ UPSTREAM_REFRESHED = "2026-09-24"
 
 #: Bumped whenever a disposition changes, so a provenance sidecar (DD-218) says which
 #: profile judged the model it describes.
-PROFILE_VERSION = "1"
+PROFILE_VERSION = "2"
 
 #: The vendored copy. Line endings are normalised to LF by ``.gitattributes``; the
 #: per-rule digests are over parsed JSON, so that is not a change to any rule.
@@ -208,11 +208,13 @@ PROFILE: tuple[RuleProfile, ...] = (
         "SNOWFLAKE_SCHEMA_ARCHITECTURE",
         "0295777217b8",
         _d(
-            _RJ,
-            "Whether a dimension references another is decided by the canonical ontology, "
-            "not by the renderer. Flattening is authored (product scope, goldExcludeColumn) "
-            "and surplus filter paths are already deactivated by DD-226.",
-            decision="DD-238",
+            _CD,
+            "DD-240 prefers a star (Kimball) and amends DD-238's rejection: every "
+            "dimension-to-dimension edge is reported as advisory "
+            "semantic-model.star-schema, and a chain the fact also reaches directly as the "
+            "warning semantic-model.snowflake-chain. Flattening stays authored; a deliberate "
+            "outrigger is a practiceException.",
+            enforced_by="gold.star-schema",
         ),
     ),
     _rule(
@@ -403,10 +405,11 @@ PROFILE: tuple[RuleProfile, ...] = (
         "INACTIVE_RELATIONSHIPS_THAT_ARE_NEVER_ACTIVATED",
         "49bf31aa3df4",
         _d(
-            _RJ,
-            "Surplus filter paths are deactivated deliberately and kept for USERELATIONSHIP; "
-            "every one is listed in gold_product_report under deactivated_relationships.",
-            decision="DD-226",
+            _CD,
+            "Surplus filter paths are deactivated deliberately (DD-226) and kept for "
+            "USERELATIONSHIP. Every deactivated edge no measure activates is reported as "
+            "semantic-model.ambiguous-path (DD-240); one a measure activates is intended.",
+            enforced_by="gold.ambiguous-path",
         ),
     ),
     _rule("AVOID_USING_'1-(X/Y)'_SYNTAX", "24225a88d2d1", _d(_PD, _AUTHORED_DAX)),
@@ -514,7 +517,16 @@ PROFILE: tuple[RuleProfile, ...] = (
             decision="DD-238",
         ),
     ),
-    _rule("ENSURE_TABLES_HAVE_RELATIONSHIPS", "e45060b534ad", _d(_PD, _STATIC_ADVISORY)),
+    _rule(
+        "ENSURE_TABLES_HAVE_RELATIONSHIPS",
+        "e45060b534ad",
+        _d(
+            _CD,
+            "The compiler knows every relationship, so a fact with none, or a dimension that "
+            "reaches no fact, is reported as semantic-model.connected-tables (DD-240).",
+            enforced_by="gold.unconnected-table",
+        ),
+    ),
     _rule(
         "OBJECTS_WITH_NO_DESCRIPTION",
         "82ff9a9dd8c0",
@@ -802,6 +814,11 @@ def rule_scopes(rule_id: str) -> frozenset[str]:
     return frozenset()
 
 
+def is_bpa_rule(rule_id: str) -> bool:
+    """True for a rule of the BPA profile; False for a catalogued practice (DD-240)."""
+    return rule_id in _by_id()
+
+
 def profile_stamp() -> dict[str, str]:
     """Return what a provenance sidecar records about the profile that judged a model."""
     return {"version": PROFILE_VERSION, "upstreamCommit": UPSTREAM_COMMIT}
@@ -879,11 +896,27 @@ def parse_bpa_ignore(value: str) -> BpaIgnore:
     kind = match.group("kind")
     target = (match.group("target") or "").strip()
     if not rule_scopes(rule_id):
-        raise BpaIgnoreError(
-            "gold.bpa-unknown-rule",
-            f"bpaIgnoreRule {value!r} names {rule_id!r}, which is not a rule in the BPA profile",
-        )
-    if not rule_scopes(rule_id) & IGNORE_OBJECT_SCOPES[kind]:
+        # DD-240: the same mechanism excuses a catalogued semantic-model practice.
+        from ....practices.exceptions import excusable_practice
+
+        practice = excusable_practice(rule_id, area="semantic-model")
+        if practice is None:
+            raise BpaIgnoreError(
+                "gold.bpa-unknown-rule",
+                (
+                    f"bpaIgnoreRule {value!r} names {rule_id!r}, which is neither a rule in "
+                    "the BPA profile nor an excusable semantic-model practice"
+                ),
+            )
+        if kind not in practice.objects:
+            raise BpaIgnoreError(
+                "gold.bpa-ignore-wrong-scope",
+                (
+                    f"bpaIgnoreRule {value!r}: {rule_id} is about a "
+                    f"{' or '.join(practice.objects)}, never a {kind}"
+                ),
+            )
+    elif not rule_scopes(rule_id) & IGNORE_OBJECT_SCOPES[kind]:
         raise BpaIgnoreError(
             "gold.bpa-ignore-wrong-scope",
             (
@@ -942,6 +975,9 @@ def render_profile_markdown() -> str:
         '<ontology> kairos-ext:bpaIgnoreRule "DAX_COLUMNS_FULLY_QUALIFIED on measure '
         'sales.margin: reason the rule does not hold here" .',
         "```",
+        "",
+        "`kairos-ext:practiceException` is the same mechanism under the name that also "
+        "covers the model-shape practices (DD-240); see `practices/semantic-model.md`.",
         "",
         "## Snapshot",
         "",

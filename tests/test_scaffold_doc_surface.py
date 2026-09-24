@@ -174,6 +174,10 @@ _SHIPPED_USER_DOCS = (
     "docs/toolkit/CLI_REFERENCE.md",
     "docs/toolkit/CONSUMING_COMPILE_PLAN.md",
     "docs/toolkit/how-to/README.md",
+    "docs/toolkit/BPA_PROFILE.md",
+    # DD-240: the generated best-practice catalogue pages.
+    "docs/toolkit/practices/semantic-model.md",
+    "docs/toolkit/practices/ddd.md",
 )
 
 #: Toolkit-internal material that must never reach a client hub: it documents *this*

@@ -121,6 +121,131 @@ def _report_deferred_bridges(domain: str, result) -> None:
         click.echo(f"      {item['bridge']} -> {item['endpoint']}")
 
 
+def _gold_product_checks(hub: Path, plans: dict[str, Any]) -> list[tuple[str, list, str]]:
+    """Shape every Gold product whose domains all compiled here; return its findings.
+
+    DD-240. Per-domain shaping sees one domain of a product, so a route between two
+    domains' tables is invisible to it; the model-shape practices therefore run on the
+    whole product (``gold_shape_checks``), which until now only ``emit-gold`` shaped. The
+    compile plans are the ones this invocation just built -- nothing is recompiled.
+
+    Returns ``(product, diagnostics, note)``: the shape findings, or a note explaining why
+    the product was not checked. Never raises and never fails the compile: a product that
+    cannot be shaped here fails ``emit-gold`` with the same error, which the note names.
+    """
+    from ..core.compiler.result import (
+        CompileDiagnostic,
+        DiagnosticSeverity,
+        SourceLocation,
+    )
+    from ..core.projections.dbt.gold_connection import GoldProductConfig, load_gold_products
+    from ..core.projections.dbt.gold_shape_checks import CODES
+    from ..core.projections.dbt.gold_specs import GoldContractError
+    from ..core.projections.medallion_gold_projector import plan_gold_from_compile_plans
+    from ..practices import practice_for_check
+
+    def has_gold(plan) -> bool:
+        contract = getattr(plan, "normalized_contract", None)
+        return contract is not None and contract.policy.gold.profile is not None
+
+    gold_plans = {domain: plan for domain, plan in plans.items() if has_gold(plan)}
+    if not gold_plans:
+        return []
+    try:
+        declared = load_gold_products(hub)
+    except (GoldContractError, OSError, ValueError) as exc:
+        return [("gold.products", [], f"kairos.yaml gold.products is unusable: {exc}")]
+    claimed = {domain for product in declared for domain in product.domains}
+    products = [product for product in declared if set(product.domains) & set(gold_plans)] + [
+        GoldProductConfig(name=domain, domains=(domain,), declared=False)
+        for domain in sorted(gold_plans)
+        if domain not in claimed
+    ]
+    shape_codes = set(CODES.values())
+    checked: list[tuple[str, list, str]] = []
+    for product in products:
+        missing = [domain for domain in product.domains if domain not in gold_plans]
+        if missing:
+            checked.append(
+                (
+                    product.name,
+                    [],
+                    f"not shape-checked: {', '.join(missing)} did not compile in this run "
+                    "(name every member domain, or use --all)",
+                )
+            )
+            continue
+        try:
+            logical, _ = plan_gold_from_compile_plans(
+                [gold_plans[domain] for domain in product.domains], product
+            )
+        except GoldContractError as exc:
+            checked.append(
+                (
+                    product.name,
+                    [],
+                    f"not shape-checked: the product does not shape ({exc}); "
+                    "emit-gold fails the same way",
+                )
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001 - an advisory pass must not crash a check
+            checked.append((product.name, [], f"not shape-checked: {type(exc).__name__}: {exc}"))
+            continue
+        location = SourceLocation(path=f"gold product {product.name}")
+        diagnostics = []
+        for code, message, _resource in getattr(logical, "advisories", ()) or ():
+            if code not in shape_codes:
+                continue  # the BPA findings were already reported per domain
+            practice = practice_for_check(code)
+            severity = (
+                DiagnosticSeverity.INFO
+                if practice is not None and practice.enforcement == "advisory"
+                else DiagnosticSeverity.WARNING
+            )
+            diagnostics.append(
+                CompileDiagnostic(
+                    code=code,
+                    message=message,
+                    severity=severity,
+                    location=location,
+                    rule_id="DD-240-practices",
+                )
+            )
+        checked.append((product.name, diagnostics, ""))
+    return checked
+
+
+def _report_gold_product_checks(
+    checked: list[tuple[str, list, str]], payloads: list[dict[str, Any]], output_format: str
+) -> None:
+    if output_format == "json":
+        # Additive: each product's findings ride on the payload of its first compiled
+        # domain, so neither the single-domain object nor the --all array changes shape.
+        if not payloads:
+            return
+        payloads[0].setdefault("gold_products", []).extend(
+            {
+                "product": name,
+                "diagnostics": [asdict(item) for item in diagnostics],
+                **({"note": note} if note else {}),
+            }
+            for name, diagnostics, note in checked
+        )
+        return
+    for name, diagnostics, note in checked:
+        if note:
+            click.echo(f"  ⚠ Gold product {name}: {note}")
+            continue
+        for diagnostic in diagnostics:
+            click.echo(diagnostic.render())
+        click.echo(
+            f"✓ Gold product {name}: shape check found {len(diagnostics)} finding(s)"
+            if diagnostics
+            else f"✓ Gold product {name}: shape check clean"
+        )
+
+
 def _payload(result) -> dict:
     return {
         "domain": result.domain,
@@ -809,6 +934,18 @@ def compile_cmd(
     ``gold.bpa-unknown-rule``, ``gold.bpa-ignore-wrong-scope``,
     ``gold.bpa-ignore-unused``). Warnings, which never block:
     ``gold.description-missing``, ``gold.float-column``, ``gold.dax-division-operator``.
+
+    After the domains compile, ``--check`` also shapes every Gold product whose member
+    domains all compiled in the same run, and reports the model-shape practices it breaks
+    (DD-240, ``docs/guide/practices/semantic-model.md``). Warnings:
+    ``gold.ambiguous-path``, ``gold.fact-to-fact``, ``gold.snowflake-chain``,
+    ``gold.fact-without-date``, ``gold.snapshot-shape``, ``gold.bridge-weight-unused``,
+    ``gold.duplicate-dimension``, ``gold.unconnected-table``. Info (Kimball advice):
+    ``gold.role-playing-dimension``, ``gold.star-schema``, ``gold.semi-additive-sum``,
+    ``gold.measure-on-dimension``, ``gold.bridge-unweighted``,
+    ``gold.product-spans-processes``, ``gold.table-name-role``. They never block. A product
+    with a member domain missing from the run is named and skipped; use ``--all`` to check
+    every product.
     """
     if emit_mode and (check_mode or explain_mode):
         raise click.UsageError("--emit cannot be combined with --check or --explain")
@@ -858,6 +995,8 @@ def compile_cmd(
 
     payloads: list[dict[str, Any]] = []
     failed: list[str] = []
+    #: The compile plans of the domains that succeeded, for the Gold product pass.
+    plans: dict[str, Any] = {}
     # DD-133/140: --emit is the one mode allowed to write into the hub, so it is the
     # one mode that may populate the on-disk caches. The scope has to cover the gates,
     # not just compile_domain: the DD-180/DD-169 gates are what resolve the reference
@@ -881,6 +1020,7 @@ def compile_cmd(
                 output_format=output_format,
                 whole_hub=all_domains,
                 quiet=quiet,
+                plans=plans if check_mode else None,
             )
             events.emit(
                 events.COMPILE_DOMAIN_COMPLETED,
@@ -899,6 +1039,8 @@ def compile_cmd(
 
     if mode is CompileMode.EMIT:
         _regenerate_master_silver_erd(hub)
+    if check_mode:
+        _report_gold_product_checks(_gold_product_checks(hub, plans), payloads, output_format)
 
     if output_format == "json" and payloads:
         # An explicitly named single domain keeps the exact object shape every existing
@@ -1113,6 +1255,7 @@ def _compile_one_domain(
     output_format: str,
     whole_hub: bool = False,
     quiet: bool = False,
+    plans: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Run every gate, then compile, for exactly one domain.
 
@@ -1305,6 +1448,8 @@ def _compile_one_domain(
         # so anything it would report is already fixed (#796).
         if not whole_hub:
             stale_dependents = _stale_dependent_domains(hub, emit_target, domain)
+    if plans is not None and result.succeeded and result.plan is not None:
+        plans[domain] = result.plan
     payload = _payload(result) if output_format == "json" else None
     if payload is not None and stale_dependents:
         payload["stale_dependent_domains"] = list(stale_dependents)

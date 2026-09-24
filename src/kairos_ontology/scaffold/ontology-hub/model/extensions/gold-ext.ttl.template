@@ -90,7 +90,10 @@
 # display name report users read, qualify every column reference with its table
 # (fact_my_event[amount], not [amount]), reference other measures unqualified by
 # their display name, and prefer DIVIDE() to "/". compile --check enforces the first
-# two DAX rules; a deliberate exception is a kairos-ext:bpaIgnoreRule with its reason.
+# two DAX rules; a deliberate exception is a kairos-ext:practiceException (or its
+# original name, kairos-ext:bpaIgnoreRule) with its reason. The model-shape rules --
+# facts reference dimensions only, no chain the fact also shortcuts -- are listed in
+# docs/toolkit/practices/semantic-model.md (DD-240).
 #
 # <{DOMAIN_ONTOLOGY_URI}> kairos-ext:measure domain:TotalAmount .
 #

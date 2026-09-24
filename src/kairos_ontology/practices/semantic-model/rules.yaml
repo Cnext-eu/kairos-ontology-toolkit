@@ -1,0 +1,288 @@
+# Semantic-model (Gold / Power BI) practices owned by the catalogue (DD-240).
+#
+# The Microsoft Best Practice Analyzer rules belong to this area too; their dispositions
+# live in core/projections/dbt/bpa_profile.py (DD-238) and are projected in by the loader.
+# Fields: see src/kairos_ontology/practices/__init__.py. Regenerate the hub page with
+# `uv run python scripts/generate_practices.py`.
+rules:
+  - id: semantic-model.ambiguous-path
+    statement: >
+      Between any two tables of a semantic model there is one active filter path; a
+      relationship that would add a second one is deactivated, and the author decides
+      whether that is the right edge to lose.
+    rationale: >
+      Power BI refuses to load a model with two active paths, so the projector keeps a
+      spanning forest and deactivates the rest (#792). A deactivated edge filters nothing
+      unless a measure calls USERELATIONSHIP: on the Fracht hub `fact_consignment ->
+      dim_job` was inactive, so "consignments by job type" showed the grand total on every
+      row, and nothing reported it. Declare the edge that must stay active with
+      kairos-ext:goldPrimaryRelationship, remove the redundant route, or record why the
+      deactivation is intended.
+    enforcement: warning
+    stage: compile --check
+    check: gold.ambiguous-path
+    source: DD-226, #792, #996
+    excusable: true
+    objects: [relationship]
+
+  - id: semantic-model.fact-to-fact
+    statement: >
+      A fact references dimensions only; it never holds a relationship to another fact.
+    rationale: >
+      A fact-to-fact edge filters one fact by the rows of another, so totals change with
+      the grain of the table in between, and it opens a second path to every dimension
+      both facts share -- which the projector then resolves by deactivating one of them.
+      Share the dimension instead, or model the header as a dimension of the line.
+    enforcement: warning
+    stage: compile --check
+    check: gold.fact-to-fact
+    source: DD-112
+    excusable: true
+    objects: [relationship]
+
+  - id: semantic-model.snowflake-chain
+    statement: >
+      A dimension does not reference another dimension that the same fact already reaches
+      directly.
+    rationale: >
+      Fact -> job -> branch next to fact -> branch gives the branch filter two routes into
+      the fact, and one is deactivated without review. Either flatten the chain into the
+      outer dimension, or drop the direct edge and filter through the chain. A chain the
+      fact does not also shortcut is an ordinary snowflake, which the BPA profile does not
+      reject (SNOWFLAKE_SCHEMA_ARCHITECTURE, DD-238).
+    enforcement: warning
+    stage: compile --check
+    check: gold.snowflake-chain
+    source: DD-112, DD-238
+    excusable: true
+    objects: [relationship]
+
+  - id: semantic-model.role-playing-dimension
+    statement: >
+      A fact that references one dimension in several roles decides, per role, between
+      one active relationship plus USERELATIONSHIP measures and a separate copy of the
+      dimension.
+    rationale: >
+      Only one role can be active. The others are reported but filter nothing until a
+      measure activates them, so "shipments by destination" silently uses the origin
+      unless the role was designed. Dates normally stay one table with USERELATIONSHIP;
+      a role a report filters on constantly usually wants its own dimension.
+    enforcement: advisory
+    stage: compile --check
+    check: gold.role-playing-dimension
+    source: DD-112, #792
+    excusable: true
+    objects: [relationship]
+
+  - id: semantic-model.review-deactivated-relationships
+    statement: >
+      After emit-gold, review deactivated_relationships in the product report, and fix or
+      excuse each one.
+    rationale: >
+      The product report is where every edge the projector turned off is listed with its
+      reason. A model can pass every check and still answer a common question with the
+      grand total; the report is the one place that says which relationships do nothing.
+    enforcement: advisory
+    stage: design
+    check: none
+    source: "#996"
+    excusable: false
+
+  # --- Kimball dimensional design (DD-240) -------------------------------------------
+
+  - id: semantic-model.star-schema
+    statement: >
+      Prefer a star: a dimension carries its own attributes rather than referencing
+      another dimension (an outrigger).
+    rationale: >
+      Kimball's star schema joins every dimension straight to the fact, so a report filters
+      one table per question and each dimension is one join away. A chain adds a hop to
+      every query, splits one business concept over two tables in the field list, and is
+      where redundant filter paths come from. An outrigger can be deliberate -- a large,
+      slowly changing sub-dimension shared by several dimensions -- which is what an
+      exception records. Replaces the rejection of BPA SNOWFLAKE_SCHEMA_ARCHITECTURE.
+    enforcement: advisory
+    stage: compile --check
+    check: gold.star-schema
+    source: Kimball, BPA SNOWFLAKE_SCHEMA_ARCHITECTURE, DD-240
+    excusable: true
+    objects: [relationship]
+
+  - id: semantic-model.every-fact-has-a-date
+    statement: >
+      Every fact has at least one relationship to the calendar.
+    rationale: >
+      A fact records something that happened at a time. Without a date role it cannot be
+      sliced by period, compared year on year, or used with the Time Intelligence
+      calculation group, and a report author cannot tell which date the numbers belong to.
+    enforcement: warning
+    stage: compile --check
+    check: gold.fact-without-date
+    source: Kimball, DD-112
+    excusable: true
+    objects: [table]
+
+  - id: semantic-model.snapshot-fact-shape
+    statement: >
+      A periodic snapshot has a calendar to read its snapshot date from, and an
+      accumulating snapshot has a date role per milestone.
+    rationale: >
+      A periodic snapshot is only meaningful one snapshot date at a time. An accumulating
+      snapshot follows one process instance through its milestones (ordered, shipped,
+      delivered), and a milestone without its date role cannot be measured in time.
+    enforcement: warning
+    stage: compile --check
+    check: gold.snapshot-shape
+    source: Kimball, DD-112
+    excusable: true
+    objects: [table]
+
+  - id: semantic-model.semi-additive-snapshot-measure
+    statement: >
+      A measure over a periodic snapshot does not sum a balance across snapshot dates.
+    rationale: >
+      Balances, stock levels and headcounts are semi-additive: they add up across
+      customers or warehouses, never across time. A plain SUM over a month of daily
+      snapshots reports thirty times the stock. Take one date's value over time
+      (LASTNONBLANK, CLOSINGBALANCEMONTH); an additive flow column in the snapshot is what
+      an exception records.
+    enforcement: advisory
+    stage: compile --check
+    check: gold.semi-additive-sum
+    source: Kimball
+    excusable: true
+    objects: [measure]
+
+  - id: semantic-model.measures-live-on-facts
+    statement: >
+      A measure that aggregates numbers lives on the fact whose grain it aggregates; a
+      dimension carries descriptions and counts of its own rows.
+    rationale: >
+      A measure homed on a dimension is found by report authors in the wrong place, and is
+      usually aggregating a numeric attribute that belongs on a fact at a declared grain.
+      Counting the dimension's own rows (COUNTROWS, DISTINCTCOUNT) is allowed.
+    enforcement: advisory
+    stage: compile --check
+    check: gold.measure-on-dimension
+    source: Kimball
+    excusable: true
+    objects: [measure]
+
+  - id: semantic-model.bridge-allocation
+    statement: >
+      A many-to-many bridge either carries an allocation weight or is confirmed to count a
+      fact row once per endpoint.
+    rationale: >
+      Across a many-to-many bridge a fact row joins several endpoint rows, so a plain total
+      counts it several times and the grand total is not the sum of its rows. That is right
+      for some questions and wrong for others, and the author has to have decided which.
+    enforcement: advisory
+    stage: compile --check
+    check: gold.bridge-unweighted
+    source: Kimball, DD-112
+    excusable: true
+    objects: [table]
+
+  - id: semantic-model.bridge-weight-used
+    statement: >
+      A declared bridge weight column is read by the measures that cross the bridge.
+    rationale: >
+      Declaring kairos-ext:bridgeWeightColumn states that totals across the bridge are
+      allocated. If no measure multiplies by the weight, the allocation exists only on
+      paper and every total double-counts.
+    enforcement: warning
+    stage: compile --check
+    check: gold.bridge-weight-unused
+    source: DD-112
+    excusable: true
+    objects: [table]
+
+  - id: semantic-model.conformed-dimension
+    statement: >
+      One concept is one dimension in a product: two dimensions built from the same class
+      or the same Silver model are one conformed dimension.
+    rationale: >
+      Two customer dimensions in one model mean a filter on one leaves the facts joined to
+      the other unfiltered, and the report author has to guess which to use. A conformed
+      dimension -- one table, reused by every fact that needs it -- is what lets facts from
+      different processes be compared. Declare the owning domain shared
+      (gold.shared_domains) and reuse its table.
+    enforcement: warning
+    stage: compile --check
+    check: gold.duplicate-dimension
+    source: Kimball, #829
+    excusable: true
+    objects: [table]
+
+  - id: semantic-model.connected-tables
+    statement: >
+      Every fact has relationships, and every dimension reaches a fact.
+    rationale: >
+      A dimension that reaches no fact filters nothing: a slicer on it changes no number,
+      silently. A fact with no relationships can be analysed by nothing. Replaces the
+      post-deploy disposition of BPA ENSURE_TABLES_HAVE_RELATIONSHIPS, since the compiler
+      already knows every relationship.
+    enforcement: warning
+    stage: compile --check
+    check: gold.unconnected-table
+    source: BPA ENSURE_TABLES_HAVE_RELATIONSHIPS, DD-240
+    excusable: true
+    objects: [table]
+
+  - id: semantic-model.product-is-one-process
+    statement: >
+      The facts of one product share at least one conformed dimension besides the
+      calendar.
+    rationale: >
+      Kimball's bus matrix gives each business process its own fact tables, joined across
+      processes by conformed dimensions. Facts that share none cannot be analysed together,
+      so a product holding them is two products in one model, larger and slower than either
+      needs to be.
+    enforcement: advisory
+    stage: compile --check
+    check: gold.product-spans-processes
+    source: Kimball, #744
+    excusable: true
+    objects: [model]
+
+  - id: semantic-model.table-name-matches-role
+    statement: >
+      A table's name prefix matches its role: fact_ for a fact, dim_ for a dimension,
+      bridge_ for a bridge.
+    rationale: >
+      Report authors read the prefix to tell a fact from a dimension in the field list. A
+      dimension called fact_... is summed where it should be sliced.
+    enforcement: advisory
+    stage: compile --check
+    check: gold.table-name-role
+    source: DD-112
+    excusable: true
+    objects: [table]
+
+  - id: semantic-model.version-binding-matches-exposure
+    statement: >
+      A fact that joins dimension history (as of an event, invoice or effective date) joins
+      a dimension that exposes history.
+    rationale: >
+      A fact bound as-of-event-date to a current-only dimension would resolve every
+      historical fact to today's version of the dimension, silently restating history. The
+      compiler refuses the combination.
+    enforcement: blocking
+    stage: compile --check
+    check: gold.incompatible-dimension-version
+    source: Kimball (slowly changing dimensions), DD-112
+    excusable: false
+
+  - id: semantic-model.review-bus-matrix
+    statement: >
+      Review the product's bus matrix (<product>-bus-matrix.md) with the business: which
+      facts share which dimensions.
+    rationale: >
+      The matrix is Kimball's review artifact for a dimensional model. One glance shows a
+      fact with no dimensions, a dimension no fact uses, a dimension that should be shared
+      and is not, and a role-playing dimension with no active role.
+    enforcement: advisory
+    stage: design
+    check: none
+    source: Kimball, DD-240
+    excusable: false

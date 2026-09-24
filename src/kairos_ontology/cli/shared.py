@@ -2654,6 +2654,10 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         # #982: one workspace-ID source for every step, BPA per semantic model.
         "dataplatform-deploy-powerbi-semantic-model/5.template",
     ),
+    # DD-240: the notebook embeds the BPA profile, which moved to version 2.
+    "fabric/KairosModelBpa.Notebook/notebook-content.py": (
+        "dataplatform-bpa-notebook/1.template",
+    ),
 }
 
 

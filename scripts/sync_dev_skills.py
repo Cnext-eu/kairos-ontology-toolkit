@@ -39,7 +39,8 @@ SCAFFOLD_DOCS = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "docs"
 #: operator needs and all of which describe *this* repository. Adding a file here puts it
 #: in every client hub on the next `update`, so the addition is a deliberate act.
 #:
-#: Kept flat except for `how-to/`, whose README is the recipe index. These are copied
+#: Kept flat except for `how-to/`, whose README is the recipe index, and `practices/`, the
+#: generated best-practice pages (DD-240). These are copied
 #: verbatim by `_copy_managed`, so any cross-link they carry to a document outside this
 #: list must be an absolute URL — a relative `../design/...` would dangle in the hub.
 _USER_DOCS = (
@@ -125,10 +126,11 @@ def get_sync_pairs() -> list[tuple[Path, Path]]:
         source = DOCS / name
         if source.is_file():
             pairs.append((source, SCAFFOLD_DOCS / name))
-    how_to = DOCS / "how-to"
-    if how_to.is_dir():
-        for source in sorted(how_to.glob("*.md")):
-            pairs.append((source, SCAFFOLD_DOCS / "how-to" / source.name))
+    for subdir in ("how-to", "practices"):
+        folder = DOCS / subdir
+        if folder.is_dir():
+            for source in sorted(folder.glob("*.md")):
+                pairs.append((source, SCAFFOLD_DOCS / subdir / source.name))
 
     return pairs
 

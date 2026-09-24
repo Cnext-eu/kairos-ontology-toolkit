@@ -138,12 +138,44 @@ business semantics.
   (`workspace_id` + `item_id` per environment, where `item_id` is the Fabric Warehouse dbt
   writes Gold into); it is required, not optional.
 
-## Best practice by design (DD-238)
+## Best practice by design (DD-238, DD-240)
 
-The model is judged against Microsoft's Best Practice Analyzer rules through the Kairos
-profile, which gives every rule one disposition per target. The full table is
-`docs/toolkit/BPA_PROFILE.md` in a hub, generated from the toolkit's profile. **This skill advises; the compiler enforces** (DD-163). Ask
-the questions below while designing, so `compile --check` has nothing to say.
+Every rule the model is judged by is in the practices catalogue:
+`docs/toolkit/practices/semantic-model.md` in a hub lists each one with its enforcement, the
+stage that checks it, and whether it can be excused. It covers the model's shape (facts,
+dimensions and the paths between them) and summarises Microsoft's Best Practice Analyzer
+rules, whose per-target dispositions are in `docs/toolkit/BPA_PROFILE.md`. Both pages are
+generated from the toolkit, so read them rather than this skill for what is enforced where.
+**This skill advises; the compiler enforces** (DD-163). Ask the questions below while
+designing, so `compile --check` has nothing to say.
+
+Design the product as a Kimball star (DD-240). Start from the business process and its
+grain, then the dimensions that describe it, and draw the bus matrix before any TTL: one row
+per fact, one column per dimension. For the shape of the product, confirm:
+
+- **One business process per product** (`semantic-model.product-is-one-process`): its facts
+  share at least one conformed dimension besides the calendar.
+- **Facts reference dimensions only** (`semantic-model.fact-to-fact`). A fact pointing at a
+  fact filters one by the other's rows; share a dimension or model the header as one.
+- **A star, not a snowflake** (`semantic-model.star-schema`): a dimension carries its own
+  attributes instead of referencing another. An outrigger is a deliberate exception. A chain
+  the fact also shortcuts (`semantic-model.snowflake-chain`) is always a problem.
+- **One conformed dimension per concept** (`semantic-model.conformed-dimension`): reuse the
+  shared domain's table instead of a second copy.
+- **Every fact has a date** (`semantic-model.every-fact-has-a-date`), and a snapshot has the
+  shape its type needs (`semantic-model.snapshot-fact-shape`): a snapshot date for a periodic
+  snapshot, a date role per milestone for an accumulating one.
+- **Each role of a role-playing dimension is decided** (`semantic-model.role-playing-dimension`):
+  one active relationship plus `USERELATIONSHIP` measures, or a separate copy of the dimension.
+- **Every deactivated relationship is intended** (`semantic-model.ambiguous-path`). Only one
+  filter path between two tables can be active. Keep the right one active with
+  `kairos-ext:goldPrimaryRelationship`, add a `USERELATIONSHIP` measure, remove the redundant
+  route, or record why.
+- **Many-to-many bridges are allocated or confirmed** (`semantic-model.bridge-allocation`,
+  `semantic-model.bridge-weight-used`).
+- **Measures live on facts** (`semantic-model.measures-live-on-facts`), and a balance over a
+  periodic snapshot takes one date's value over time instead of a `SUM`
+  (`semantic-model.semi-additive-snapshot-measure`).
 
 For each measure, confirm:
 
@@ -172,20 +204,23 @@ Per target:
   deliberately not emitted: Silver leaves an unmatched foreign key null, and the inner join it
   enables would drop those rows. The post-deploy check needs Premium, PPU or Fabric capacity.
 
-What happens when a rule is broken:
-
-| Where | Checks |
-|---|---|
-| `compile --check`, blocking | `gold.dax-column-unqualified`, `gold.dax-measure-qualified`, `gold.dax-measure-reference-by-id`, `gold.measure-display-name-invalid`, `gold.measure-display-name-collision` |
-| `compile --check`, warning | `gold.description-missing`, `gold.float-column`, `gold.dax-division-operator` |
-| `emit-gold`, blocking | date table marked, `month_name` sorted, numbers not summarized, active relationship types agree, every column sourced, every measure formatted |
-| After deploy, advisory | the dataplatform's BPA notebook: cardinality, referential integrity, Direct Lake guardrails and fallback, and the remaining authored-DAX rules |
+The shape rules are reported by `compile --check` once every domain of the product compiles
+in the same run (`--all`, or name them all), and by `emit-gold`. **After `emit-gold`, review
+`deactivated_relationships` in `<product>-gold-product.json`**
+(`semantic-model.review-deactivated-relationships`): each entry is a relationship that filters
+nothing unless a measure activates it. Fix it or excuse it; do not leave it unexamined. Then
+review `<product>-bus-matrix.md` with the business (`semantic-model.review-bus-matrix`):
+which facts share which dimensions, and which dimensions no fact uses.
 
 When a rule genuinely does not hold for one object, record it rather than working around it:
-`kairos-ext:bpaIgnoreRule "DAX_COLUMNS_FULLY_QUALIFIED on measure sales.margin: <reason>"` on
-the `owl:Ontology` resource. The reason is mandatory. An exception that excuses nothing fails
-`compile --check`, so it cannot outlive its reason. Findings from the post-deploy run come back
-here as authoring, never as edits to the deployed model (DD-206, DD-224).
+`kairos-ext:practiceException "semantic-model.fact-to-fact on relationship
+fact_charge.consignment_id -> fact_consignment.consignment_id: <reason>"` on the
+`owl:Ontology` resource. BPA rules use the same form
+(`"DAX_COLUMNS_FULLY_QUALIFIED on measure sales.margin: <reason>"`), and
+`kairos-ext:bpaIgnoreRule` keeps working as its original name. The reason is mandatory. An
+exception that excuses nothing fails the check that would have made the finding, so it cannot
+outlive its reason. Findings from the post-deploy run come back here as authoring, never as
+edits to the deployed model (DD-206, DD-224).
 
 Run `kairos-ontology compile <domain> --check --format json` before Gold generation. Gold consumes
 the returned CompilePlan view through the registered projector; it never calls a legacy Silver/dbt

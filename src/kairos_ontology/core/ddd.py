@@ -63,11 +63,14 @@ STRATEGIC_FILE_NAME = "ddd-contexts-ext.ttl"
 
 #: Diagnostic codes of the hub-wide consistency audit. Recorded in DD-229 and
 #: ``docs/dev/cli-behaviour-notes.md`` rather than ``diagnostic-codes.md``, which catalogues
-#: compile diagnostics only.
+#: compile diagnostics only. Each is a rule of the practices catalogue
+#: (``practices/ddd/rules.yaml``, DD-240), which is where its rationale lives.
 CODE_CONTEXT_REDECLARED = "ddd.context-redeclared"
 CODE_CONTEXT_LABEL_CONFLICT = "ddd.context-label-conflict"
 CODE_CLASS_IN_TWO_CONTEXTS = "ddd.class-in-two-contexts"
 CODE_TACTICAL_IN_STRATEGIC = "ddd.tactical-in-strategic-file"
+#: Not a practice: an authored ``kairos-ddd:practiceException`` that excuses nothing.
+CODE_PRACTICE_EXCEPTION_UNUSED = "ddd.practice-exception-unused"
 
 #: Class-level (tactical) predicates that belong in a domain overlay, never in the
 #: strategic file, whose graph holds no classes to validate them against.
@@ -428,6 +431,55 @@ def audit_ddd_consistency(
     return diagnostics
 
 
+def audit_ddd_practices(
+    overlays: list[Path],
+    strategic_path: Optional[Path],
+    ontologies_dir: Optional[Path],
+    catalog_path: Optional[Path] = None,
+) -> list[DddDiagnostic]:
+    """Judge the design against the DDD practices (DD-240): warnings, never Silver.
+
+    Needs the domain ontologies -- whether a property crosses a context boundary depends
+    on its domain and range -- so it builds the same hub-wide model the context diagrams
+    use. An overlay whose domain ontology is missing already failed its own validation
+    and contributes only its annotations.
+    """
+    from .ddd_practices import authored_exceptions, check_ddd_practices
+    from .projections.ddd_context_projector import ContextDomain, collect_context_model
+
+    domains = []
+    for overlay in overlays:
+        domain_path = find_domain_ontology(overlay, ontologies_dir) if ontologies_dir else None
+        try:
+            graph = _load_domain_graph(domain_path, catalog_path)
+        except Exception:  # noqa: BLE001 - the per-file validation reports a broken ontology
+            graph = Graph()
+        domains.append(
+            ContextDomain(name=overlay_domain_name(overlay), graph=graph, overlay_path=overlay)
+        )
+    try:
+        model = collect_context_model(domains, strategic_path)
+    except Exception:  # noqa: BLE001 - a file that does not parse is reported per file
+        return []
+    exceptions, errors = authored_exceptions(model.graph)
+    findings, _excused, unused = check_ddd_practices(model, exceptions)
+    diagnostics = [DddDiagnostic("warning", item.code, item.message) for item in findings]
+    diagnostics += [DddDiagnostic("error", error.code, str(error)) for error in errors]
+    diagnostics += [
+        DddDiagnostic(
+            "error",
+            CODE_PRACTICE_EXCEPTION_UNUSED,
+            (
+                f"practiceException {item.source!r} excuses nothing: no {item.kind} "
+                f"{item.target!r} breaks {item.rule_id}. Remove it, so the exception "
+                "cannot outlive the reason it was written"
+            ),
+        )
+        for item in unused
+    ]
+    return diagnostics
+
+
 def _print_failure(res: dict, *, domain_hint: str = "") -> None:
     if not res["syntax"]["passed"]:
         for err in res["syntax"]["errors"]:
@@ -442,7 +494,8 @@ def _print_failure(res: dict, *, domain_hint: str = "") -> None:
     if not res["strategic"]["passed"]:
         preds = ", ".join(res["strategic"]["tactical_predicates"])
         print(
-            f"     tactical annotations in the strategic file ({preds}); class-level design "
+            f"     {CODE_TACTICAL_IN_STRATEGIC}: tactical annotations in the strategic file "
+            f"({preds}); class-level design "
             "belongs in the domain's own {domain}-ddd-ext.ttl, where it is validated against "
             "that domain's classes."
         )
@@ -503,6 +556,7 @@ def run_ddd_validation(
         )
 
     diagnostics = audit_ddd_consistency(overlays, strategic)
+    diagnostics += audit_ddd_practices(overlays, strategic, ontologies_dir, catalog_path)
     warnings = 0
     for diagnostic in diagnostics:
         if diagnostic.level == "error":

@@ -344,6 +344,7 @@ def bind_policy_facts(
         hidden_columns=_values(policy_graph, ontology, EXT.goldHideColumn),
         primary_relationships=_values(policy_graph, ontology, EXT.goldPrimaryRelationship),
         bpa_ignore_rules=_values(policy_graph, ontology, EXT.bpaIgnoreRule),
+        practice_exceptions=_values(policy_graph, ontology, EXT.practiceException),
         relationship_cross_filters=_values(
             policy_graph, ontology, EXT.goldRelationshipCrossFilter
         ),

@@ -90,6 +90,19 @@ what per-file SHACL cannot see:
 | `ddd.class-in-two-contexts` | error | two files place one class in different contexts |
 | `ddd.tactical-in-strategic-file` | error | `tacticalPattern` / `aggregateRoot` / `invariant` in `ddd-contexts-ext.ttl` |
 
+It then judges the design against the DDD practices (DD-240, `docs/guide/practices/ddd.md`),
+over the domain ontologies merged with every overlay and the strategic file:
+
+| Code | Level | Meaning |
+|---|---|---|
+| `ddd.one-root-per-aggregate` | warning | a member names two roots, or a root is not tagged `AggregateRoot` |
+| `ddd.cross-context-relationship-on-map` | warning | an object property crosses two contexts the context map does not connect |
+| `ddd.aggregate-reference-by-identity` | warning | a property points into another aggregate past its root |
+| `ddd.practice-exception-*` | error | a `kairos-ddd:practiceException` is malformed, names an unknown or unexcusable rule, the wrong kind of object, or excuses nothing (`-unused`) |
+
+The practice findings are also listed in `contexts/design-notes.md`, with the recorded
+exceptions. Warnings never fail the run; nothing here reaches Silver (DD-091).
+
 `project --target ddd` writes, per domain that has an overlay, `{domain}-aggregate-overview.mmd`
 and `{domain}-ddd-report.md`; and once for the hub, under `architecture/ddd/contexts/` (DD-230):
 `context-map.mmd` (every context and edge, whichever file declared it), `all-contexts.mmd` (one

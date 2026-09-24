@@ -14,6 +14,9 @@ somewhere else under `docs/`.
 | [How-to guides](how-to/README.md) | Task recipes: create a hub, import a source, bind an entity, compile, consume downstream |
 | [CLI reference](CLI_REFERENCE.md) | Every command, generated from the command tree |
 | [CompilePlan consumption](CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
+| [Semantic-model practices](practices/semantic-model.md) | Gold model-shape rules, their checks, and how to record an exception |
+| [DDD practices](practices/ddd.md) | Strategic and tactical DDD rules reported by `validate --ddd` |
+| [BPA profile](BPA_PROFILE.md) | Each Power BI Best Practice Analyzer rule's disposition per storage mode |
 
 ## Start here
 

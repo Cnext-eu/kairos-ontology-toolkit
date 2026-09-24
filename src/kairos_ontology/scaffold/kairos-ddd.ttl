@@ -33,7 +33,7 @@
 <https://kairos.cnext.eu/ddd> a owl:Ontology ;
     rdfs:label "Kairos DDD Overlay Vocabulary"@en ;
     rdfs:comment "Typed classes, properties, and controlled individuals for the optional Domain-Driven Design architecture overlay (DD-091). Documentation only — not a governance or projection-control source."@en ;
-    owl:versionInfo "1.1.0" .
+    owl:versionInfo "1.2.0" .
 
 # ===========================================================================
 # Classes
@@ -113,6 +113,11 @@ kairos-ddd:subdomainType a owl:AnnotationProperty ;
     rdfs:comment "Classifies a bounded context as a core domain, a supporting subdomain, or a generic subdomain. Value must be one of the kairos-ddd subdomain type individuals. Documentation only: it steers where design attention goes, never what is generated."@en ;
     rdfs:domain kairos-ddd:BoundedContext ;
     rdfs:range kairos-ddd:SubdomainType .
+
+kairos-ddd:practiceException a owl:AnnotationProperty ;
+    rdfs:label "practice exception"@en ;
+    rdfs:comment "Record that one excusable DDD practice does not hold for one class, property or bounded context, as \"<ddd.rule> on <class|property|context> <target>: <reason>\" (DD-240, issue #996). The target is the full IRI or the local name. The rules are listed in docs/guide/practices/ddd.md. The reason is mandatory, and an exception that excuses nothing fails validate --ddd. Repeatable; set on the owl:Ontology resource of a DDD overlay or the strategic file. Documentation only (DD-091)."@en ;
+    rdfs:range xsd:string .
 
 kairos-ddd:invariant a owl:AnnotationProperty ;
     rdfs:label "invariant"@en ;
