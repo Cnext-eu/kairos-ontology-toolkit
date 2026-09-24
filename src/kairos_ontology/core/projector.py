@@ -9,7 +9,7 @@ from .adapters import FABRIC_WAREHOUSE
 import json
 import logging
 import traceback as _tb
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from dataclasses import dataclass
 from enum import StrEnum
@@ -753,7 +753,7 @@ def run_projections(
     ontologies_path: Path,
     catalog_path: Path,
     output_path: Path,
-    target: str,
+    target: str | Sequence[str],
     namespace: str = None,
     platform: str = FABRIC_WAREHOUSE,
     degraded: bool = False,
@@ -768,12 +768,15 @@ def run_projections(
         ontologies_path: Path to ontology files
         catalog_path: Path to XML catalog for imports
         output_path: Where to write generated files
-        target: Projection target (dbt, neo4j, etc.) or 'all'
+        target: Projection target (dbt, neo4j, etc.) or 'all', or several of them. Several
+                run over one load of the ontologies, which is the point (#998): each
+                separate `project` call re-parses every domain.
         namespace: Base namespace to project (e.g., 'http://example.org/ont/').
                    If None, auto-detects from ontology.
         platform: dbt SQL adapter platform (``fabric`` or ``databricks``).
     """
-    _reject_retired_compiler_targets((target,))
+    requested = (target,) if isinstance(target, str) else tuple(target)
+    _reject_retired_compiler_targets(requested)
 
     # Resolve the generation timestamp once for the whole run so generated
     # artifacts from one invocation never mix clocks.
@@ -925,17 +928,20 @@ def run_projections(
     if mappings_dir and mappings_dir.exists():
         print(f"  Found SKOS mappings directory: {mappings_dir}\n")
 
-    targets_to_run = (
-        list(projection_targets_for_all())
-        if target == "all"
-        else [
-            (
+    targets_to_run: list[str] = []
+    for one in requested:
+        names = (
+            list(projection_targets_for_all())
+            if one == "all"
+            else [
                 target_spec.canonical_name
-                if (target_spec := get_target_spec(target)) is not None
-                else target
-            )
-        ]
-    )
+                if (target_spec := get_target_spec(one)) is not None
+                else one
+            ]
+        )
+        for name in names:
+            if name not in targets_to_run:
+                targets_to_run.append(name)
 
     for target_name in targets_to_run:
         target_spec = get_target_spec(target_name)

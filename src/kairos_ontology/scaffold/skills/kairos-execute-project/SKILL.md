@@ -53,10 +53,12 @@ Use `compile` directly; do not add orchestration around it.
 
 ```powershell
 $env:KAIROS_SKILL_CONTEXT = "1"
-uv run kairos-ontology project --target erd            # canonical class diagrams + master
-uv run kairos-ontology project --target ddd            # architecture layer, see below
-uv run kairos-ontology project --target contract-erd   # declared Silver contract ERDs
+uv run kairos-ontology project --target erd --target ddd   # class diagrams + architecture layer
+uv run kairos-ontology project --target contract-erd       # declared Silver contract ERDs
 ```
+
+`--target` repeats: one run with several targets parses every ontology once, which is why CI
+runs `erd` and `ddd` together.
 
 `erd` and `ddd` write under `ontology-hub-publish/architecture/`, a **tracked, drift-gated**
 lane: CI regenerates both and diffs them, so run them after any ontology, overlay, contract or
