@@ -2651,6 +2651,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "dataplatform-deploy-powerbi-semantic-model/3.template",
         # Pre-DD-239 generation: no GitHub Environment, no refresh, unpinned fabric-cicd.
         "dataplatform-deploy-powerbi-semantic-model/4.template",
+        # #982: one workspace-ID source for every step, BPA per semantic model.
+        "dataplatform-deploy-powerbi-semantic-model/5.template",
     ),
 }
 

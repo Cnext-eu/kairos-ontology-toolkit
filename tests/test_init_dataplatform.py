@@ -441,6 +441,39 @@ class TestInitDataplatform:
         assert 'item_type_in_scope=["Notebook"]' in step
         assert "unpublish" not in step
 
+    def test_the_bpa_step_analyses_every_model_in_its_own_mode(self, dataplatform_output):
+        """#982: a multi-product archive got BPA on its first model only, and that model
+        took its storage mode from whichever TMDL anywhere in the package said directLake."""
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        step = wf.read_text(encoding="utf-8").split("Advisory Best Practice Analyzer run")[1]
+        assert 'for platform in sorted(Path("semantic-model").rglob(' in step
+        assert "next(Path(" not in step
+        assert '(platform.parent / "definition").rglob("*.tmdl")' in step
+
+    def test_the_bpa_step_notes_an_unframed_direct_lake_model(self, dataplatform_output):
+        _, workflow = self._deploy(dataplatform_output)
+        step = next(
+            item
+            for item in workflow["jobs"]["deploy"]["steps"]
+            if item.get("name") == "Advisory Best Practice Analyzer run (non-blocking)"
+        )
+        assert step["env"]["REFRESH_AFTER_PUBLISH"] == "${{ inputs.refresh_after_publish }}"
+        assert "::notice::" in step["run"] and "refresh_after_publish is false" in step["run"]
+
+    def test_every_fabric_step_reads_the_workspace_id_the_same_way(self, dataplatform_output):
+        """#982: the override step read vars-then-secrets, publish/refresh/BPA read only
+        secrets, so an Environment *variable* broke publish while the override passed."""
+        _, workflow = self._deploy(dataplatform_output)
+        sources = {
+            item["name"]: item["env"]["FABRIC_WORKSPACE_ID"]
+            for item in workflow["jobs"]["deploy"]["steps"]
+            if "FABRIC_WORKSPACE_ID" in item.get("env", {})
+        }
+        assert len(sources) == 4, sources
+        assert set(sources.values()) == {
+            "${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}"
+        }
+
     # --- DD-239: Fabric deploy per GitHub Environment, framed after publish ----------
 
     @staticmethod
