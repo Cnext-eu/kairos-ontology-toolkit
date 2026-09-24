@@ -182,7 +182,7 @@ Which were accepted lives elsewhere:
 | file | what it tells you |
 |---|---|
 | `integration/sources/_analysis/hub.gap-decisions.yaml` | the review sheet: one entry per column name, with the proposed disposition and the reasoning |
-| `integration/sources/_analysis/table-dispositions.yaml` | the committed ledger: `registered-extension` marks a column whose hub-local property was accepted, with its `proposed_property` |
+| `integration/sources/_analysis/src-<system>.table-dispositions.yaml` | the committed ledger, one file per source system: `registered-extension` marks a column whose hub-local property was accepted, with its `proposed_property` |
 
 Design against the ledger. A column dispositioned `deferred`, `not-business-data` or
 `blueprint-gap` has been ruled out, and modelling it anyway re-opens a decision someone

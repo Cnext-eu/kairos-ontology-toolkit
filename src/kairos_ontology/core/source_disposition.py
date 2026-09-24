@@ -21,12 +21,16 @@ rather than the absence of one.
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from . import analysis_paths
 
 SCHEMA_VERSION = 1
 
@@ -35,8 +39,11 @@ SCHEMA_VERSION = 1
 #: that was silently dropped while carrying real business content.
 DEFAULT_ROW_THRESHOLD = 100
 
-#: Where the ledger lives, relative to the hub root.
-DISPOSITIONS_RELPATH = Path("integration") / "sources" / "_analysis" / "table-dispositions.yaml"
+#: The pre-5.22 single ledger for every source system. Still read, and split into one
+#: ``src-<system>.table-dispositions.yaml`` per system by the first write or by
+#: ``update`` (#943, DD-235); see :func:`ledger_path` for where decisions are written.
+LEGACY_LEDGER_FILENAME = "table-dispositions.yaml"
+DISPOSITIONS_RELPATH = analysis_paths.ANALYSIS_RELPATH / LEGACY_LEDGER_FILENAME
 
 #: Dispositions whose cascade onto the table's own columns is the point of recording
 #: them (#881).
@@ -329,25 +336,131 @@ def non_cascading_table_entries(
     ]
 
 
-def load_dispositions(hub_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
-    """Read the disposition ledger, or ``{}`` when the hub has not written one yet."""
-    path = Path(hub_root) / DISPOSITIONS_RELPATH
-    if not path.is_file():
-        return {}
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+def _yaml_load(text: str) -> Any:
+    """Parse ledger YAML with the C loader when available (#943).
+
+    A real hub's ledger ran to 799 KB, and every ``validate``, ``compile`` and
+    ``generate-bindings`` reads it. The C loader parses the same document to the same
+    value about five times faster; the pure-Python one is the fallback.
+    """
+    loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+    return yaml.load(text, Loader=loader)  # noqa: S506 - a SafeLoader either way
+
+
+def _yaml_dump(payload: Any) -> str:
+    """Serialise the ledger with the C dumper when available; output is byte-identical."""
+    dumper = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
+    return yaml.dump(payload, Dumper=dumper, sort_keys=False, allow_unicode=True)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Replace *path* in one step, so an interrupted run never leaves half a ledger."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def ledger_path(hub_root: Path, system: str) -> Path:
+    """Where *system*'s dispositions are written: ``src-<system>.table-dispositions.yaml``."""
+    return analysis_paths.keyed_path(
+        analysis_paths.analysis_dir(hub_root), analysis_paths.TABLE_DISPOSITIONS, system
+    )
+
+
+def ledger_files(analysis_dir: Path) -> list[Path]:
+    """Every ledger file under *analysis_dir*: the pre-5.22 single file first, then one per
+    system, so a per-system entry wins where both record the same key (#943)."""
+    directory = Path(analysis_dir)
+    files: list[Path] = []
+    legacy = directory / LEGACY_LEDGER_FILENAME
+    if legacy.is_file():
+        files.append(legacy)
+    files.extend(
+        analysis_paths.iter_keyed_paths(directory, analysis_paths.TABLE_DISPOSITIONS)
+    )
+    return files
+
+
+def _read_rows(path: Path) -> list[dict[str, Any]]:
+    """One ledger file's entries; raises on unparseable YAML so a writer never drops it."""
+    payload = _yaml_load(path.read_text(encoding="utf-8"))
+    if payload is None:
+        return []
     if not isinstance(payload, dict):
+        raise ValueError(f"{path} is not a disposition ledger (expected a mapping).")
+    return [row for row in payload.get("tables") or [] if isinstance(row, dict)]
+
+
+def _entry_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (str(row.get("system")), str(row.get("table")), str(row.get("column") or ""))
+
+
+def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write one system's ledger sorted by grain, or remove it once it holds nothing."""
+    if not rows:
+        path.unlink(missing_ok=True)
+        return
+    payload = {"schema_version": SCHEMA_VERSION, "tables": sorted(rows, key=_entry_key)}
+    _atomic_write(path, _yaml_dump(payload))
+
+
+def split_legacy_ledger(hub_root: Path, *, dry_run: bool = False) -> dict[str, int]:
+    """Move the pre-5.22 single ledger into one file per source system (#943).
+
+    One file for every system meant every decision rewrote every other system's
+    decisions -- 1,113 of them took twelve minutes. Entries keep their exact content;
+    where a system's file already holds the same key, that entry wins, because it was
+    written after the upgrade. Entries with no ``system`` cannot be placed and keep the
+    legacy file alive, holding only them.
+
+    Called by every writer before it writes and by ``update``, so the two layouts never
+    both hold live decisions for long. Returns ``{system: entries_moved}``.
+    """
+    directory = analysis_paths.analysis_dir(hub_root)
+    legacy = directory / LEGACY_LEDGER_FILENAME
+    if not legacy.is_file():
         return {}
+    rows = _read_rows(legacy)
+    by_system: dict[str, list[dict[str, Any]]] = {}
+    orphans: list[dict[str, Any]] = []
+    for row in rows:
+        system = str(row.get("system") or "").strip()
+        (by_system.setdefault(system, []) if system else orphans).append(row)
+    moved = {system: len(entries) for system, entries in sorted(by_system.items())}
+    if dry_run:
+        return moved
+    for system, entries in by_system.items():
+        target = ledger_path(hub_root, system)
+        current = {_entry_key(r): r for r in (_read_rows(target) if target.is_file() else [])}
+        merged = {_entry_key(r): r for r in entries}
+        merged.update(current)
+        _write_rows(target, list(merged.values()))
+    if orphans:
+        _atomic_write(legacy, _yaml_dump({"schema_version": SCHEMA_VERSION, "tables": orphans}))
+    else:
+        legacy.unlink()
+    return moved
+
+
+def load_dispositions(hub_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """Read every ledger file, or ``{}`` when the hub has not written one yet.
+
+    Keys are ``(system, table, column)``, with ``""`` for a table-grain entry. An
+    unreadable file contributes nothing rather than failing the reader; the writers,
+    which must not silently drop a file's contents, refuse instead.
+    """
     recorded: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for entry in payload.get("tables") or []:
-        if not isinstance(entry, dict):
+    for path in ledger_files(analysis_paths.analysis_dir(hub_root)):
+        try:
+            rows = _read_rows(path)
+        except Exception:
             continue
-        system = str(entry.get("system") or "").strip()
-        table = str(entry.get("table") or "").strip()
-        if system and table:
-            recorded[(system, table, str(entry.get("column") or ""))] = entry
+        for entry in rows:
+            system = str(entry.get("system") or "").strip()
+            table = str(entry.get("table") or "").strip()
+            if system and table:
+                recorded[(system, table, str(entry.get("column") or ""))] = entry
     return recorded
 
 
@@ -490,16 +603,8 @@ def clear_dispositions(
     touching a decision a human actually made. ``column`` matches one column-grain
     entry by name; ``""`` matches table-grain entries only.
     """
-    path = Path(hub_root) / DISPOSITIONS_RELPATH
-    if not path.is_file():
-        return {"removed": 0, "kept": 0, "by_table": {}}
-
-    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    rows = payload.get("tables") or []
 
     def matches(entry: dict[str, Any]) -> bool:
-        if not isinstance(entry, dict):
-            return False
         if tables is not None:
             if (str(entry.get("system") or ""), str(entry.get("table") or "")) not in tables:
                 return False
@@ -511,19 +616,118 @@ def clear_dispositions(
             return False
         return True
 
-    removed = [e for e in rows if matches(e)]
-    kept = [e for e in rows if not matches(e)]
+    if not dry_run:
+        split_legacy_ledger(hub_root)
+    removed_count = kept_count = 0
     by_table: dict[str, int] = {}
-    for entry in removed:
-        key = f"{entry.get('system')}.{entry.get('table')}"
-        by_table[key] = by_table.get(key, 0) + 1
+    for path in ledger_files(analysis_paths.analysis_dir(hub_root)):
+        rows = _read_rows(path)
+        kept = [e for e in rows if not matches(e)]
+        for entry in rows:
+            if matches(entry):
+                key = f"{entry.get('system')}.{entry.get('table')}"
+                by_table[key] = by_table.get(key, 0) + 1
+        removed_count += len(rows) - len(kept)
+        kept_count += len(kept)
+        if len(kept) != len(rows) and not dry_run:
+            _write_rows(path, kept)
+    return {"removed": removed_count, "kept": kept_count, "by_table": by_table}
 
-    if removed and not dry_run:
-        payload["tables"] = kept
-        path.write_text(
-            yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8"
+
+@dataclass(frozen=True)
+class DispositionInput:
+    """One decision to record; the arguments of :func:`record_disposition`."""
+
+    system: str
+    table: str
+    disposition: str
+    rationale: str = ""
+    decided_by: str = "user"
+    evidence: tuple[str, ...] = ()
+    column: str = ""
+    proposed_property: dict[str, str] | None = None
+
+
+def _ledger_entry(decision: DispositionInput) -> dict[str, Any]:
+    """Validate one decision and render the entry it writes."""
+    if decision.disposition not in DISPOSITIONS:
+        raise ValueError(
+            f"Unknown disposition {decision.disposition!r}; "
+            f"expected one of {sorted(DISPOSITIONS)}."
         )
-    return {"removed": len(removed), "kept": len(kept), "by_table": by_table}
+    if decision.disposition == "bound" and not decision.column:
+        raise ValueError(
+            "'bound' is not recorded in the ledger: the DD-164 audit reads it from "
+            "integration/bindings/ before it looks here, so authoring the EntityBinding "
+            "is what states it. Recording it as a table-grain row adds nothing and used "
+            "to retire the table's columns from the DD-169 gate (#881). Author the "
+            "binding, or record why the table is not being bound."
+        )
+    if decision.disposition in _REQUIRES_RATIONALE and not decision.rationale.strip():
+        raise ValueError(f"Disposition {decision.disposition!r} requires a rationale.")
+    if not decision.system.strip():
+        raise ValueError("A disposition needs the source system it belongs to.")
+
+    entry: dict[str, Any] = {
+        "system": decision.system,
+        "table": decision.table,
+        # Column-grain entries sit in the same file as the system's table-grain ones
+        # (DD-169): a reviewer reads everything one source's tables and columns were
+        # decided not to model in one place.
+        **({"column": decision.column} if decision.column else {}),
+        "disposition": decision.disposition,
+        "rationale": decision.rationale,
+        "decided_by": decision.decided_by,
+    }
+    proposed = decision.proposed_property
+    if proposed and proposed.get("name"):
+        entry["proposed_property"] = {
+            key: str(proposed[key])
+            for key in ("name", "range", "on_class", "why")
+            if proposed.get(key)
+        }
+    if decision.evidence:
+        entry["evidence"] = list(decision.evidence)
+    return entry
+
+
+def record_dispositions(
+    hub_root: Path,
+    decisions: Iterable[DispositionInput],
+    *,
+    progress: Callable[[str, int], None] | None = None,
+) -> list[Path]:
+    """Write or replace many dispositions, reading and writing each system's file once.
+
+    The batch path (#943). Recording one decision at a time re-read and re-wrote the
+    whole ledger per decision, so a 1,113-column decision sheet spent twelve minutes on
+    YAML round trips. Every decision is validated before anything is written, so a bad
+    one never leaves half a batch recorded. *progress* is called with ``(system, count)``
+    as each system's file is written. Returns the files written, in system order.
+
+    Replacement is at the same grain: ``(system, table, column)`` is the identity.
+    Matching on ``(system, table)`` alone once made every column-grain write delete the
+    table's other columns, so a run recording 224 column dispositions kept about one
+    per table.
+    """
+    entries = [_ledger_entry(decision) for decision in decisions]
+    if not entries:
+        return []
+    split_legacy_ledger(hub_root)
+    by_system: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        by_system.setdefault(entry["system"], []).append(entry)
+    written: list[Path] = []
+    for system in sorted(by_system):
+        path = ledger_path(hub_root, system)
+        rows = {_entry_key(r): r for r in (_read_rows(path) if path.is_file() else [])}
+        for entry in by_system[system]:
+            rows[_entry_key(entry)] = entry
+        _write_rows(path, list(rows.values()))
+        if progress is not None:
+            progress(system, len(by_system[system]))
+        written.append(path)
+    return written
 
 
 def record_disposition(
@@ -538,7 +742,7 @@ def record_disposition(
     column: str = "",
     proposed_property: dict[str, str] | None = None,
 ) -> Path:
-    """Write or replace one disposition, returning the ledger path.
+    """Write or replace one disposition, returning the system's ledger path.
 
     *proposed_property* is the hub-local property ``propose-alignment`` drafted for this
     column (``name``/``range``/``on_class``/``why``). Kept structured rather than only
@@ -546,83 +750,22 @@ def record_disposition(
     author that property, and the next stage should be able to read it rather than parse
     an English sentence out of the ledger (#883).
 
-    Deliberately append-or-replace on a single YAML file rather than one file per table:
-    the ledger's value is that a reviewer can read every skipped table in one place and
-    see the shape of what the hub decided not to model.
+    For more than a handful of decisions use :func:`record_dispositions`, which reads and
+    writes each system's file once instead of once per decision.
     """
-    if disposition not in DISPOSITIONS:
-        raise ValueError(
-            f"Unknown disposition {disposition!r}; expected one of {sorted(DISPOSITIONS)}."
-        )
-    if disposition == "bound" and not column:
-        raise ValueError(
-            "'bound' is not recorded in the ledger: the DD-164 audit reads it from "
-            "integration/bindings/ before it looks here, so authoring the EntityBinding "
-            "is what states it. Recording it as a table-grain row adds nothing and used "
-            "to retire the table's columns from the DD-169 gate (#881). Author the "
-            "binding, or record why the table is not being bound."
-        )
-    if disposition in _REQUIRES_RATIONALE and not rationale.strip():
-        raise ValueError(f"Disposition {disposition!r} requires a rationale.")
-
-    path = Path(hub_root) / DISPOSITIONS_RELPATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "tables": []}
-    if path.is_file():
-        try:
-            existing = yaml.safe_load(path.read_text(encoding="utf-8"))
-            if isinstance(existing, dict):
-                payload = existing
-                payload.setdefault("schema_version", SCHEMA_VERSION)
-                payload.setdefault("tables", [])
-        except Exception:
-            pass
-
-    entry = {
-        "system": system,
-        "table": table,
-        # Column-grain entries sit in the same ledger as table-grain ones (DD-169): a
-        # reviewer should see everything the hub decided not to model in one place, and
-        # a second file would drift from the first.
-        **({"column": column} if column else {}),
-        "disposition": disposition,
-        "rationale": rationale,
-        "decided_by": decided_by,
-    }
-    if proposed_property and proposed_property.get("name"):
-        entry["proposed_property"] = {
-            key: str(proposed_property[key])
-            for key in ("name", "range", "on_class", "why")
-            if proposed_property.get(key)
-        }
-    if evidence:
-        entry["evidence"] = list(evidence)
-
-    # Replace only the entry at the SAME grain. The column must be part of the
-    # identity: matching on (system, table) alone made every column-grain write
-    # delete the table's previously recorded columns, so a run recording 224
-    # column dispositions kept roughly one per table and silently lost the rest.
-    # ``load_dispositions`` already keys on (system, table, column); this is the
-    # writer catching up with it.
-    rows = [
-        item
-        for item in payload.get("tables") or []
-        if not (
-            isinstance(item, dict)
-            and item.get("system") == system
-            and item.get("table") == table
-            and str(item.get("column") or "") == column
-        )
-    ]
-    rows.append(entry)
-    payload["tables"] = sorted(
-        rows,
-        key=lambda item: (
-            str(item.get("system")),
-            str(item.get("table")),
-            str(item.get("column") or ""),
-        ),
+    (path,) = record_dispositions(
+        hub_root,
+        [
+            DispositionInput(
+                system=system,
+                table=table,
+                disposition=disposition,
+                rationale=rationale,
+                decided_by=decided_by,
+                evidence=tuple(evidence),
+                column=column,
+                proposed_property=proposed_property,
+            )
+        ],
     )
-
-    path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return path

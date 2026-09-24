@@ -261,7 +261,7 @@ def render_extension_ttl(
     lines = [
         f"# Draft hub-local extension properties for the '{domain}' domain.",
         "#",
-        "# Rendered from integration/sources/_analysis/table-dispositions.yaml: every",
+        "# Rendered from integration/sources/_analysis/src-*.table-dispositions.yaml: every",
         "# property below is a source column the DD-169 gate already accepted as",
         "# `registered-extension`, with the name, range and owning class recorded on that",
         "# decision. Nothing here is a new judgement.",
