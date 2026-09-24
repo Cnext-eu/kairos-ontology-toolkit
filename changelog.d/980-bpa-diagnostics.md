@@ -30,3 +30,9 @@
   lines with no members, which Tabular Editor's Best Practice Analyzer, run against the acme
   model, reported as a perspective with no objects. Each perspective now lists every column and
   emitted measure of the tables it declares, as Desktop writes them.
+- **A relationship whose columns have different types is dropped and reported, not
+  emitted.** A fact with no surrogate key fell back to its first non-nullable column
+  (`_source_system`, a string), and an integer foreign key was joined to it as an inactive
+  relationship. Direct Lake refuses such a relationship, even inactive. It is now listed under
+  `dropped_relationships` in the product report, and the render assertion covers inactive
+  relationships too.

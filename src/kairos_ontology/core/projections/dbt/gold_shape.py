@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 
 from .bpa_profile import BpaIgnore, BpaIgnoreError, parse_bpa_ignore
 from .gold_bpa_checks import check_product
+from .gold_materialize import _TMDL_TYPES
 from .calendar_columns import CALENDAR_COLUMN_NAMES, CALENDAR_DATE_TABLE_KEY
 from ..uri_utils import camel_to_snake
 from .gold_specs import (
@@ -934,11 +935,55 @@ def _has_unique_key_evidence(
     return False
 
 
+def _column_tmdl_type(table: GoldTableSpec, column_name: str) -> str:
+    for column in table.columns:
+        if column.name == column_name:
+            return _TMDL_TYPES.get(column.canonical_type.kind, "")
+    return ""
+
+
+def _drop_type_mismatches(
+    relationships: list[GoldRelationshipSpec],
+    by_name: dict[str, GoldTableSpec],
+) -> tuple[list[GoldRelationshipSpec], list[tuple[str, str, str]]]:
+    """Refuse every relationship whose two columns render as different types (DD-238).
+
+    Direct Lake will not load such a relationship and DirectQuery joins it through an
+    implicit cast, so emitting it -- even inactive -- ships a model the engine rejects or
+    silently degrades. The one case seen in practice is a #794 unproven key: a fact with
+    no surrogate falls back to its first non-nullable column (`_source_system`, a
+    string), and an integer foreign key was joined to it. That edge answered nothing; it
+    is now reported under `dropped_relationships` instead of emitted.
+    """
+    kept: list[GoldRelationshipSpec] = []
+    dropped: list[tuple[str, str, str]] = []
+    for item in relationships:
+        source = by_name.get(item.source_table)
+        target = by_name.get(item.target_table)
+        left = _column_tmdl_type(source, item.source_column) if source else ""
+        right = _column_tmdl_type(target, item.target_column) if target else ""
+        if left and right and left != right:
+            dropped.append(
+                (
+                    f"{item.source_table}.{item.source_column}",
+                    f"{item.target_table}.{item.target_column}",
+                    "type-mismatch",
+                )
+            )
+            continue
+        kept.append(item)
+    return kept, dropped
+
+
 def _shape_relationships(
     tables: tuple[GoldTableSpec, ...],
     descriptors: tuple[ForeignKeyDescriptorSpec, ...],
     silver_models: dict[str, SilverModelSpec],
-) -> tuple[tuple[GoldRelationshipSpec, ...], tuple[tuple[str, str, str], ...]]:
+) -> tuple[
+    tuple[GoldRelationshipSpec, ...],
+    tuple[tuple[str, str, str], ...],
+    tuple[tuple[str, str, str], ...],
+]:
     """Shape every relationship both of whose endpoints are tables in this product.
 
     Returns the shaped relationships and the *unresolved* ones: a foreign key whose
@@ -1040,6 +1085,9 @@ def _shape_relationships(
                     version_binding=None,
                 )
             )
+    relationships, dropped = _drop_type_mismatches(
+        relationships, {table.name: table for table in tables}
+    )
     return (
         tuple(
             sorted(
@@ -1052,6 +1100,7 @@ def _shape_relationships(
             )
         ),
         tuple(sorted(set(unresolved))),
+        tuple(sorted(dropped)),
     )
 
 
@@ -1867,7 +1916,9 @@ def _shape_dimensional_product(
     if calendar is not None and contributing:
         calendar = replace(calendar, contributing_profiles=contributing)
 
-    relationships, unresolved = _shape_relationships(ordered, tuple(descriptors), models)
+    relationships, unresolved, dropped_relationships = _shape_relationships(
+        ordered, tuple(descriptors), models
+    )
     relationships = relationships + _calendar_relationships(calendar)
     declared_primary: frozenset[tuple[str, str, str, str]] = frozenset()
     for member in members:
@@ -1971,6 +2022,7 @@ def _shape_dimensional_product(
         bpa_ignores=bpa_ignores,
         undecided_bridge_filters=undecided_bridge_filters,
         advisories=tuple((item.code, item.message, item.resource_uri) for item in advisories),
+        dropped_relationships=dropped_relationships,
     )
 
 

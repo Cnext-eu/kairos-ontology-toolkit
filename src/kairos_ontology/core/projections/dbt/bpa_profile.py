@@ -450,9 +450,9 @@ PROFILE: tuple[RuleProfile, ...] = (
         _d(
             _RA,
             "Direct Lake refuses a relationship between columns of different types, and "
-            "DirectQuery joins them with an implicit cast. Blocking on every active "
-            "relationship, exact on the rendered column types. An inactive edge left by an "
-            "unproven key (#794) is reported by the post-deploy run instead.",
+            "DirectQuery joins them with an implicit cast. The shaper drops such a "
+            "relationship and reports it under dropped_relationships; the assertion then "
+            "blocks any that still reaches the rendered model, exact on column types.",
             enforced_by="gold.relationship-type-mismatch",
             blocking=True,
         ),

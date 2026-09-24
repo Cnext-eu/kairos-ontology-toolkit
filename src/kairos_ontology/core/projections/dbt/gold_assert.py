@@ -231,14 +231,10 @@ def _assert_relationship_types(
 ) -> None:
     """Direct Lake refuses, and DirectQuery silently casts, a join across types.
 
-    Active relationships only. An inactive edge with mismatched types exists today where
-    a #794 unproven key fell back to a non-key column; blocking it would fail hubs whose
-    model loads and answers correctly through its active paths, so it is left to the
-    post-deploy BPA run, which reports every relationship.
+    Every relationship, active or not: the shaper already drops a mismatched one and
+    reports it, so any that reaches the rendered model is an emitter defect.
     """
     for block in content.split("\nrelationship "):
-        if "\tisActive: false" in block:
-            continue
         ends: dict[str, tuple[str, str]] = {}
         for line in block.splitlines():
             match = _RELATIONSHIP_END.match(line)

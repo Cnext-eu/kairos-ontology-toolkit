@@ -178,6 +178,16 @@ fires for visible columns without an ontology `rdfs:comment`. `gold_assert` asse
 - The profile is never a claim that a model passes BPA. It records which rules the toolkit
   guarantees, which it checks, which it cannot see, and which it disagrees with, and says so
   for each rule.
-- Acceptance calls for one manual Tabular Editor 2 run (`-A BPARules.json`) against the acme
-  scenario model, whose only findings should be rules marked `rejected`, `not-applicable` or
-  `post-deploy-advisory`. That run is manual by design and is not part of CI.
+- **Acceptance is one manual Tabular Editor 2 run** (`TabularEditor.exe <definition folder>
+  -A BPARules.json`) against the acme scenario model. It is manual by design and not part of
+  CI. Its findings may only be rules marked `rejected`, `not-applicable` or
+  `post-deploy-advisory`, or *non-blocking* `compile-diagnostic` rules. A warning reports a
+  finding without removing it, so Tabular Editor sees it too. A finding on a
+  `by-construction`, `render-assert` or blocking rule contradicts the profile and is a defect.
+- The 2026-09-24 run (Tabular Editor 2.29.0, vendored commit `50e8ce50`) found two such
+  defects, both fixed. Perspectives were emitted with no members (`PERSPECTIVES_WITH_NO_OBJECTS`)
+  and now list their tables' columns and measures. A #794 unproven-key relationship joined an
+  int64 to a string (`RELATIONSHIP_COLUMNS_SAME_DATA_TYPE`). The shaper now drops such a
+  relationship and reports it under `dropped_relationships`, and the render assertion covers
+  inactive relationships too. The rerun's 37 findings are all `rejected`,
+  `post-deploy-advisory`, or the `OBJECTS_WITH_NO_DESCRIPTION` warning.

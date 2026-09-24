@@ -267,8 +267,8 @@ class TestRenderAssertions:
             assert_gold_semantics(artifacts)
         assert excinfo.value.code == "gold.description-control-character"
 
-    @pytest.mark.parametrize(("inactive", "raises"), [(False, True), (True, False)])
-    def test_an_active_join_across_types_fails(self, inactive, raises):
+    @pytest.mark.parametrize(("inactive", "raises"), [(False, True), (True, True)])
+    def test_any_join_across_types_fails(self, inactive, raises):
         artifacts = _artifacts(
             fact=_column_tmdl("dim_sk", "int64", "\t\tsummarizeBy: none"),
             dim=_column_tmdl("dim_sk", "string"),

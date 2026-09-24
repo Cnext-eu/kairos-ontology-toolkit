@@ -1419,6 +1419,19 @@ def gold_product_report(
             if any(not item.is_active for item in spec.relationships)
             else {}
         ),
+        # Relationships the shaper refused to emit because their columns' types differ
+        # (DD-238). Reported rather than silent: the fix is authoring -- a declared key or
+        # a type change in Silver -- and the author needs to know the join is missing.
+        **(
+            {
+                "dropped_relationships": [
+                    {"from": source, "to": target, "reason": reason}
+                    for source, target, reason in spec.dropped_relationships
+                ]
+            }
+            if spec.dropped_relationships
+            else {}
+        ),
         # Edges that filter both ways, and why (DD-238). A bidirectional edge changes
         # which rows a slicer reaches, so it is listed for review like a deactivated one.
         **(
