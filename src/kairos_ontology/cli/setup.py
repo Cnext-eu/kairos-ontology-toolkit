@@ -1718,6 +1718,7 @@ def init_dataplatform(name, dest, platform, org_override):
       - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd)
       - .github/fabric/deployment-settings.json.example
       - .github/fabric/gold-connections.yml.example
+      - fabric/KairosModelBpa.Notebook (advisory post-deploy Best Practice Analyzer run)
       - README.md with setup instructions
       - CICD.md with branch, promotion, rollback, and hotfix guidance
       - CONTRIBUTING.md with branch-naming and PR conventions
@@ -1980,6 +1981,20 @@ def init_dataplatform(name, dest, platform, org_override):
         gold_conn_dst.parent.mkdir(parents=True, exist_ok=True)
         gold_conn_dst.write_text(gold_conn_content, encoding="utf-8")
         click.echo("  ✓ .github/fabric/gold-connections.yml.example")
+
+    # DD-238 / #982: the advisory post-deploy BPA notebook the deploy workflow publishes
+    # and runs. Copied verbatim -- it carries no placeholders -- so `update
+    # --refresh-workflows` can refresh an untouched copy when the pin or profile moves.
+    notebook_src = _DATAPLATFORM_SCAFFOLD / "fabric" / "KairosModelBpa.Notebook"
+    for notebook_file in ("notebook-content.py", ".platform"):
+        notebook_file_src = notebook_src / f"{notebook_file}.template"
+        if notebook_file_src.is_file():
+            notebook_file_dst = repo_dir / "fabric" / "KairosModelBpa.Notebook" / notebook_file
+            notebook_file_dst.parent.mkdir(parents=True, exist_ok=True)
+            notebook_file_dst.write_text(
+                notebook_file_src.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            click.echo(f"  ✓ fabric/KairosModelBpa.Notebook/{notebook_file}")
 
     skills_src = _SCAFFOLD_DIR / "skills"
     claude_dir = repo_dir / ".claude"

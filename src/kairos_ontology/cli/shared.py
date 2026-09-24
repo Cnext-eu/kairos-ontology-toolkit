@@ -2568,6 +2568,17 @@ _DATAPLATFORM_WORKFLOW_SOURCES = {
     ".github/workflows/deploy-powerbi-semantic-model.yml": (
         "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template"
     ),
+    # Not workflows, but the deploy workflow's advisory BPA step publishes and runs this
+    # Fabric notebook (DD-238, #982), and it needs the same lifecycle: its
+    # semantic-link-labs pin and embedded rule map move with each toolkit release, and an
+    # untouched copy must refresh while an edited one is left alone. The managed-file
+    # marker cannot carry it -- an HTML comment on line 1 breaks Fabric's notebook format.
+    "fabric/KairosModelBpa.Notebook/notebook-content.py": (
+        "dataplatform/fabric/KairosModelBpa.Notebook/notebook-content.py.template"
+    ),
+    "fabric/KairosModelBpa.Notebook/.platform": (
+        "dataplatform/fabric/KairosModelBpa.Notebook/.platform.template"
+    ),
 }
 
 #: Previously-shipped generations of a workflow template, by repo-relative destination.
@@ -2634,6 +2645,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
     # installing uv or syncing the locked environment.
     ".github/workflows/deploy-powerbi-semantic-model.yml": (
         "dataplatform-deploy-powerbi-semantic-model/1.template",
+        # Pre-#982 generation, before the advisory post-deploy BPA step.
+        "dataplatform-deploy-powerbi-semantic-model/2.template",
     ),
 }
 

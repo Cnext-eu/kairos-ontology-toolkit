@@ -391,6 +391,56 @@ class TestInitDataplatform:
         assert uv_runs, f"{workflow} no longer runs anything through uv"
         assert setup < sync < min(uv_runs)
 
+    # --- DD-238 / #982: advisory post-deploy Best Practice Analyzer ----------------
+
+    def test_the_bpa_notebook_is_scaffolded_with_the_toolkit_pin(self, dataplatform_output):
+        from kairos_ontology.core.projections.dbt.bpa_notebook import (
+            NOTEBOOK_DISPLAY_NAME,
+            SEMANTIC_LINK_LABS_PIN,
+        )
+
+        notebook = dataplatform_output / "fabric" / "KairosModelBpa.Notebook"
+        content = (notebook / "notebook-content.py").read_text(encoding="utf-8")
+        assert content.startswith("# Fabric notebook source")
+        assert f"%pip install semantic-link-labs=={SEMANTIC_LINK_LABS_PIN}" in content
+        assert "# PARAMETERS CELL" in content
+        platform = json.loads((notebook / ".platform").read_text(encoding="utf-8"))
+        assert platform["metadata"] == {"type": "Notebook", "displayName": NOTEBOOK_DISPLAY_NAME}
+
+    def test_the_bpa_notebook_is_read_only_over_the_model(self, dataplatform_output):
+        """DD-206: the advisory run never writes the deployed model."""
+        content = (
+            dataplatform_output / "fabric" / "KairosModelBpa.Notebook" / "notebook-content.py"
+        ).read_text(encoding="utf-8")
+        assert "readonly=True" in content
+        assert "readonly=False" not in content
+        assert "run_model_bpa(" in content
+        assert "check_fallback_reason(" in content
+        assert "get_direct_lake_guardrails(" in content
+
+    def test_the_bpa_step_runs_after_publish_and_never_blocks(self, dataplatform_output):
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        content = wf.read_text(encoding="utf-8")
+        publish = content.index("Publish semantic model and report to Fabric workspace")
+        advisory = content.index("Advisory Best Practice Analyzer run (non-blocking)")
+        assert publish < advisory
+        step = content[advisory:]
+        assert "continue-on-error: true" in step
+        assert "if: ${{ inputs.run_bpa_advisory }}" in step
+        assert "run_bpa_advisory:" in content
+        # Every path out of the script is exit 0: absent notebook, no capacity, and the end.
+        assert step.count("sys.exit(0)") >= 3
+        assert "sys.exit(1)" not in step
+        # Skips cleanly without capacity (no XMLA endpoint for Semantic Link Labs).
+        assert 'workspace.get("capacityId")' in step
+        assert "jobType=RunNotebook" in step
+
+    def test_the_bpa_step_publishes_only_the_notebook(self, dataplatform_output):
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        step = wf.read_text(encoding="utf-8").split("Advisory Best Practice Analyzer run")[1]
+        assert 'item_type_in_scope=["Notebook"]' in step
+        assert "unpublish" not in step
+
     def test_pr_validate_workflow_explains_private_hub_failure_mode(self, dataplatform_output):
         """#760: a public hub is legitimate (exit 0 stays), but the message must say what a
         private-hub operator will see and do."""

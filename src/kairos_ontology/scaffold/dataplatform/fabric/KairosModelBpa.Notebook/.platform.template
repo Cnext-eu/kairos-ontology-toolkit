@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "Kairos Model BPA"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "5f1d8c2a-3b7e-4e0a-9c41-6a2b8e7d0f38"
+  }
+}

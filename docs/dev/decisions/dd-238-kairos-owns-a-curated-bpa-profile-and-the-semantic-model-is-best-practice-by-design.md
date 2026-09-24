@@ -74,9 +74,12 @@ The reason is mandatory. It is fail-closed on an unknown rule, on a rule whose s
 cover that kind of object, and at product level on a target the product does not emit (on a
 single-domain compile the target may belong to another domain, as a bridge endpoint may,
 #763). The emitter writes each exception on its object as the standard
-`BestPracticeAnalyzer_IgnoreRules` annotation, which Tabular Editor and Semantic Link Labs
-honour, and lists it in `gold_product_report` under `bpa_exceptions`. A blocking compile check
-honours an exception for the object it names.
+`BestPracticeAnalyzer_IgnoreRules` annotation, which Tabular Editor honours, and lists it in
+`gold_product_report` under `bpa_exceptions`. A blocking compile check honours an exception for
+the object it names. Semantic Link Labs does not read the annotation (verified against 0.17.1):
+it evaluates its own rule set, keyed by rule name. So the post-deploy notebook carries the
+profile with it, maps each finding to its Microsoft rule ID and this target's disposition, and
+applies the model's own ignore annotations itself.
 
 **The rule set is a pinned snapshot, refreshed by hand.** `BPARules.json` is vendored at a
 recorded upstream commit, the same pattern as `fabric_schema/`, so compile stays offline and
@@ -88,8 +91,13 @@ it adds, until it has been re-triaged. The profile version and upstream commit a
 into the Gold lane's provenance sidecar (DD-218) under `bpaProfile`.
 
 **Checks that need data run after deploy, in Fabric, and never block the deploy.** The
-dataplatform scaffolds a notebook that runs `sempy_labs.run_model_bpa` and, for Direct Lake,
-the guardrail and fallback checks. Findings go back to the hub as authoring; nothing is fixed
+dataplatform scaffolds a notebook, `fabric/KairosModelBpa.Notebook`, that runs
+`sempy_labs.run_model_bpa(extended=True)` and, for Direct Lake, the guardrail and fallback
+checks, and appends its classified findings to a `kairos_bpa_findings` lakehouse table when
+one is attached. The deploy workflow publishes it and runs it through the Fabric job API in a
+`continue-on-error` step, which skips cleanly without the notebook or without Fabric, Premium
+or PPU capacity. The notebook is refreshed by `update --refresh-workflows`, not by the
+managed-file marker, which would break Fabric's notebook format on line 1. Findings go back to the hub as authoring; nothing is fixed
 in the deployed model (DD-206, DD-224).
 
 **The skill advises; the compiler enforces** (DD-163, DD-155).
