@@ -46,6 +46,9 @@ _USER_DOCS = (
     "USER_GUIDE.md",
     "CLI_REFERENCE.md",
     "CONSUMING_COMPILE_PLAN.md",
+    # DD-238: the BPA rule table the design skill points authors at. Generated, and
+    # link-free, so it reads the same in a hub's docs/toolkit/.
+    "BPA_PROFILE.md",
 )
 
 # Skill directories under .claude/skills/ that are contributor-workflow skills

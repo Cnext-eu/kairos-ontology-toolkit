@@ -193,6 +193,45 @@ verified, via `kairos-ontology apply-gold-connection`, which:
 - is a clean no-op when the file is absent or declares no matching environment, in which case
   the hub's own values stand.
 
+### Advisory Best Practice Analyzer run
+
+After publishing, the deploy workflow runs `fabric/KairosModelBpa.Notebook` against the model it
+just deployed (DD-238). The hub already checks what can be checked statically: its compiler blocks
+unqualified DAX column references and a calendar that is not a date table, and warns on the rest.
+This run covers what only a deployed model with data can answer, such as column cardinality,
+referential-integrity violations, and Direct Lake guardrails and fallback.
+
+- **Advisory, never blocking.** The step is `continue-on-error` and exits cleanly on every path.
+  A finding, or a check that cannot run, never fails a deploy that succeeded. Turn it off for one
+  run with the `run_bpa_advisory` input.
+- **Read-only over the model** (DD-206). It publishes only its own notebook item.
+- **Findings go back to the hub.** The notebook classifies each finding against the Kairos BPA
+  profile: `rejected` and `not-applicable` rules, and objects the hub excused with a
+  `bpaIgnoreRule`, are expected. Anything left to review is a hub change: a measure, a
+  `goldHideColumn`, or a `bpaIgnoreRule` with its reason. Never fix it in the deployed model,
+  because the next release overwrites it (DD-224).
+- **Keeping findings.** Set the `FABRIC_BPA_LAKEHOUSE_ID` and `FABRIC_BPA_LAKEHOUSE_NAME`
+  repository variables, and findings are appended to that lakehouse's `kairos_bpa_findings`
+  table. Without them they are only shown in the notebook run.
+
+The two targets differ:
+
+| | Fabric (Direct Lake) | Databricks (DirectQuery) |
+|---|---|---|
+| Runs | `run_model_bpa(extended=True)`, plus the Direct Lake guardrail and fallback checks | `run_model_bpa(extended=True)` |
+| Needs | Fabric capacity | Premium, PPU or Fabric capacity for XMLA read access |
+| Without it | skipped, with a notice | skipped, with a notice; do the manual check below |
+
+**Manual check for a Pro workspace.** Semantic Link Labs cannot reach a model in a Pro workspace.
+Open the model in Tabular Editor (or Power BI Desktop via **External tools**) and run the Best
+Practice Analyzer with the rules in the hub's `docs/toolkit/BPA_PROFILE.md` in mind. Findings on
+rules marked `rejected`, `not-applicable` or excused by the model's own
+`BestPracticeAnalyzer_IgnoreRules` annotation are expected; report the rest to the hub.
+
+The notebook and its `semantic-link-labs` pin are owned by the toolkit and move only with a
+toolkit release. `kairos-ontology update --refresh-workflows` refreshes an untouched copy, and
+installs it in a dataplatform scaffolded before it existed.
+
 ## Updating this guide
 
 Adopt a newer toolkit and managed guide in an isolated PR:

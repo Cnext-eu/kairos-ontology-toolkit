@@ -105,6 +105,15 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     example in an environment without the .NET SDK where you'd rather not pay the
     build cost on every emit).
 
+    Rendering also asserts the Kairos BPA profile's guarantees on the emitted model
+    (DD-238), and refuses to emit one that breaks them: ``gold.date-table-not-marked``,
+    ``gold.calendar-unsorted``, ``gold.column-summarized``,
+    ``gold.relationship-type-mismatch`` (active relationships), ``gold.column-source-missing``,
+    ``gold.measure-expression-missing``, ``gold.measure-format-missing`` and
+    ``gold.description-control-character``. A ``bpaIgnoreRule`` target the product does
+    not emit fails here too (``gold.bpa-ignore-unknown-target``); ``compile --check``
+    defers it, because on one domain the target may belong to another.
+
     The emit location is fixed and not configurable:
     ``<repo>/ontology-hub-publish/powerbi`` (sibling of the hub, and of the dbt publish
     target `<repo>/ontology-hub-publish/medallion/dbt` -- never inside it).
