@@ -216,7 +216,9 @@ def test_erd_draws_a_cross_domain_foreign_key_as_an_external_stub_and_edge():
     erd = _render_erd(_plan_with_cross_domain_foreign_key())
 
     assert erd.count(_EXTERNAL_STUB) == 1
-    assert f'    REGION ||--o{{ CLIENT : "{_CROSS_DOMAIN_URI} [temporal=current] [external]"' in erd
+    # The foreign key is nullable, so the parent end is |o, not || (#999).
+    assert f'    REGION |o--o{{ CLIENT : "{_CROSS_DOMAIN_URI} [temporal=current] [external]"' in erd
+    # ...while this one is NOT NULL, so it keeps || on the parent end.
     in_domain = [line for line in erd.splitlines() if "CLIENT_TYPE ||--o{" in line]
     assert in_domain and all("[external]" not in line for line in in_domain)
     assert _render_erd(_plan_with_cross_domain_foreign_key()) == erd
@@ -263,9 +265,11 @@ def test_master_erd_replaces_an_external_stub_once_its_domain_is_emitted(tmp_pat
         [
             {
                 "model_name": "client",
+                "columns": [{"name": "region_sk", "nullable": True}],
                 "constraints": [
                     {
                         "kind": "foreign-key",
+                        "columns": ["region_sk"],
                         "referenced_model": "region",
                         "temporal_mode": "current",
                         "property_uri": _CROSS_DOMAIN_URI,
@@ -288,8 +292,9 @@ def test_master_erd_replaces_an_external_stub_once_its_domain_is_emitted(tmp_pat
     assert "model from another domain" not in both
     # The master strips each domain body, so the first entity line may sit at column 0.
     assert both.count("REGION {") == 1
-    assert both.count(f'REGION ||--o{{ CLIENT : "{_CROSS_DOMAIN_URI} [temporal=current]"') == 1
-    edges = [line for line in both.splitlines() if "||--o{" in line]
+    # Nullable foreign key: the master draws the same |o the domain ERD does (#999).
+    assert both.count(f'REGION |o--o{{ CLIENT : "{_CROSS_DOMAIN_URI} [temporal=current]"') == 1
+    edges = [line for line in both.splitlines() if "--o{" in line]
     assert edges and all("[external]" not in line for line in edges)
 
 

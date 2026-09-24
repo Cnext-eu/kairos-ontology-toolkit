@@ -157,6 +157,23 @@ def mermaid_frontmatter() -> list[str]:
     return ["---", "config:", f"  layout: {_mermaid_layout}", "---"]
 
 
+def er_edge(parent_required: bool, one_to_one: bool = False) -> str:
+    """The Mermaid ``erDiagram`` relationship token for a parent-to-child edge (DD-241).
+
+    Parent end: ``||`` when every child row has a parent (a NOT NULL foreign key), ``|o``
+    when it may have none. Child end: ``o|`` when a parent has at most one child, ``o{``
+    otherwise. Every ER renderer draws through this one function, so a domain ERD and the
+    master ERD produce the same string for the same edge -- the master deduplicates cross-
+    domain edges by exact string. Before it, every renderer hard-coded ``||--o{``, which
+    drew every optional foreign key as mandatory and no one-to-one link at all (#999).
+    """
+    return ("||" if parent_required else "|o") + "--" + ("o|" if one_to_one else "o{")
+
+
+#: Any ``erDiagram`` relationship token :func:`er_edge` can produce, as a pattern.
+ER_EDGE_PATTERN = r"(?:\|\||\|o)--(?:o\||o\{)"
+
+
 def mermaid_header(indent: str = "    ") -> list[str]:
     """Frontmatter followed by the provenance stamp: the top of every generated diagram.
 

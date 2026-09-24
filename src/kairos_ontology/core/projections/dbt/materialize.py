@@ -580,6 +580,7 @@ def _silver_physical_plan(
                     as_of_column=foreign_key.as_of_column,
                     property_uri=foreign_key.property_uri,
                     provenance=foreign_key.provenance,
+                    relationship_cardinality=foreign_key.relationship_cardinality,
                 )
             )
         indexes = tuple(

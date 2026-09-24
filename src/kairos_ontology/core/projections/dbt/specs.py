@@ -4,9 +4,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
+
+#: ``field(metadata=...)`` key: leave the field out of canonical serialization while it
+#: holds its default. A field added to a hashed spec otherwise changes the fingerprint of
+#: every model in every hub, and with it the bytes of the dbt package dataplatforms pin,
+#: even for hubs that never set it (DD-241).
+OMIT_WHEN_DEFAULT = "kairos_omit_when_default"
+
+
+def optional_field(default: object = ""):
+    """A spec field that is invisible to hashes and plan JSON until it is set."""
+    return field(default=default, metadata={OMIT_WHEN_DEFAULT: True})
+
 
 if TYPE_CHECKING:  # pragma: no cover
     from .mapping_specs import (
@@ -393,6 +405,10 @@ class SilverForeignKeySpec:
     late_parent_action: str = ""
     participates_in_change_detection: bool = False
     provenance: tuple[str, ...] = ()
+    #: The binding's authored ``cardinality`` (``many-to-one``/``one-to-one``), which the
+    #: ERDs draw on the child end (DD-241). ``cardinality`` above is the *lookup*
+    #: cardinality, derived from ``missingParent``, not this.
+    relationship_cardinality: str = optional_field()
 
 
 @dataclass(frozen=True, slots=True)
@@ -750,6 +766,9 @@ class SilverConstraintPhysicalPlan:
     property_uri: str = ""
     predicate: str = ""
     provenance: tuple[str, ...] = ()
+    #: ``one-to-one`` for a foreign key the binding declares one-to-one; empty otherwise,
+    #: and then absent from the constraints JSON (DD-241).
+    relationship_cardinality: str = optional_field()
 
 
 @dataclass(frozen=True, slots=True)

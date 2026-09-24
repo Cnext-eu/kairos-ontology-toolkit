@@ -760,10 +760,28 @@ def _diagram_artifacts(result, hub: Path) -> dict[str, str]:
     one command draws every diagram. ``project --target contract-erd`` still works and
     now writes to this same directory. An ungoverned domain has no contract and
     contributes nothing, which keeps contract adoption opt-in (DD-213 §6).
-    """
-    from ..core.projections.contract_erd_projector import generate_contract_erd_artifacts
 
-    return generate_contract_erd_artifacts(hub / "model" / "contracts", result.domain)
+    Its relationship ends are read from the domain ontology (DD-241). The load uses the
+    kernel's own arguments, so it is an in-process cache hit, not a second parse.
+    """
+    from ..core.ontology_loader import SemanticProfile, load_ontology
+    from ..core.projections.contract_erd_projector import (
+        ContractOntology,
+        generate_contract_erd_artifacts,
+    )
+
+    contracts_dir = hub / "model" / "contracts"
+    if not (contracts_dir / f"{result.domain}.contract.yaml").is_file():
+        return {}
+    ontology = None
+    ontology_path = hub / "model" / "ontologies" / f"{result.domain}.ttl"
+    if ontology_path.is_file():
+        try:
+            loaded = load_ontology(ontology_path, identity_root=hub, profile=SemanticProfile.RDFS)
+            ontology = ContractOntology(loaded, ontology_path)
+        except Exception:  # noqa: BLE001 - a diagram never fails an emit; edges go optional
+            ontology = None
+    return generate_contract_erd_artifacts(contracts_dir, result.domain, ontology)
 
 
 def _split_diagram_artifacts(domain_artifacts: dict[str, str]) -> dict[str, str]:

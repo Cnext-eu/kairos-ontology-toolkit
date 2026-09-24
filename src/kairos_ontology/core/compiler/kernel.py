@@ -1339,8 +1339,103 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         prefix_alternatives=prefix_alternatives,
         closure_property_owners=closure_property_owners,
         deprecated_classes=_deprecated_classes(graph, classes),
+        relationship_bounds=_relationship_bounds(
+            graph,
+            properties,
+            frozenset(
+                token
+                for document in binding_documents.values()
+                for token in _binding_relationship_property_tokens(document)
+            ),
+        ),
     )
     return scope, context
+
+
+def _relationship_bounds(
+    graph, properties, referenced_tokens: frozenset[str]
+) -> dict[tuple[str, str], tuple[int | None, int | None]]:
+    """OWL bounds for the relationships bindings name, computed where the graph is (DD-241).
+
+    The same derivation the class diagram draws from (``edge_multiplicities``), so a
+    compile warning and a diagram can never read the ontology differently.
+    """
+    from ..projections.erd_projector import declared_inverse, edge_multiplicities
+
+    bounds: dict[tuple[str, str], tuple[int | None, int | None]] = {}
+    for prop in properties:
+        if not prop.is_object_property or prop.ref not in referenced_tokens:
+            continue
+        uri = URIRef(prop.uri)
+        inverse = declared_inverse(graph, uri)
+        range_cls = URIRef(prop.range_uris[0]) if prop.range_uris else None
+        for class_uri in prop.domain_uris:
+            if (class_uri, prop.uri) in bounds:
+                continue
+            cls = URIRef(class_uri)
+            (_, source_max), (target_min, _) = edge_multiplicities(
+                graph,
+                cls,
+                cls,
+                uri,
+                range_cls if range_cls is not None else cls,
+                inverse if range_cls is not None else None,
+            )
+            bounds[(class_uri, prop.uri)] = (target_min, source_max)
+    return bounds
+
+
+def _relationship_cardinality_diagnostics(
+    binding, relationship, pointer: str, prop, context: ResolutionContext
+) -> list[CompileDiagnostic]:
+    """Warn where the binding's relationship contradicts the ontology's bounds (DD-241).
+
+    OWL declares relationship cardinality; the binding implements it for Silver. The two
+    can disagree silently: a binding that loads rows with no parent under a property OWL
+    requires, or one that promises one-to-one where OWL allows many. Warnings, never
+    errors -- the binding may be right and the ontology stale -- but the diagrams draw
+    each layer from its own declaration, so a disagreement shows as two different edges.
+    """
+    domain_class = context.klass(binding.target_class)
+    if domain_class is None or prop is None:
+        return []
+    bounds = context.relationship_bounds.get((domain_class.uri, prop.uri))
+    if bounds is None:
+        return []
+    target_min, source_max = bounds
+    location = SourceLocation(path=binding.source_path, pointer=pointer)
+    diagnostics: list[CompileDiagnostic] = []
+    if (target_min or 0) >= 1 and relationship.missing_parent == "null":
+        diagnostics.append(
+            CompileDiagnostic(
+                code="relationship.optional-but-ontology-requires",
+                message=(
+                    f"'{relationship.property}' is required by the ontology (min "
+                    f"{target_min}), but missingParent: null loads rows with no parent. "
+                    "Set missingParent: error, or relax the OWL restriction if parents "
+                    "really can be missing"
+                ),
+                severity=DiagnosticSeverity.WARNING,
+                location=location,
+                rule_id="DD-241",
+            )
+        )
+    if relationship.cardinality == "one-to-one" and source_max != 1:
+        diagnostics.append(
+            CompileDiagnostic(
+                code="relationship.one-to-one-not-in-ontology",
+                message=(
+                    f"'{relationship.property}' is bound one-to-one, but the ontology does "
+                    "not bound its inverse to one, so a parent may have many children. "
+                    "Declare the inverse functional (or InverseFunctionalProperty), or bind "
+                    "it many-to-one"
+                ),
+                severity=DiagnosticSeverity.WARNING,
+                location=location,
+                rule_id="DD-241",
+            )
+        )
+    return diagnostics
 
 
 def _merge_systems(
@@ -1663,6 +1758,11 @@ def _relationship_policies(
                         uri,
                         "silverForeignKeyCardinality",
                         relationship.match_count.lookup_cardinality.value,
+                    ),
+                    relationship_cardinality=_authored(
+                        uri,
+                        "silverForeignKeyRelationshipCardinality",
+                        relationship.cardinality.value,
                     ),
                     missing_action=_authored(
                         uri,
@@ -2091,6 +2191,9 @@ def _wire_relationships(
             target_binding = by_target.get(relationship.target)
             target_class = _relationship_target_class(relationship, context, hub_root)
             prop = context.property(relationship.property)
+            diagnostics.extend(
+                _relationship_cardinality_diagnostics(binding, relationship, pointer, prop, context)
+            )
             if relation is None:
                 # Defensive: adapt_binding already requires the source relation to
                 # resolve (as "safety.source-unresolved") before a binding reaches
@@ -3146,6 +3249,28 @@ def _binding_referenced_property_tokens(text: str) -> tuple[str, ...]:
         str(field_map["property"])
         for field_map in fields
         if isinstance(field_map, dict) and field_map.get("property")
+    )
+
+
+def _binding_relationship_property_tokens(text: str) -> tuple[str, ...]:
+    """Read every property token a binding's ``relationships:`` names (DD-241).
+
+    Best-effort like its ``fields:`` sibling above; it only decides which relationships'
+    OWL bounds are worth computing, so a document it cannot read simply gets none.
+    """
+    try:
+        document = yaml_io.safe_load(text)
+    except yaml.YAMLError:
+        return ()
+    if not isinstance(document, dict):
+        return ()
+    relationships = document.get("relationships")
+    if not isinstance(relationships, list):
+        return ()
+    return tuple(
+        str(item["property"])
+        for item in relationships
+        if isinstance(item, dict) and item.get("property")
     )
 
 

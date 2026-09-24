@@ -16,8 +16,9 @@
 #
 #   Governance constraints (this file) are hand-authored and live directly in
 #   model/shapes/<domain>.shacl.ttl. They encode business rules that no source
-#   profile can derive: closed code lists, required identifiers, role
-#   cardinality, and severity choice.
+#   profile can derive: closed code lists, required identifier literals, and
+#   severity choice. Relationship (object-property) cardinality is NOT one of
+#   them: it is declared in OWL, which every diagram and compile reads (DD-241).
 #
 # Neither replaces the other.
 #

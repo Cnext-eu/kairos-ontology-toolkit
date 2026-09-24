@@ -2026,6 +2026,26 @@ def run_validation(
         for notice in integrity_report.notices:
             print(f"  ℹ {notice}")
 
+        # DD-241: relationship cardinality is declared in OWL; a SHACL count on an object
+        # property duplicates, contradicts or hides it. Warnings, never the exit code.
+        from .cardinality_audit import audit_shacl_cardinality, hand_authored_shapes
+
+        parsed_shapes: list[tuple[str, Graph]] = []
+        for shapes_file in hand_authored_shapes(shapes_path):
+            try:
+                parsed_shapes.append(
+                    (
+                        shapes_file.name.removesuffix(".shacl.ttl"),
+                        Graph().parse(shapes_file, format="turtle"),
+                    )
+                )
+            except Exception:  # noqa: BLE001 - a shapes file that does not parse is Level 2's
+                continue
+        cardinality_warnings = audit_shacl_cardinality(ontology_files, parsed_shapes, catalog_path)
+        results["integrity"]["warnings"].extend(item.to_dict() for item in cardinality_warnings)
+        for item in cardinality_warnings:
+            print(f"  ⚠ [{item.domain}] {item.code}: {item.message}")
+
         scores = integrity_report.scores()
         print(
             "\n  Fit scores — "

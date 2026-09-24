@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Generic, TypeVar
 
 from .diagnostics import Diagnostic, DiagnosticSeverity, EvaluationStatus
-from .specs import ColumnSpec, ModelIdentity
+from .specs import ColumnSpec, ModelIdentity, optional_field
 
 T = TypeVar("T")
 
@@ -516,6 +516,9 @@ class TemporalRelationshipFact:
     ambiguous_action: AuthoredValuesFact
     late_parent_action: AuthoredValuesFact
     change_detection: AuthoredValuesFact | None
+    #: The binding's authored ``cardinality`` (DD-241). Optional so the legacy graph
+    #: path, which has no binding, needs no change.
+    relationship_cardinality: AuthoredValuesFact | None = optional_field(None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -591,6 +594,8 @@ class TemporalRelationshipSpec:
     ambiguous_action: EffectiveValue[ParentAction]
     late_parent_action: EffectiveValue[ParentAction]
     participates_in_change_detection: EffectiveValue[bool]
+    #: ``one-to-one`` when the binding says so; empty for many-to-one (DD-241).
+    relationship_cardinality: str = optional_field()
 
 
 class DqCategory(str, Enum):

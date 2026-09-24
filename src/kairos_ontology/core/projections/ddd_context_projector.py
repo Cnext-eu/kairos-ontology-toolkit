@@ -52,10 +52,11 @@ from .erd_projector import (
     _attribute_type,
     _datatype_properties,
     _declared_classes,
-    _effective_bounds,
     _external_label,
     _multiplicity,
     _node_ids,
+    declared_inverse,
+    edge_multiplicities,
 )
 from .shared import _toolkit_version, class_ancestors, effective_domain_classes, mermaid_header
 from .uri_utils import extract_local_name
@@ -533,11 +534,18 @@ def _edges_for(model: _Model, drawn: set[URIRef]) -> tuple[list[tuple], list[tup
                         break
             if declared_on is None:
                 continue
-            min_bound, max_bound = _effective_bounds(model.graph, cls, declared_on, prop)
-            if max_bound is None and (prop, RDF.type, OWL.FunctionalProperty) in model.graph:
-                max_bound = 1
+            # Both ends, from the same derivation as the class diagram (DD-241). This
+            # diagram drew only the target end, so every source end read as nothing.
+            source, target = edge_multiplicities(
+                model.graph,
+                cls,
+                declared_on,
+                prop,
+                range_cls,
+                declared_inverse(model.graph, prop),
+            )
             association.append(
-                (cls, range_cls, prop, _multiplicity(min_bound, max_bound), inherited)
+                (cls, range_cls, prop, (_multiplicity(*source), _multiplicity(*target)), inherited)
             )
     return aggregate, inheritance, association
 
@@ -602,11 +610,13 @@ def _class_diagram(model: _Model, contexts: list[URIRef], hub_name: str, title: 
         lines.append(f"    {class_ids[root]} *-- {class_ids[member]} : aggregate")
     for parent, child in inheritance:
         lines.append(f"    {class_ids[parent]} <|-- {class_ids[child]}")
-    for cls, range_cls, prop, mult, inherited in association:
+    for cls, range_cls, prop, (source, target), inherited in association:
         label = _sanitize(extract_local_name(str(prop)))
         if inherited:
             label += " (inherited)"
-        lines.append(f'    {class_ids[cls]} --> "{mult}" {class_ids[range_cls]} : {label}')
+        lines.append(
+            f'    {class_ids[cls]} "{source}" --> "{target}" {class_ids[range_cls]} : {label}'
+        )
     return "\n".join(lines) + "\n"
 
 

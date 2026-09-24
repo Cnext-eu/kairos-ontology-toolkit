@@ -128,8 +128,47 @@ class TestContractErd:
     def test_marks_a_cross_domain_target_as_external(self, contracts_dir):
         """Cross-domain reach is exactly what the emitted ERD hides behind a `_sk`."""
         content = _content(contracts_dir)
-        assert 'LEGALENTITY ||--o{ CUSTOMER : "representsLegalEntity [external]"' in content
-        assert 'ACCOUNT ||--o{ CUSTOMER : "hasAccount"' in content
+        # No ontology given: every edge is drawn optional, the weakest claim (#999).
+        assert 'LEGALENTITY |o--o{ CUSTOMER : "representsLegalEntity [external]"' in content
+        assert 'ACCOUNT |o--o{ CUSTOMER : "hasAccount"' in content
+
+    def test_the_ends_are_read_from_the_ontology(self, contracts_dir, tmp_path):
+        """#999: every edge used to be ||--o{. A contract relationship declares no
+        cardinality, so the ends come from OWL: a required property is a mandatory
+        parent, and an inverse bounded to one makes it one-to-one."""
+        from kairos_ontology.core.ontology_loader import SemanticProfile, load_ontology
+        from kairos_ontology.core.projections.contract_erd_projector import ContractOntology
+
+        ontology = tmp_path / "party.ttl"
+        ontology.write_text(
+            """
+@prefix party: <https://example.test/party#> .
+@prefix finance: <https://example.test/finance#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://example.test/party> a owl:Ontology .
+party:Customer a owl:Class ;
+    rdfs:subClassOf [ a owl:Restriction ; owl:onProperty party:hasAccount ;
+                      owl:minCardinality 1 ; owl:maxCardinality 1 ] .
+party:Account a owl:Class .
+finance:LegalEntity a owl:Class .
+party:hasAccount a owl:ObjectProperty ; rdfs:domain party:Customer ;
+    rdfs:range party:Account .
+party:accountOf a owl:ObjectProperty, owl:FunctionalProperty ;
+    owl:inverseOf party:hasAccount .
+party:representsLegalEntity a owl:ObjectProperty ; rdfs:domain party:Customer ;
+    rdfs:range finance:LegalEntity .
+""",
+            encoding="utf-8",
+        )
+        loaded = load_ontology(ontology, profile=SemanticProfile.RDFS)
+        content = generate_contract_erd_artifacts(
+            contracts_dir, "party", ContractOntology(loaded, ontology)
+        )["party-contract-erd.mmd"]
+        # Required (min 1), and the inverse is functional: one account per customer.
+        assert 'ACCOUNT ||--o| CUSTOMER : "hasAccount"' in content
+        # Declared, but unbounded: optional parent, many children.
+        assert 'LEGALENTITY |o--o{ CUSTOMER : "representsLegalEntity [external]"' in content
 
     def test_a_technical_column_is_labelled(self, contracts_dir):
         assert '"technical, optional"' in _content(contracts_dir)

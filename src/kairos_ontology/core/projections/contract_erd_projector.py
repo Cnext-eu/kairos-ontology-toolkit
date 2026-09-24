@@ -21,12 +21,22 @@ keep the Silver/Gold bound ERDs on ``erDiagram`` applies here.
 
 Reads the authored contract document, never a ``CompilePlan``: the promise is what was
 declared, so a contract that no binding currently fulfils must still render.
+
+Relationship ends come from the domain ontology (DD-241). A contract relationship declares
+only its property, target and column name, never its cardinality, and it should not: OWL
+is where relationship cardinality is declared. Given the domain's loaded closure, an edge
+is mandatory on the parent end when OWL requires the property (min 1), and one-to-one when
+OWL bounds its inverse to one. Without the ontology every edge is drawn optional: the
+weakest claim, never a false one.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+from rdflib import URIRef
 
 from ..compiler.contracts import (
     ContractEntity,
@@ -34,8 +44,38 @@ from ..compiler.contracts import (
     load_silver_contract,
     resolved_column_name,
 )
-from .shared import mermaid_header, mmd_type
+from .erd_projector import declared_inverse, edge_multiplicities
+from .shared import er_edge, mermaid_header, mmd_type
 from .uri_utils import extract_local_name
+
+
+@dataclass(frozen=True)
+class ContractOntology:
+    """The domain's loaded closure, for reading relationship bounds (DD-241)."""
+
+    load_result: Any
+    #: The domain ``.ttl``: its ``@prefix`` declarations resolve the contract's tokens.
+    root_path: Path
+
+    def resolve(self, token: str) -> Optional[URIRef]:
+        from ..fit_report import resolve_token_uri
+
+        uri = resolve_token_uri(self.load_result, self.root_path, token)
+        return URIRef(uri) if uri else None
+
+    def edge(self, entity_class: str, prop: str, target: str) -> str:
+        cls, prop_uri, target_uri = (
+            self.resolve(entity_class),
+            self.resolve(prop),
+            self.resolve(target),
+        )
+        if cls is None or prop_uri is None or target_uri is None:
+            return er_edge(False)
+        graph = self.load_result.graph
+        (_, source_max), (target_min, _) = edge_multiplicities(
+            graph, cls, cls, prop_uri, target_uri, declared_inverse(graph, prop_uri)
+        )
+        return er_edge((target_min or 0) >= 1, source_max == 1)
 
 
 def _entity_node(entity: ContractEntity) -> str:
@@ -146,7 +186,9 @@ def _entity_block(entity: ContractEntity) -> list[str]:
     return lines
 
 
-def _relationship_lines(contract: SilverContract) -> list[str]:
+def _relationship_lines(
+    contract: SilverContract, ontology: Optional[ContractOntology] = None
+) -> list[str]:
     """One edge per declared relationship, marking targets outside this domain.
 
     Cross-domain reach is the thing the emitted ERD cannot show -- it disappears behind a
@@ -164,11 +206,18 @@ def _relationship_lines(contract: SilverContract) -> list[str]:
                 label = f"{label} [external]"
             else:
                 parent = _entity_node(target)
-            lines.append(f'    {parent} ||--o{{ {child} : "{label}"')
+            edge = (
+                ontology.edge(entity.target_class, item.property, item.target)
+                if ontology is not None
+                else er_edge(False)
+            )
+            lines.append(f'    {parent} {edge} {child} : "{label}"')
     return sorted(set(lines))
 
 
-def render_contract_erd(contract: SilverContract) -> str:
+def render_contract_erd(
+    contract: SilverContract, ontology: Optional[ContractOntology] = None
+) -> str:
     """Render one declared Silver contract as a Mermaid ``erDiagram``."""
     lines = [
         # Unindented to match this file's other comments. The "do not edit" note that
@@ -185,7 +234,7 @@ def render_contract_erd(contract: SilverContract) -> str:
     ]
     for entity in contract.entities:
         lines.extend(_entity_block(entity))
-    relationships = _relationship_lines(contract)
+    relationships = _relationship_lines(contract, ontology)
     if relationships:
         lines.append("")
         lines.extend(relationships)
@@ -195,6 +244,7 @@ def render_contract_erd(contract: SilverContract) -> str:
 def generate_contract_erd_artifacts(
     contracts_dir: Optional[Path],
     ontology_name: str,
+    ontology: Optional[ContractOntology] = None,
 ) -> dict:
     """Return ``{filename: content}`` for one domain's declared contract, if it has one.
 
@@ -210,4 +260,4 @@ def generate_contract_erd_artifacts(
     contract = load_silver_contract(path.read_text(encoding="utf-8"), path=str(path))
     if not contract.entities:
         return {}
-    return {f"{domain}-contract-erd.mmd": render_contract_erd(contract)}
+    return {f"{domain}-contract-erd.mmd": render_contract_erd(contract, ontology)}

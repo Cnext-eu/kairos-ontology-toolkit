@@ -286,9 +286,9 @@ relationships:
     join:
       - local: <source-column>
         foreign: <parent-key-column>
-    cardinality: many-to-one   # or one-to-one
+    cardinality: many-to-one   # or one-to-one; must agree with the OWL bounds
     mode: non-temporal
-    missingParent: error       # or null
+    missingParent: error       # or null; error when OWL requires the parent (min 1)
     ambiguousParent: error     # or first
 quality:
   - kind: not-null             # unique | reconcile-rowcount | referential
