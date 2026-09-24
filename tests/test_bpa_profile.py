@@ -338,3 +338,39 @@ def test_the_provenance_sidecar_can_record_the_profile():
         "upstreamCommit": bpa_profile.UPSTREAM_COMMIT,
     }
     assert "bpaProfile" not in json.loads(build_provenance_document(_scope()))
+
+
+class TestNotebook:
+    """#982: the post-deploy notebook carries the profile, so the two cannot drift."""
+
+    def test_every_profiled_rule_is_in_the_notebook_map(self):
+        from kairos_ontology.core.projections.dbt.bpa_notebook import notebook_profile
+
+        embedded = notebook_profile()["rules"]
+        assert len(embedded) == len(PROFILE), "two upstream names normalise to one key"
+        assert {item["id"] for item in embedded.values()} == {item.rule_id for item in PROFILE}
+
+    def test_names_normalise_the_way_semantic_link_labs_spells_them(self):
+        from kairos_ontology.core.projections.dbt.bpa_notebook import notebook_profile
+
+        entry = notebook_profile()["rules"]["do not use floating point data types"]
+        assert entry["id"] == "AVOID_FLOATING_POINT_DATA_TYPES"
+        assert entry["fabric"] == "compile-diagnostic"
+
+    def test_the_templates_hold_no_scaffold_placeholder(self):
+        """`update --refresh-workflows` will not install a missing file holding one."""
+        from kairos_ontology.cli.workflow_refresh import _PLACEHOLDER
+        from kairos_ontology.core.projections.dbt.bpa_notebook import (
+            NOTEBOOK_TEMPLATE,
+            PLATFORM_TEMPLATE,
+        )
+
+        for path in (NOTEBOOK_TEMPLATE, PLATFORM_TEMPLATE):
+            assert not _PLACEHOLDER.search(path.read_text(encoding="utf-8")), path.name
+
+    def test_the_notebook_code_compiles(self):
+        from kairos_ontology.core.projections.dbt.bpa_notebook import render_notebook_content
+
+        cells = render_notebook_content().split("# CELL ********************")
+        code = cells[-1].split("# METADATA ********************")[0]
+        compile(code, "notebook-content.py", "exec")

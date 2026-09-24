@@ -59,7 +59,8 @@ PROFILE_VERSION = "1"
 #: per-rule digests are over parsed JSON, so that is not a change to any rule.
 RULES_PATH = Path(__file__).parent / "bpa_rules" / "BPARules.json"
 
-#: The TMDL annotation Tabular Editor and Semantic Link Labs both honour.
+#: The TMDL annotation Tabular Editor honours. Semantic Link Labs does not read it, so the
+#: post-deploy notebook applies it itself (``bpa_notebook``).
 IGNORE_ANNOTATION = "BestPracticeAnalyzer_IgnoreRules"
 
 
@@ -934,7 +935,8 @@ def render_profile_markdown() -> str:
         "",
         "An exception is authored in the Gold extension on the `owl:Ontology` resource, and "
         "is emitted as the `BestPracticeAnalyzer_IgnoreRules` annotation that Tabular "
-        "Editor and Semantic Link Labs honour:",
+        "Editor honours; the dataplatform's post-deploy notebook applies it to Semantic "
+        "Link Labs findings, which ignore it:",
         "",
         "```turtle",
         '<ontology> kairos-ext:bpaIgnoreRule "DAX_COLUMNS_FULLY_QUALIFIED on measure '

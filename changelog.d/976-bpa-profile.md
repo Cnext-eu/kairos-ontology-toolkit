@@ -9,8 +9,7 @@
 - **`kairos-ext:bpaIgnoreRule` records an exception to one BPA rule for one object**, as
   `"<RULE_ID> on <model|table|column|measure|relationship> [<target>]: <reason>"` on the Gold
   extension's `owl:Ontology` resource. The reason is mandatory. The exception is emitted as
-  the `BestPracticeAnalyzer_IgnoreRules` annotation Tabular Editor and Semantic Link Labs
-  honour, and listed under `bpa_exceptions` in the product report. An unknown rule, a rule
+  the `BestPracticeAnalyzer_IgnoreRules` annotation Tabular Editor honours, and listed under `bpa_exceptions` in the product report. An unknown rule, a rule
   that cannot apply to that kind of object, or a target the product does not emit is
   rejected.
 - The Gold provenance sidecar records the BPA profile version and upstream commit under

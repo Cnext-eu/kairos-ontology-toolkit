@@ -1,15 +1,19 @@
 #!/usr/bin/env python
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Generate ``docs/guide/BPA_PROFILE.md`` from the Kairos BPA profile (DD-238).
+"""Generate the files derived from the Kairos BPA profile (DD-238).
 
-The guide is a projection of ``core/projections/dbt/bpa_profile.py``, so it is derived
-rather than written, and ``tests/test_bpa_profile.py`` fails when the two disagree.
+* ``docs/guide/BPA_PROFILE.md`` -- the rule table;
+* the dataplatform's advisory BPA notebook template, which embeds the profile so it can
+  classify Semantic Link Labs findings (#982).
+
+Each is a projection of ``core/projections/dbt/bpa_profile.py``, so it is derived rather
+than written, and ``tests/test_bpa_profile.py`` fails when one disagrees.
 
 Usage::
 
-    python scripts/generate_bpa_profile.py            # write the file
-    python scripts/generate_bpa_profile.py --check    # exit 1 if it is out of date
+    python scripts/generate_bpa_profile.py            # write the files
+    python scripts/generate_bpa_profile.py --check    # exit 1 if any is out of date
 """
 
 from __future__ import annotations
@@ -20,6 +24,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
+from kairos_ontology.core.projections.dbt.bpa_notebook import (  # noqa: E402
+    NOTEBOOK_TEMPLATE,
+    PLATFORM_TEMPLATE,
+    render_notebook_content,
+    render_platform,
+)
 from kairos_ontology.core.projections.dbt.bpa_profile import (  # noqa: E402
     render_profile_markdown,
 )
@@ -27,17 +37,29 @@ from kairos_ontology.core.projections.dbt.bpa_profile import (  # noqa: E402
 GUIDE = REPO / "docs" / "guide" / "BPA_PROFILE.md"
 
 
+def outputs() -> dict[Path, str]:
+    return {
+        GUIDE: render_profile_markdown(),
+        NOTEBOOK_TEMPLATE: render_notebook_content(),
+        PLATFORM_TEMPLATE: render_platform(),
+    }
+
+
 def main(argv: list[str]) -> int:
-    text = render_profile_markdown()
-    if "--check" in argv:
-        current = GUIDE.read_text(encoding="utf-8") if GUIDE.is_file() else ""
-        if current.replace("\r\n", "\n") != text:
-            print(f"{GUIDE.relative_to(REPO)} is out of date; run {Path(__file__).name}")
-            return 1
-        return 0
-    GUIDE.write_text(text, encoding="utf-8", newline="\n")
-    print(f"wrote {GUIDE.relative_to(REPO)}")
-    return 0
+    stale = []
+    for path, text in outputs().items():
+        current = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if current.replace("\r\n", "\n") == text:
+            continue
+        if "--check" in argv:
+            stale.append(path)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+        print(f"wrote {path.relative_to(REPO)}")
+    for path in stale:
+        print(f"{path.relative_to(REPO)} is out of date; run {Path(__file__).name}")
+    return 1 if stale else 0
 
 
 if __name__ == "__main__":
