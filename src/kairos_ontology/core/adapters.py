@@ -94,13 +94,12 @@ DBT_ADAPTER_PACKAGES: dict[str, str] = {
 # contradiction shipped: the scaffold pinned ``>=1.9,<1.10`` while the emitter had
 # already moved.
 #
-# CEILING -- ``dbt-fabric==1.10.0``, exactly. 1.10.1 replaced pyodbc with mssql-python,
-# which parses the connection string eagerly and rejects the ``Authority Id`` keyword
-# that dbt-fabric derives from the ``ActiveDirectoryServicePrincipal`` auth mode used by
-# ``dbt_validation._offline_profile``. pyodbc accepted the string and failed later at
-# connect, which ``validate-dbt`` tolerates as ``environment-blocked``; mssql-python
-# fails at parse, so the offline gate cannot pass on any dbt-fabric >= 1.10.1.
-# Lifting this means changing the offline profile's auth mode -- tracked separately.
+# CEILING -- ``dbt-fabric>=1.10.0,<1.11``. 1.10.1 replaced pyodbc with mssql-python,
+# which rejects the ``Authority Id`` keyword a service-principal profile produces, so the
+# offline gate was pinned to exactly 1.10.0. ``dbt_validation._offline_profile`` now uses
+# a pre-supplied access token instead, which both 1.10.0 and 1.10.1 accept and then fail
+# at connect (#825, verified against each). 1.11 needs dbt-core 1.11, outside the range
+# below, which is what sets this ceiling.
 #
 # The dbt-core range is the intersection that satisfies *both* adapters, so a hub and the
 # dataplatform consuming its output can agree on one dbt-core. dbt-databricks pins
@@ -128,7 +127,7 @@ DBT_CORE_REQUIREMENT = ">=1.10.1,<1.10.20"
 
 #: Canonical id -> the version specifier for its dbt adapter distribution.
 DBT_ADAPTER_REQUIREMENTS: dict[str, str] = {
-    AdapterName.FABRIC_WAREHOUSE.value: "==1.10.0",
+    AdapterName.FABRIC_WAREHOUSE.value: ">=1.10.0,<1.11",
     AdapterName.DATABRICKS.value: ">=1.10.19,<1.11",
 }
 

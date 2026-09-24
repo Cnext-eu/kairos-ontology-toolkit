@@ -18,11 +18,11 @@ dev = [
 # asserts these match the constants.
 dbt-validate = [
     "dbt-core>=1.10.1,<1.10.20",
-    "dbt-fabric==1.10.0",
+    "dbt-fabric>=1.10.0,<1.11",
 ]
 dbt-validate-fabric = [
     "dbt-core>=1.10.1,<1.10.20",
-    "dbt-fabric==1.10.0",
+    "dbt-fabric>=1.10.0,<1.11",
 ]
 dbt-validate-databricks = [
     "dbt-core>=1.10.1,<1.10.20",

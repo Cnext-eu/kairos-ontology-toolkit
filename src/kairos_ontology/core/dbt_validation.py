@@ -50,6 +50,12 @@ _ENVIRONMENT_BLOCK_PATTERNS = tuple(
         r"http[_ ]path",
         r"warehouse.*(?:not found|unavailable)",
         r"temporary failure in name resolution",
+        # The offline profiles' own connect failures, per adapter (#825, #922).
+        r"unable to establish connection",
+        r"could not open a connection",
+        r"failed to resolve",
+        r"getaddrinfo failed",
+        r"nameresolutionerror",
     )
 )
 
@@ -90,6 +96,13 @@ def _profile_name(project_dir: Path) -> str:
 
 
 def _offline_profile(platform: str) -> dict[str, object]:
+    """A credential-free profile that parses and then fails fast at connect.
+
+    ``validate-dbt`` needs ``dbt parse`` and ``dbt compile`` to get as far as opening a
+    connection, and no further: that failure is reported as ``environment-blocked``.
+    Each adapter needs a different shape to get there, verified against the adapters
+    themselves rather than assumed.
+    """
     if platform == FABRIC_WAREHOUSE:
         output = {
             "type": dbt_profile_type(platform),
@@ -97,15 +110,15 @@ def _offline_profile(platform: str) -> dict[str, object]:
             "server": "offline.invalid",
             "database": "offline",
             "schema": "dbo",
-            # dbt-fabric dispatches on this value case-insensitively against a closed
-            # set (`fabric_token_provider.py`) that does not contain "ServicePrincipal";
-            # the spelling it accepts is "ActiveDirectoryServicePrincipal" (#705). The
-            # wrong value surfaced only at `dbt compile` as
-            # "Unsupported authentication method", never at parse.
-            "authentication": "ActiveDirectoryServicePrincipal",
-            "tenant_id": "00000000-0000-0000-0000-000000000000",
-            "client_id": "00000000-0000-0000-0000-000000000000",
-            "client_secret": "offline",
+            # A pre-supplied access token (#825). "ActiveDirectoryServicePrincipal" made
+            # dbt-fabric add `Authority Id` to the connection string, which pyodbc
+            # (<= 1.10.0) accepted and mssql-python (>= 1.10.1) rejects at parse --
+            # "Unknown keyword 'authority id'" -- so the gate could not pass on any
+            # current dbt-fabric. "sql" is not an accepted value either ("Unsupported
+            # authentication method"). With a token set, both 1.10.0 and 1.10.1 skip
+            # token acquisition entirely and fail only at connect.
+            "authentication": "ActiveDirectoryAccessToken",
+            "access_token": "offline",
             "retries": 0,
             "login_timeout": 1,
             "query_timeout": 1,
@@ -114,11 +127,25 @@ def _offline_profile(platform: str) -> dict[str, object]:
     else:
         output = {
             "type": dbt_profile_type(platform),
-            "host": "https://offline.invalid",
+            # A bare hostname: dbt-databricks adds the scheme itself, and the old
+            # "https://offline.invalid" made its log blame a host named "https" (#922).
+            "host": "offline.invalid",
             "http_path": "/sql/1.0/warehouses/offline",
             "token": "offline",
             "schema": "default",
             "threads": 1,
+            # dbt-databricks connects at compile, and its SQL connector retries name
+            # resolution 30 times with backoff: compile ran 200 s without finishing, so
+            # the phase could only ever time out (#922). One attempt, short timeouts.
+            "connect_retries": 0,
+            "connect_timeout": 1,
+            "connection_parameters": {
+                "_retry_stop_after_attempts_count": 1,
+                "_retry_stop_after_attempts_duration": 1,
+                "_retry_delay_min": 0.1,
+                "_retry_delay_max": 0.2,
+                "_socket_timeout": 1,
+            },
         }
     return {"target": "offline", "outputs": {"offline": output}}
 

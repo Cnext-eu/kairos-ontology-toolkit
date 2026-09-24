@@ -527,7 +527,7 @@ class TestInitDataplatformEdgeCases:
         content = wf.read_text(encoding="utf-8")
         assert "type: databricks" in content
         assert "type: fabric" not in content
-        assert "host: https://offline.invalid" in content
+        assert "host: offline.invalid" in content
         assert "test_dp_databricks_ci:" in content
         assert "target: ci" in content
 
