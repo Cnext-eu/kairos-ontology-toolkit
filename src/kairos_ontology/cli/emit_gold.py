@@ -626,57 +626,75 @@ def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: 
     into the TMDL, so a dataplatform-supplied value would silently fail to match and
     leave the model pointed at the hub's default workspace.
 
-    A missing config file, or one that does not declare ENVIRONMENT, is a clean no-op --
-    the hub's own values stand. The archive and its verified checksum are never touched;
-    only the already-extracted `parameter.yml` is rewritten, after verification.
+    A missing config file, or one that does not declare ENVIRONMENT, leaves the hub's own
+    values standing. Two things fail closed (#993), because each used to deploy the hub's
+    default workspace to every environment without a word:
+
+    - the package carries no `parameter.yml` (a release packaged before the toolkit
+      shipped it -- re-release the hub);
+    - after any override, `parameter.yml` does not declare ENVIRONMENT, e.g. a typo or a
+      `DEV`/`dev` casing mismatch, which fabric-cicd would silently skip.
+
+    The archive and its verified checksum are never touched; only the already-extracted
+    `parameter.yml` is rewritten, after verification.
     """
     import yaml
 
     from ..core.projections.dbt.gold_connection import (
         GoldConnectionOverrideError,
         apply_gold_connection_override,
+        declared_parameter_environments,
         parse_gold_connection_overrides,
     )
 
-    resolved_config = config_path or Path(GOLD_CONNECTION_OVERRIDE_PATH)
-    if not resolved_config.is_file():
-        click.echo(f"No {resolved_config} -- using the hub's own Direct Lake connection.")
-        return
-
     parameter_path = package_dir / PARAMETER_ARTIFACT_PATH
     if not parameter_path.is_file():
-        click.echo(
-            f"No {PARAMETER_ARTIFACT_PATH} in {package_dir} -- nothing to parameterise. "
-            "The hub emits one only for a connection-bound semantic model."
+        raise click.ClickException(
+            f"No {PARAMETER_ARTIFACT_PATH} in {package_dir}, so fabric-cicd would deploy "
+            "the hub's default workspace to every environment. The release was packaged "
+            "before the toolkit shipped it in the archive (#993): re-release the hub."
         )
-        return
+
+    resolved_config = config_path or Path(GOLD_CONNECTION_OVERRIDE_PATH)
+    if not resolved_config.is_file():
+        click.echo(f"No {resolved_config} -- using the hub's own connection.")
+    else:
+        document = yaml.safe_load(resolved_config.read_text(encoding="utf-8"))
+        try:
+            overrides = parse_gold_connection_overrides(document, os.environ, only=environment)
+        except GoldConnectionOverrideError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        override = overrides.get(environment)
+        if override is None:
+            names = (document or {}).get("environments") if isinstance(document, dict) else None
+            click.echo(
+                f"{resolved_config} declares no {environment!r} environment "
+                f"(declared: {sorted(names or ())}) -- using the hub's own connection."
+            )
+        else:
+            try:
+                rewritten, previous, new_url = apply_gold_connection_override(
+                    parameter_path.read_text(encoding="utf-8"),
+                    environment,
+                    override,
+                )
+            except GoldConnectionOverrideError as exc:
+                raise click.ClickException(str(exc)) from exc
+            parameter_path.write_text(rewritten, encoding="utf-8")
+            click.echo(f"Applied {resolved_config} override for {environment!r}:")
+            click.echo(f"  before: {previous or '(not declared by the hub)'}")
+            click.echo(f"  after:  {new_url}")
 
     try:
-        overrides = parse_gold_connection_overrides(
-            yaml.safe_load(resolved_config.read_text(encoding="utf-8")),
-            os.environ,
-        )
+        declared = declared_parameter_environments(parameter_path.read_text(encoding="utf-8"))
     except GoldConnectionOverrideError as exc:
         raise click.ClickException(str(exc)) from exc
-
-    override = overrides.get(environment)
-    if override is None:
-        click.echo(
-            f"{resolved_config} declares no {environment!r} environment "
-            f"(declared: {sorted(overrides)}) -- using the hub's own connection."
+    if environment not in declared:
+        raise click.ClickException(
+            f"{PARAMETER_ARTIFACT_PATH} does not declare the {environment!r} environment "
+            f"(declared: {sorted(declared)}), so fabric-cicd would skip the rewrite and "
+            "deploy the hub's default workspace. Use one of the declared keys (they are "
+            "case-sensitive), declare it in the hub's kairos.yaml, or add it to "
+            f"{resolved_config}."
         )
-        return
-
-    try:
-        rewritten, previous, new_url = apply_gold_connection_override(
-            parameter_path.read_text(encoding="utf-8"),
-            environment,
-            override,
-        )
-    except GoldConnectionOverrideError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    parameter_path.write_text(rewritten, encoding="utf-8")
-    click.echo(f"Applied {resolved_config} override for {environment!r}:")
-    click.echo(f"  before: {previous or '(not declared by the hub)'}")
-    click.echo(f"  after:  {new_url}")

@@ -2647,6 +2647,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "dataplatform-deploy-powerbi-semantic-model/1.template",
         # Pre-#982 generation, before the advisory post-deploy BPA step.
         "dataplatform-deploy-powerbi-semantic-model/2.template",
+        # Pre-#993 generation, whose override step could never resolve a ${VAR}.
+        "dataplatform-deploy-powerbi-semantic-model/3.template",
     ),
 }
 

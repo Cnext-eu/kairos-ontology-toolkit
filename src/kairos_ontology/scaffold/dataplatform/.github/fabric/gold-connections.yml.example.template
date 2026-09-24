@@ -16,19 +16,20 @@
 #     here would make the rewrite silently miss.
 #   - Only `replace_value[<target_environment>]` is overridden, using the GUIDs below.
 #   - Environments absent from this file keep whatever the hub declared.
-#   - No file, or no matching environment => no-op. The hub's own values are used.
+#   - No file, or no matching environment => the hub's own values are used.
+#   - The deploy fails if the target environment is declared neither here nor by the
+#     hub: fabric-cicd would silently deploy the hub's default workspace.
 #
 # The archive and its verified SHA-256 are never modified; the rewrite happens on the
 # extracted `parameter.yml` after verification, and the workflow logs before/after.
 #
-# Copy to `gold-connections.yml` (same directory) and fill in real GUIDs. Prefer repo or
-# environment VARIABLES over hardcoding if these IDs are sensitive in your org: any value
-# below may be written as ${VAR_NAME} and is resolved from the environment at deploy time.
+# Copy to `gold-connections.yml` (same directory). A whole value written as
+# ${FABRIC_WORKSPACE_ID} or ${FABRIC_ITEM_ID} is resolved at deploy time from the
+# repository VARIABLE (or secret) of that name -- the deploy workflow passes exactly those
+# two into the override step, so no other ${NAME} can resolve. `lakehouse_id` is the
+# Fabric item Gold lives in: for the fabric-warehouse adapter, the Warehouse's item ID.
 
 environments:
-  DEV:
-    workspace_id: "00000000-0000-0000-0000-000000000000"
-    lakehouse_id: "00000000-0000-0000-0000-000000000000"
-  # PROD:
-  #   workspace_id: "${FABRIC_PROD_WORKSPACE_ID}"
-  #   lakehouse_id: "${FABRIC_PROD_LAKEHOUSE_ID}"
+  PROD:
+    workspace_id: "${FABRIC_WORKSPACE_ID}"
+    lakehouse_id: "${FABRIC_ITEM_ID}"
