@@ -5,15 +5,27 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.22.0** is the latest GA release (2026-09-24), superseding
-> **5.21.0** (2026-09-22). It makes the Gold semantic model best practice by design: a
-> Kairos-owned Power BI Best Practice Analyzer profile (DD-238), and a best-practice
-> catalogue whose model-shape checks prefer a Kimball star (DD-240). It also puts Fabric
-> deploys on GitHub Environments with a model that must frame before the deploy counts
-> (DD-239), and reads TMDL with the TOM SDK (DD-237). Everything under the `5.22.0rc*`
-> headings below is part of this release.
+> **Release status.** **5.23.0** is the latest GA release (2026-09-25), superseding
+> **5.22.0** (2026-09-24). It fixes how relationships are drawn and declared, and makes the
+> hub PR gate faster:
 >
-> **What to expect on the first run after upgrading from 5.21.0.**
+> - ER diagrams draw real relationship cardinality instead of `||--o{` everywhere
+>   (DD-241). Relationship cardinality is declared in OWL only; `compile` and `validate`
+>   now warn when a binding or a SHACL shape disagrees with it.
+> - The hub `pr-validate.yml` checks the architecture diagrams in their own parallel job,
+>   so the compile job is no longer the critical path.
+>
+> **What to expect on the first run after upgrading from 5.22.0.**
+>
+> | you will see | why |
+> |---|---|
+> | **Diagram diffs in `model/contracts/diagrams/`** on the next `compile --all --emit`: `\|o--o{` where a foreign key is optional, `o\|` for a one-to-one binding | DD-241, #999. The ERDs used to draw every edge `\|\|--o{`. The dbt package is byte-identical unless a binding says `cardinality: one-to-one` |
+> | **`validate` warns `cardinality.shacl-duplicates-owl`** (or `-contradicts-owl`, `-shacl-only`) | A SHACL `sh:minCount`/`sh:maxCount` on an object property restates OWL. Remove it; see `docs/toolkit/how-to/declare-relationship-cardinality.md`. Warnings only |
+> | **`compile` warns `relationship.optional-but-ontology-requires`** or `relationship.one-to-one-not-in-ontology` | The binding's `missingParent`/`cardinality` contradicts the OWL bounds. Warnings only |
+> | **`update --refresh-workflows` rewrites `pr-validate.yml`** with a third job, `architecture` | #998. A hub that requires the `validate` check keeps working; add `architecture` to branch protection if you want it required |
+>
+> **Upgrading from 5.21.0 or earlier?** 5.22.0's first-run notes still apply on top of the
+> above:
 >
 > | you will see | why |
 > |---|---|
@@ -54,6 +66,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `--without-anchors` is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.23.0] — 2026-09-25
+
+Relationship cardinality (DD-241, #999) and a faster hub PR gate (#998).
+
+### Added
+- **`project --target` can be repeated.** `project --target erd --target ddd` runs both
+  targets over one load of the ontologies, where two separate runs parsed every domain twice.
+  CI and `full-validate.yml` now use the combined form.
+- **`validate --jobs N`** sets how many domains SHACL checks at once. The default is still the
+  CPU count, at most 8, and `KAIROS_VALIDATE_JOBS` still works. SHACL is CPU-bound, so more
+  jobs than cores does not speed it up.
+- **`compile` warns when a binding contradicts the ontology.**
+  - `relationship.optional-but-ontology-requires`: OWL requires the parent, but the binding
+    says `missingParent: null`.
+  - `relationship.one-to-one-not-in-ontology`: the binding says one-to-one, but OWL lets a
+    parent have many children.
+- **`validate` warns about SHACL counts on relationships.** A hand-authored `sh:minCount` or
+  `sh:maxCount` on an object property is reported as one of:
+  - `cardinality.shacl-duplicates-owl`: it restates the OWL bound;
+  - `cardinality.shacl-contradicts-owl`: it disagrees with the OWL bound;
+  - `cardinality.shacl-only`: no OWL bound exists, so no diagram and no compile check sees it.
+
+  All are warnings. Datatype-property counts are not affected.
+- **A new how-to, "Declare relationship cardinality"**
+  (`docs/toolkit/how-to/declare-relationship-cardinality.md`). Relationship cardinality is
+  declared in OWL only. The how-to has worked examples and a table of which output reads which
+  declaration. The `kairos-design-domain` and `kairos-design-mapping` skills and the managed
+  `model/shapes/README.md` now say the same.
+
+### Changed
+- **The hub PR gate checks the architecture diagrams in their own parallel job.**
+  `pr-validate.yml` used to regenerate and diff `ontology-hub-publish/architecture` inside the
+  compile job, after the emit. Those two `project` runs were more than half that job on a
+  15-domain hub. They read only authored inputs, so they now run in a third job, beside
+  `validate` and `compile`, and the compile job is no longer the critical path. The gate still
+  covers the same three paths. Receive the workflow with
+  `kairos-ontology update --refresh-workflows`. A hub whose branch protection requires the
+  `validate` check keeps working; add `architecture` to it if you want it required too.
+
+### Fixed
+- **ER diagrams draw relationship cardinality instead of `||--o{` everywhere (DD-241).**
+  Every edge in the Silver, master, contract and Gold ERDs used to read "parent exactly one,
+  child zero or more", so an optional foreign key looked mandatory and a one-to-one link could
+  not be drawn. Each diagram now draws what its layer guarantees:
+  - The Silver and master ERDs: `||` when the foreign key is NOT NULL (`missingParent: error`),
+    `|o` when it is nullable, and `o|` on the child end for a `cardinality: one-to-one` binding.
+  - The contract ERD: read from the ontology's OWL bounds.
+  - The Gold ERD: from the fact's key column and the relationship's own cardinality.
+
+  **Expect a diagram diff on the next `compile --all --emit`** wherever a foreign key is
+  optional. The dbt package itself is byte-identical unless a binding says one-to-one.
+- **The DDD context diagram draws both ends of an association**, not only the target end, from
+  the same derivation as the class diagram.
+- **A binding's `cardinality: one-to-one` now reaches Silver.** It was dropped before; it is
+  recorded on the foreign-key constraint as `relationship_cardinality`.
 
 ## [5.22.0] — 2026-09-24
 
