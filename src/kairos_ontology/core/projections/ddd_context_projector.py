@@ -360,6 +360,13 @@ def _collect(
     )
 
 
+def collect_context_model(
+    domains: list[ContextDomain], strategic_path: Optional[Path] = None
+) -> _Model:
+    """The hub-wide DDD model, for the practice checks (DD-240). No Silver status."""
+    return _collect(domains, strategic_path, None, None)
+
+
 # ---------------------------------------------------------------------------
 # Ids
 # ---------------------------------------------------------------------------
@@ -693,6 +700,7 @@ def _design_notes_md(model: _Model, hub_name: str) -> str:
     else:
         lines.append("_Every hub class is assigned to a bounded context._")
     lines.append("")
+    lines += _practice_sections(model)
     if model.unresolved:
         lines += [
             "## Unresolved class references",
@@ -704,6 +712,41 @@ def _design_notes_md(model: _Model, hub_name: str) -> str:
         lines += [f"- `{item}`" for item in model.unresolved]
         lines.append("")
     return "\n".join(lines)
+
+
+def _practice_sections(model: _Model) -> list[str]:
+    """DD-240 findings and recorded exceptions; nothing when there are neither.
+
+    Absent rather than empty, so a hub whose design breaks no practice keeps its bytes.
+    An exception that does not parse is `validate --ddd`'s to report, not the diagram's.
+    """
+    from ..ddd_practices import authored_exceptions, check_ddd_practices
+
+    exceptions, _errors = authored_exceptions(model.graph)
+    findings, excused, _unused = check_ddd_practices(model, exceptions)
+    lines: list[str] = []
+    if findings:
+        lines += [
+            "## Practice findings",
+            "",
+            "_DDD practices this design does not follow (docs/toolkit/practices/ddd.md). "
+            "Reported by `validate --ddd` as warnings; documentation only._",
+            "",
+        ]
+        lines += [f"- `{item.code}`: {item.message}" for item in findings]
+        lines.append("")
+    used = [
+        item
+        for item in exceptions
+        if any(item.matches(finding.code, finding.kind, finding.target) for finding in excused)
+    ]
+    if used:
+        lines += ["## Recorded exceptions", ""]
+        lines += [
+            f"- `{item.rule_id}` on {item.kind} `{item.target}`: {item.reason}" for item in used
+        ]
+        lines.append("")
+    return lines
 
 
 # ---------------------------------------------------------------------------

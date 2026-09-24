@@ -237,6 +237,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     _report_unresolved(artifacts, product)
     _report_unresolved_bridges(artifacts, product)
     _report_shared_tables(artifacts, product)
+    _report_shape_findings(logical, product)
     _report_insight_coverage(hub_root, logical, product)
     if not confirm_emit:
         click.echo("   (dry run -- pass --confirm-emit to write these files)")
@@ -273,6 +274,26 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     from ..core.hub_config import hub_display_name
 
     _regenerate_master_gold_erd(diagrams_target, hub_name=hub_display_name(hub_root))
+
+
+def _report_shape_findings(logical, product) -> None:
+    """The model-shape practices the product breaks (DD-240); never blocks the emit."""
+    from ..core.projections.dbt.gold_shape_checks import CODES
+
+    codes = set(CODES.values())
+    findings = [
+        (code, message)
+        for code, message, _resource in getattr(logical, "advisories", ()) or ()
+        if code in codes
+    ]
+    if not findings:
+        return
+    click.echo(
+        f"   ⚠ {len(findings)} model-shape finding(s) for {product.name!r} "
+        "(docs/toolkit/practices/semantic-model.md):"
+    )
+    for code, message in findings:
+        click.echo(f"     {code}: {message}")
 
 
 @click.command(name="harvest-gold")

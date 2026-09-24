@@ -917,6 +917,9 @@ class GoldProductFact:
     #: ``kairos-ext:bpaIgnoreRule`` values, each
     #: ``"<RULE_ID> on <kind> [<target>]: <reason>"`` (DD-238).
     bpa_ignore_rules: AuthoredValuesFact | None = None
+    #: ``kairos-ext:practiceException`` values, the same grammar as ``bpaIgnoreRule``
+    #: under the name that also covers catalogued practices (DD-240).
+    practice_exceptions: AuthoredValuesFact | None = None
     #: ``kairos-ext:goldRelationshipCrossFilter`` values, each
     #: ``"Table.column -> Table.column = both|single"`` (DD-238).
     relationship_cross_filters: AuthoredValuesFact | None = None
@@ -1047,8 +1050,9 @@ class GoldProductSpec:
     #: ``"Table.column -> Table.column"`` (#792). Carried verbatim: the relationship set
     #: they select from only exists once the tables have been shaped.
     primary_relationships: tuple[str, ...] = ()
-    #: ``kairos-ext:bpaIgnoreRule`` values (DD-238). Carried verbatim: the objects they
-    #: name only exist once the product has been shaped.
+    #: ``kairos-ext:bpaIgnoreRule`` and ``kairos-ext:practiceException`` values (DD-238,
+    #: DD-240), one list: they are one mechanism under two names. Carried verbatim: the
+    #: objects they name only exist once the product has been shaped.
     bpa_ignore_rules: tuple[str, ...] = ()
     #: ``kairos-ext:goldRelationshipCrossFilter`` values (DD-238). Carried verbatim: the
     #: relationship set they select from only exists once the tables have been shaped.

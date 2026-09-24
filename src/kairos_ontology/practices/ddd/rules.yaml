@@ -1,0 +1,102 @@
+# DDD architecture practices (DD-240). Documentation only, per DD-091: a finding is
+# reported and never changes Silver.
+#
+# Fields: see src/kairos_ontology/practices/__init__.py. Regenerate the hub page with
+# `uv run python scripts/generate_practices.py`.
+rules:
+  - id: ddd.context-redeclared
+    statement: >
+      A bounded context is declared once, in the strategic file, and referenced from the
+      overlays.
+    rationale: >
+      A context declared in several files with the same label is harmless in RDF but
+      hand-maintained twice, and the copies drift into a label conflict.
+    enforcement: warning
+    stage: validate --ddd
+    check: ddd.context-redeclared
+    source: DD-229
+    excusable: false
+
+  - id: ddd.context-label-conflict
+    statement: >
+      One bounded context has one label, whichever file declares it.
+    rationale: >
+      Two labels for one context IRI render two names for the same context in the
+      reports, and a reader cannot tell which one the model means.
+    enforcement: blocking
+    stage: validate --ddd
+    check: ddd.context-label-conflict
+    source: DD-229
+    excusable: false
+
+  - id: ddd.class-in-two-contexts
+    statement: >
+      A class belongs to exactly one bounded context.
+    rationale: >
+      Two overlays can each place one class in a different context and each validate
+      clean; the rendered architecture then disagrees with itself.
+    enforcement: blocking
+    stage: validate --ddd
+    check: ddd.class-in-two-contexts
+    source: DD-229
+    excusable: false
+
+  - id: ddd.tactical-in-strategic-file
+    statement: >
+      Class-level (tactical) annotations -- tacticalPattern, aggregateRoot, invariant --
+      live in the domain's own overlay, never in the strategic file.
+    rationale: >
+      The strategic file has no domain graph to validate a class against, so a tactical
+      annotation there silently escapes the per-domain validation that owns it.
+    enforcement: blocking
+    stage: validate --ddd
+    check: ddd.tactical-in-strategic-file
+    source: DD-229
+    excusable: false
+
+  - id: ddd.one-root-per-aggregate
+    statement: >
+      Every aggregate member names exactly one aggregate root, and that root is tagged
+      kairos-ddd:AggregateRoot.
+    rationale: >
+      The root is the aggregate's consistency boundary and its only entry point. A member
+      with two roots belongs to no single boundary, and a root that is not tagged as one
+      is drawn as an ordinary entity, so the design notes misstate who guards the
+      invariants. A root may itself be a member of a larger aggregate.
+    enforcement: warning
+    stage: validate --ddd
+    check: ddd.one-root-per-aggregate
+    source: DD-091
+    excusable: true
+    objects: [class]
+
+  - id: ddd.cross-context-relationship-on-map
+    statement: >
+      An object property whose domain and range sit in different bounded contexts has a
+      context-map relationship between those contexts.
+    rationale: >
+      A cross-context reference is an integration: one context depends on another's
+      model. Without a ContextRelationship the map claims the contexts are independent,
+      and nobody decided the pattern (shared kernel, customer/supplier, anticorruption
+      layer) that the dependency actually needs.
+    enforcement: warning
+    stage: validate --ddd
+    check: ddd.cross-context-relationship-on-map
+    source: DD-229
+    excusable: true
+    objects: [property]
+
+  - id: ddd.aggregate-reference-by-identity
+    statement: >
+      An aggregate refers to another aggregate through its root, by identity, never to a
+      member inside it.
+    rationale: >
+      A reference to another aggregate's member bypasses the root that guards that
+      aggregate's invariants, so the member can change without its root knowing. Point
+      the property at the root instead.
+    enforcement: warning
+    stage: validate --ddd
+    check: ddd.aggregate-reference-by-identity
+    source: DD-091
+    excusable: true
+    objects: [property]

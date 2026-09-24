@@ -107,8 +107,10 @@ uv run kairos-ontology project --target ddd
 ```
 
 `validate --ddd` checks the strategic file alone, every overlay merged with its domain and the
-strategic file, and the whole set for cross-file disagreement (`ddd.context-redeclared`,
-`ddd.context-label-conflict`, `ddd.class-in-two-contexts`, `ddd.tactical-in-strategic-file`).
+strategic file, the whole set for cross-file disagreement, and the design against the DDD
+practices. Every rule it applies, with its rationale and whether it can be excused, is in
+`docs/toolkit/practices/ddd.md` (DD-240). Read that page rather than a list here: it is
+generated from the toolkit, so it is what `validate --ddd` actually checks.
 `project --target ddd` writes, under `ontology-hub-publish/architecture/ddd/`:
 
 - `contexts/context-map.mmd`, `contexts/all-contexts.mmd`, one `contexts/<context>.mmd` per
@@ -120,6 +122,14 @@ strategic file, and the whole set for cross-file disagreement (`ddd.context-rede
 All of it is tracked and drift-gated; `git add` new files with the change. Review the
 diagrams and the concept guide **with the SMEs**, then turn every open question into
 `kairos-ontology decision new`.
+
+The practice findings are warnings, and are also listed in `contexts/design-notes.md` under
+"Practice findings": an aggregate member with two roots, an object property crossing two
+contexts that the context map does not connect, a reference into another aggregate past its
+root. Fix the design, or record why it is deliberate with
+`kairos-ddd:practiceException "ddd.cross-context-relationship-on-map on property hasCarrier:
+<reason>"` on the overlay's `owl:Ontology` resource. The reason is mandatory, and an
+exception that excuses nothing fails `validate --ddd`. None of it reaches Silver (DD-091).
 
 ### 6. Hand off
 

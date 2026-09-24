@@ -11,7 +11,7 @@ from datetime import date
 
 import yaml
 
-from .bpa_profile import ignore_annotation
+from .bpa_profile import ignore_annotation, is_bpa_rule
 from .calendar_columns import CALENDAR_COLUMNS
 from .capabilities import physical_canonical_type
 from .gold_assert import assert_gold_semantics
@@ -145,7 +145,11 @@ BpaIgnoreIndex = dict[tuple[str, str], tuple[str, ...]]
 
 def _bpa_ignore_index(spec: DimensionalGoldSpec) -> BpaIgnoreIndex:
     index: dict[tuple[str, str], list[str]] = {}
+    # Only BPA rules become the TMDL annotation: a catalogued practice (DD-240) is not a
+    # rule Tabular Editor or Semantic Link Labs knows.
     for item in spec.bpa_ignores:
+        if not is_bpa_rule(item.rule_id):
+            continue
         index.setdefault((item.kind, item.target), []).append(item.rule_id)
     return {key: tuple(value) for key, value in index.items()}
 
@@ -1351,6 +1355,22 @@ def _dax(spec: DimensionalGoldSpec) -> str:
     return "\n".join(lines)
 
 
+def _exceptions_report(key: str, items: list) -> dict:
+    if not items:
+        return {}
+    return {
+        key: [
+            {
+                "rule": item.rule_id,
+                "object": item.kind,
+                "target": item.target or None,
+                "reason": item.reason,
+            }
+            for item in items
+        ]
+    }
+
+
 def gold_product_report(
     spec: DimensionalGoldSpec,
     physical: GoldPhysicalPlan,
@@ -1457,23 +1477,16 @@ def gold_product_report(
             if spec.undecided_bridge_filters
             else {}
         ),
-        # Authored BPA exceptions (DD-238). Each is a registered claim with a reason
-        # (DD-234), so the report is where a reviewer reads them back. Absent when there
-        # are none, so a hub that authors none keeps its report bytes.
-        **(
-            {
-                "bpa_exceptions": [
-                    {
-                        "rule": item.rule_id,
-                        "object": item.kind,
-                        "target": item.target or None,
-                        "reason": item.reason,
-                    }
-                    for item in spec.bpa_ignores
-                ]
-            }
-            if spec.bpa_ignores
-            else {}
+        # Authored BPA exceptions (DD-238), and exceptions to catalogued practices
+        # (DD-240). Each is a registered claim with a reason (DD-234), so the report is
+        # where a reviewer reads them back. Absent when there are none, so a hub that
+        # authors none keeps its report bytes.
+        **_exceptions_report(
+            "bpa_exceptions", [item for item in spec.bpa_ignores if is_bpa_rule(item.rule_id)]
+        ),
+        **_exceptions_report(
+            "practice_exceptions",
+            [item for item in spec.bpa_ignores if not is_bpa_rule(item.rule_id)],
         ),
         "adapter": {
             "name": physical.adapter,

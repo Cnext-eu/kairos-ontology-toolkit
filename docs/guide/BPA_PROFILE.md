@@ -21,6 +21,8 @@ An exception is authored in the Gold extension on the `owl:Ontology` resource, a
 <ontology> kairos-ext:bpaIgnoreRule "DAX_COLUMNS_FULLY_QUALIFIED on measure sales.margin: reason the rule does not hold here" .
 ```
 
+`kairos-ext:practiceException` is the same mechanism under the name that also covers the model-shape practices (DD-240); see `practices/semantic-model.md`.
+
 ## Snapshot
 
 - Upstream: `microsoft/Analysis-Services` `BestPracticeRules/BPARules.json`
@@ -42,7 +44,7 @@ The snapshot is refreshed by hand; see the `kairos-toolkit-ops` release checklis
 | `SPLIT_DATE_AND_TIME` | 2 | post-deploy-advisory | post-deploy-advisory |  | Needs VertiPaq statistics that only exist once the model is deployed and refreshed, so it runs in the dataplatform's advisory Semantic Link Labs step. |
 | `LARGE_TABLES_SHOULD_BE_PARTITIONED` | 2 | not-applicable:fabric | not-applicable:databricks |  | fabric: A Direct Lake partition is one entity partition over a Delta table; the table is partitioned in the lakehouse, not in the model. databricks: A DirectQuery partition holds no data, so model partitioning has nothing to split; the warehouse table is partitioned in Databricks. |
 | `REDUCE_USAGE_OF_CALCULATED_COLUMNS_THAT_USE_THE_RELATED_FUNCTION` | 2 | by-construction | by-construction |  | The emitter never writes calculated columns or calculated tables; Direct Lake does not support them and every Gold column is a Silver column. |
-| `SNOWFLAKE_SCHEMA_ARCHITECTURE` | 2 | rejected:DD-238 | rejected:DD-238 |  | Whether a dimension references another is decided by the canonical ontology, not by the renderer. Flattening is authored (product scope, goldExcludeColumn) and surplus filter paths are already deactivated by DD-226. |
+| `SNOWFLAKE_SCHEMA_ARCHITECTURE` | 2 | rejected:DD-238 | rejected:DD-238 |  | Whether a dimension references another is decided by the canonical ontology, not by the renderer. Flattening is authored (product scope, goldExcludeColumn) and surplus filter paths are already deactivated by DD-226. The harmful case, a chain the fact also reaches directly, is the semantic-model.snowflake-chain practice (DD-240). |
 | `MODEL_SHOULD_HAVE_A_DATE_TABLE` | 2 | render-assert (blocking) | render-assert (blocking) | `gold.date-table-not-marked` | Every product with an approved calendar emits dim_date marked as a date table with its DateTime key; the assertion checks both on the rendered table. A product with no date role has no calendar to emit. |
 | `DATE/CALENDAR_TABLES_SHOULD_BE_MARKED_AS_A_DATE_TABLE` | 2 | render-assert (blocking) | render-assert (blocking) | `gold.date-table-not-marked` | Asserted on the generated dim_date. The rule also matches any table whose name merely contains DATE (e.g. an 'update' log); such a table is not a calendar and takes an authored bpaIgnoreRule. |
 | `REMOVE_AUTO-DATE_TABLE` | 2 | by-construction | by-construction |  | Auto date tables are calculated tables, which neither Direct Lake nor DirectQuery models create, and the emitter never writes one. |

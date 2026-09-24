@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 
 from .bpa_profile import BpaIgnore, BpaIgnoreError, parse_bpa_ignore
 from .gold_bpa_checks import check_product
+from .gold_shape_checks import check_model_shape
 from .gold_materialize import _TMDL_TYPES
 from .calendar_columns import CALENDAR_COLUMN_NAMES, CALENDAR_DATE_TABLE_KEY
 from ..uri_utils import camel_to_snake
@@ -1995,6 +1996,15 @@ def _shape_dimensional_product(
         defer=defer_bridges,
     )
     advisories = check_product(ordered, ordered_measures, bpa_ignores)
+    if not defer_bridges:
+        # Product level only (DD-240): on one domain of a product, half the model is
+        # missing, so a route can look ambiguous -- or not -- for that reason alone.
+        advisories += check_model_shape(
+            ordered,
+            relationships,
+            bpa_ignores,
+            extra_dimensions=frozenset({"dim_date"}) if calendar is not None else frozenset(),
+        )
     registry_names: list[tuple[str, str]] = []
     registry_columns: list[tuple[str, frozenset[str]]] = []
     for member in members:

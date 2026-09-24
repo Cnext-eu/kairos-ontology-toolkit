@@ -264,7 +264,7 @@ class TestVocabulary11:
         from rdflib.namespace import OWL
 
         g = ddd.load_ddd_vocabulary()
-        assert str(g.value(URIRef("https://kairos.cnext.eu/ddd"), OWL.versionInfo)) == "1.1.0"
+        assert str(g.value(URIRef("https://kairos.cnext.eu/ddd"), OWL.versionInfo)) == "1.2.0"
 
 
 class TestStrategicFile:

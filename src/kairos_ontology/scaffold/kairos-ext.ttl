@@ -280,6 +280,12 @@ kairos-ext:bpaIgnoreRule a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
+kairos-ext:practiceException a owl:AnnotationProperty ;
+    rdfs:label "practice exception"@en ;
+    rdfs:comment "Record that one excusable modelling practice does not hold for one object of this Gold product, as \"<RULE> on <model|table|column|measure|relationship> [<target>]: <reason>\" (DD-240, issue #996). RULE is a semantic-model practice from docs/guide/practices/semantic-model.md, e.g. semantic-model.fact-to-fact, or a Best Practice Analyzer rule ID. The same mechanism as kairos-ext:bpaIgnoreRule, under the name that covers both, with the same targets and the same fail-closed checks: the reason is mandatory, an unknown or unexcusable rule, a rule that cannot apply to that kind of object, or a target the product does not emit is rejected, and an exception that excuses nothing fails. BPA rules are emitted as the BestPracticeAnalyzer_IgnoreRules annotation; every exception is listed in the product report. Repeatable; set on the owl:Ontology resource."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
 kairos-ext:goldIncludeImports a owl:AnnotationProperty ;
     rdfs:label "gold include imports"@en ;
     rdfs:comment "Bulk-claim all first-level imported classes for gold projection (DD-021). Set on the owl:Ontology resource. Peer hub domain imports are excluded."@en ;

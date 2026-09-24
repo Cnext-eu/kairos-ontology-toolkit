@@ -3459,8 +3459,11 @@ def _normalize_gold(
             if fact.primary_relationships is not None
             else ()
         ),
-        bpa_ignore_rules=(
-            tuple(fact.bpa_ignore_rules.values) if fact.bpa_ignore_rules is not None else ()
+        bpa_ignore_rules=tuple(
+            value
+            for values in (fact.bpa_ignore_rules, fact.practice_exceptions)
+            if values is not None
+            for value in values.values
         ),
         relationship_cross_filters=(
             tuple(fact.relationship_cross_filters.values)
