@@ -202,6 +202,29 @@ def test_project_from_repo_root(tmp_path, monkeypatch):
     assert calls["projection"]["output_path"] == hub.parent / "ontology-hub-publish"
 
 
+def test_project_takes_several_targets_in_one_run(tmp_path, monkeypatch):
+    """#998: `--target erd --target ddd` is one run, so the ontologies load once."""
+    hub = _make_hub(tmp_path)
+    calls = _patch_projections(monkeypatch)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli, ["project", "--target", "erd", "--target", "ddd", "--target", "erd"]
+    )
+    assert result.exit_code == 0, result.output
+    assert calls["projection"]["target"] == ("erd", "ddd")
+
+
+def test_project_refuses_a_retired_target_among_several(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    _patch_projections(monkeypatch)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["project", "--target", "erd", "--target", "gold"])
+    assert result.exit_code != 0
+    assert "disabled" in result.output
+
+
 def test_project_catalog_autodetect_from_inside_hub(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path, with_catalog=True)
     calls = _patch_projections(monkeypatch)

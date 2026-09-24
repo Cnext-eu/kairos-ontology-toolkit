@@ -8,14 +8,11 @@
 # on drift. This runs *alongside* managed-check.yml (which only verifies
 # toolkit-managed files), not instead of it.
 #
-# Three jobs, deliberately parallel. They share no path and none reads what another
-# writes: `validate` works over the authored tree only, `compile` is the only job that
-# emits, and `architecture` regenerates the class diagrams and DDD maps, which are drawn
-# from the authored ontologies, never from compile output. Run serially on a real
-# 16-ontology hub this took 9m10s, with the slowest gate waiting on the second-slowest for
-# no reason; the split roughly halves wall-clock feedback for ~9s of duplicated setup per
-# job. `architecture` was split out of `compile` (#998): the two `project` runs were more
-# than half of that job, and nothing in them waited on the emit.
+# Two jobs, deliberately parallel. They share no path and neither reads what the other
+# writes: `validate` works over the authored tree only, and `compile` is the only job
+# that emits. Run serially on a real 16-ontology hub this took 9m10s, with the slowest
+# gate waiting on the second-slowest for no reason; the split roughly halves wall-clock
+# feedback for ~9s of duplicated setup.
 #
 # `compile --all --check` used to run before the emit step and has been removed as pure
 # duplication: `compile_domain` forces rendering in *every* mode, and all four gates
@@ -142,9 +139,6 @@ jobs:
       #   * ontology-hub/model/contracts/diagrams -- the ERDs, which live in the
       #     authored hub so a reviewer sees the model change in the pull request.
       #
-      # The third tracked path, ontology-hub-publish/architecture, is the `architecture`
-      # job's.
-      #
       # ontology-hub-publish/powerbi is not tracked: package-powerbi-release renders and
       # zips it in CI from the compile plan, so there is nothing committed there to diff.
       #
@@ -160,8 +154,14 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-sync kairos-ontology compile --all --emit --confirm-emit
+          # `architecture/**` comes from `project`, not from `compile --emit`, so tracking
+          # it without regenerating it here would be worse than not tracking it: the files
+          # would look authoritative and never be checked (#774).
+          uv run --no-sync kairos-ontology project --target erd
+          uv run --no-sync kairos-ontology project --target ddd
           for path in \
             ontology-hub-publish/medallion/dbt \
+            ontology-hub-publish/architecture \
             ontology-hub/model/contracts/diagrams; do
             if [ -d "$path" ] && [ -z "$(git ls-files "$path")" ]; then
               echo "::error::$path exists but is not tracked - the drift gate cannot verify it."
@@ -170,6 +170,7 @@ jobs:
           done
           git diff --exit-code -- \
             ontology-hub-publish/medallion/dbt \
+            ontology-hub-publish/architecture \
             ontology-hub/model/contracts/diagrams
 
       # DD-206 §4.2: "validates the assembled dbt package".
@@ -187,45 +188,3 @@ jobs:
       - name: Validate assembled dbt package
         run: |
           uv run --no-sync kairos-ontology validate-dbt
-
-  architecture:
-    name: Regenerate architecture diagrams and check drift
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
-        with:
-          version: "0.12.5"
-          enable-cache: true
-
-      - name: Install toolkit
-        run: uv sync --locked
-
-      # `architecture/**` comes from `project`, not from `compile --emit`, so tracking it
-      # without regenerating it would be worse than not tracking it: the files would look
-      # authoritative and never be checked (#774). Both targets read only authored inputs
-      # (the ontologies, overlays, contracts, bindings and ledgers), so this job needs no
-      # compile output and runs beside `compile` instead of after it (#998). One `project`
-      # run with both targets parses every ontology once; two runs parsed it twice. It
-      # parses cold: the on-disk parse cache is written only by `compile --emit`.
-      #
-      # The tracked-ness assertion is the #699 guard the `compile` job explains:
-      # `git diff --exit-code` passes when nothing at the path is tracked.
-      - name: Regenerate architecture diagrams and fail on drift
-        run: |
-          set -euo pipefail
-          uv run --no-sync kairos-ontology project --target erd --target ddd
-          path=ontology-hub-publish/architecture
-          if [ -d "$path" ] && [ -z "$(git ls-files "$path")" ]; then
-            echo "::error::$path exists but is not tracked - the drift gate cannot verify it."
-            exit 1
-          fi
-          git diff --exit-code -- "$path"

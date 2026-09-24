@@ -69,8 +69,10 @@ from .shared import (
 @click.option(
     "--target",
     type=click.Choice(("all", *RETIRED_COMPILER_TARGETS, "gold", *projection_target_choices())),
-    default="all",
-    help="Projection target",
+    multiple=True,
+    default=("all",),
+    help="Projection target. Repeat it to run several targets over one load of the "
+    "ontologies, e.g. `--target erd --target ddd` (#998).",
 )
 @click.option(
     "--platform",
@@ -106,6 +108,47 @@ def project(
     degraded,
 ):
     """Generate projections from ontologies."""
+    targets = tuple(dict.fromkeys(target))
+    for one in targets:
+        _check_projection_target(one, platform)
+    (
+        ontologies_path,
+        catalog_path,
+        ref_models_path,
+        hub_root,
+        accelerator,
+    ) = _resolve_projection_cli_scope(ontologies, ontology, catalog, ref_models, accelerator)
+
+    cwd = Path.cwd()
+    if output is not None:
+        output_path = Path(output)
+    else:
+        from ..core.hub_utils import publish_root
+
+        if hub_root is not None:
+            output_path = publish_root(hub_root)
+        else:
+            output_path = publish_root(cwd / "ontology-hub")
+
+    try:
+        run_projections(
+            ontologies_path=ontologies_path,
+            catalog_path=catalog_path,
+            output_path=output_path,
+            # One target stays a string, so the run reads exactly as it did before.
+            target=targets[0] if len(targets) == 1 else targets,
+            namespace=namespace,
+            platform=platform,
+            degraded=degraded,
+            ref_models_dir=ref_models_path,
+            accelerator=accelerator,
+        )
+    except ProjectionRunError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _check_projection_target(target: str, platform: str) -> None:
+    """Refuse a target `project` does not run, before anything is loaded."""
     if target in RETIRED_COMPILER_TARGETS:
         raise click.ClickException(
             f"`project --target {target}` is retired; use `kairos-ontology compile <domain> --emit`"
@@ -125,41 +168,8 @@ def project(
             "registry (Python API only today: "
             "kairos_ontology.mdm.profile_projector.generate_mdm_profile_from_compile_plan)."
         )
-    cwd = Path.cwd()
     if platform != FABRIC_WAREHOUSE and target not in {"dbt", "all"}:
         raise click.UsageError("--platform applies only to --target dbt or --target all")
-    (
-        ontologies_path,
-        catalog_path,
-        ref_models_path,
-        hub_root,
-        accelerator,
-    ) = _resolve_projection_cli_scope(ontologies, ontology, catalog, ref_models, accelerator)
-
-    if output is not None:
-        output_path = Path(output)
-    else:
-        from ..core.hub_utils import publish_root
-
-        if hub_root is not None:
-            output_path = publish_root(hub_root)
-        else:
-            output_path = publish_root(cwd / "ontology-hub")
-
-    try:
-        run_projections(
-            ontologies_path=ontologies_path,
-            catalog_path=catalog_path,
-            output_path=output_path,
-            target=target,
-            namespace=namespace,
-            platform=platform,
-            degraded=degraded,
-            ref_models_dir=ref_models_path,
-            accelerator=accelerator,
-        )
-    except ProjectionRunError as exc:
-        raise click.ClickException(str(exc)) from exc
 
 
 @click.command(name="scaffold-mapping")

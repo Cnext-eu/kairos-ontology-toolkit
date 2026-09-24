@@ -158,9 +158,11 @@ def _property_range_is_boolean(graph: Graph, prop: URIRef) -> bool:
 #: than by cores; eight large closures at once is already generous on a 16 GB runner.
 _MAX_SHACL_WORKERS = 8
 
-#: Escape hatch. ``KAIROS_VALIDATE_JOBS=1`` forces the serial path -- useful when
-#: debugging a single domain's report, or in a container with a low memory ceiling where
-#: concurrent closures would be the thing that fails.
+#: The same setting as ``validate --jobs``, for a caller that cannot pass a flag.
+#: ``KAIROS_VALIDATE_JOBS=1`` forces the serial path -- useful when debugging a single
+#: domain's report, or in a container with a low memory ceiling where concurrent closures
+#: would be the thing that fails. More workers than cores does not help: SHACL is
+#: CPU-bound, so on a 2-vCPU runner the lever is a larger runner, not a larger number.
 ENV_VALIDATE_JOBS = "KAIROS_VALIDATE_JOBS"
 
 
@@ -233,8 +235,10 @@ def _shacl_validate_one(
         )
 
 
-def _shacl_worker_count(file_count: int) -> int:
-    """How many domains to validate at once."""
+def _shacl_worker_count(file_count: int, jobs: Optional[int] = None) -> int:
+    """How many domains to validate at once: ``--jobs``, else the env var, else the cores."""
+    if jobs is not None and jobs > 0:
+        return max(1, min(jobs, file_count))
     requested = os.environ.get(ENV_VALIDATE_JOBS, "").strip()
     if requested:
         try:
@@ -251,6 +255,7 @@ def _run_shacl_validations(
     shapes_turtle: str,
     catalog_path: Optional[Path],
     degraded: bool,
+    jobs: Optional[int] = None,
 ) -> list[_ShaclOutcome]:
     """Validate every domain, in input order, across processes where that is possible.
 
@@ -273,7 +278,7 @@ def _run_shacl_validations(
     if not args:
         return []
 
-    workers = _shacl_worker_count(len(args))
+    workers = _shacl_worker_count(len(args), jobs)
     if workers > 1:
         try:
             from concurrent.futures import ProcessPoolExecutor
@@ -1693,6 +1698,7 @@ def run_validation(
     gdpr_warnings: int = 0,
     modes_served: Optional[list[str]] = None,
     repo_root: Optional[Path] = None,
+    shacl_jobs: Optional[int] = None,
 ):
     """Run validation pipeline.
 
@@ -2331,7 +2337,7 @@ def run_validation(
         for shape_file in shapes_path.glob("**/*.shacl.ttl"):
             shapes_graph.parse(shape_file, format="turtle")
 
-        workers = _shacl_worker_count(len(ontology_files))
+        workers = _shacl_worker_count(len(ontology_files), shacl_jobs)
         if workers > 1:
             # Said up front because the per-domain lines can only be printed once every
             # worker has reported: this is the longest phase, and silence with no
@@ -2342,6 +2348,7 @@ def run_validation(
             shapes_graph.serialize(format="turtle"),
             catalog_path,
             degraded,
+            shacl_jobs,
         )
 
         for ontology_file, outcome in zip(ontology_files, outcomes):

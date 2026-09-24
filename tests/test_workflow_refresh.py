@@ -178,9 +178,9 @@ _LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
     "github-workflows/managed-check.yml":
         "fcf849a71384c23250814333b970dbc49efe54441ab0dff128596e66274ade6c",
     "github-workflows/pr-validate.yml":
-        "c34d242539a455cf035c7564eeccfcbaed5029096b9a4e9bddfb0e43f68af560",
+        "c7cb61d6719310c18708306adccee2c5221e6772e263d34b5b6671e0f62a80a2",
     "github-workflows/full-validate.yml":
-        "7c623689179e2e27d2c6a8cfc031719d7e910802899590de37014ae46ccbc56b",
+        "af4e07e1b15646181f3ccf36e3d9548635435ff5db44648eec1e30a033b92825",
     "github-workflows/release-projections.yml":
         "6562b12c0d2022d935f7e09676cec674bd63320aefef9a1afa04ceabd916b0dc",
     "github-workflows/assign-copilot.yml":
@@ -248,7 +248,7 @@ def test_recorded_hub_generations_are_refreshable(tmp_path):
         for name, text in zip(_SUPERSEDED_WORKFLOW_TEMPLATES[destination], superseded)
         if name.startswith("hub-pr-validate/")
     ]
-    assert len(hub_generations) == 6, "expected six recorded hub generations"
+    assert len(hub_generations) == 7, "expected seven recorded hub generations"
 
     for generation in hub_generations[1:]:
         scaffolded = tmp_path / "pr-validate.yml"

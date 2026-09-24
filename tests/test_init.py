@@ -555,14 +555,29 @@ def test_the_drift_gate_regenerates_every_tracked_publish_lane(tmp_path):
     }
     assert tracked, "no publish lane is allowlisted"
 
-    # Both gates received the same change; pinning only one let them drift apart.
+    import yaml
+
+    # Both gates received the same change; pinning only one let them drift apart. The
+    # check is per step, not per file: #998 moved the architecture lane into its own job,
+    # and the step that diffs a path must be the step that regenerated it.
+    regenerated_by = {
+        "ontology-hub-publish/medallion/dbt": "compile --all --emit",
+        "ontology-hub-publish/architecture": "project --target erd --target ddd",
+    }
     for name in ("pr-validate.yml", "full-validate.yml"):
-        workflow = (scaffold / "github-workflows" / name).read_text(encoding="utf-8")
-        gate = workflow.split("Regenerate tracked output and fail on drift", 1)[1]
+        workflow = yaml.safe_load(
+            (scaffold / "github-workflows" / name).read_text(encoding="utf-8")
+        )
+        steps = [
+            step.get("run", "")
+            for job in workflow["jobs"].values()
+            for step in job["steps"]
+            if "git diff --exit-code" in step.get("run", "")
+        ]
         for path in tracked:
-            assert path in gate, f"{path} is tracked but {name} never diffs it"
-        assert "project --target erd" in gate, name
-        assert "project --target ddd" in gate, name
+            gate = next((run for run in steps if path in run), None)
+            assert gate is not None, f"{path} is tracked but {name} never diffs it"
+            assert regenerated_by[path] in gate, f"{name} diffs {path} without regenerating it"
 
 
 def test_new_repo_fails_if_dir_exists(tmp_path):
@@ -1469,6 +1484,16 @@ def test_init_pr_validate_workflow_content(tmp_path):
             # renaming it would leave that check permanently pending.
             assert "\n  validate:\n" in content
             assert "\n  compile:\n" in content
+            # #998: the architecture drift check is its own job, beside compile rather
+            # than after it, because it reads only authored inputs.
+            import yaml
+
+            jobs = yaml.safe_load(content)["jobs"]
+            assert set(jobs) == {"validate", "compile", "architecture"}
+            assert not any("needs" in job for job in jobs.values())
+            compile_runs = "".join(step.get("run", "") for step in jobs["compile"]["steps"])
+            assert "project --target" not in compile_runs
+            assert "ontology-hub-publish/architecture" not in compile_runs
 
             # A superseded run's verdict describes bytes nobody will merge. The ref
             # must be in the group or this cancels across concurrent PRs.
