@@ -82,4 +82,5 @@ starting `measureDefinition` and a guessed `measureDataType` marked `CHECK`: TMD
 no result type, and DD-113 requires a real one before a measure leaves `provisional`.
 
 Deliberately not decided: harvesting relationships, perspectives, calculation groups or RLS
-role membership; and the Tabular Editor best-practice rules the issue also proposes.
+role membership. The Tabular Editor best-practice rules the issue also proposes are decided
+by DD-238: a Kairos-owned BPA profile rather than running Tabular Editor in CI.

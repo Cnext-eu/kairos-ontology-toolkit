@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
+from .bpa_profile import BpaIgnore
 from .policy_specs import (
     BridgeCardinality,
     CanonicalTypeSpec,
@@ -242,6 +243,9 @@ class DimensionalGoldSpec:
     #: compile applied a union-only rule to a union of one (#763). At product level
     #: the union is real and an endpoint outside it still fails.
     unresolved_bridges: tuple[tuple[str, str], ...] = ()
+    #: Authored ``kairos-ext:bpaIgnoreRule`` exceptions (DD-238), each resolved to an
+    #: object this product emits, with the target spelled as the emitted name.
+    bpa_ignores: tuple[BpaIgnore, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

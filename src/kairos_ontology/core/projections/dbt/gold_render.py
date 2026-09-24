@@ -10,6 +10,7 @@ from datetime import date
 
 import yaml
 
+from .bpa_profile import ignore_annotation
 from .calendar_columns import CALENDAR_COLUMNS
 from .capabilities import physical_canonical_type
 from .gold_assert import assert_gold_semantics
@@ -135,6 +136,17 @@ def _guid(seed: str) -> str:
 
 def _quoted(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+#: ``(kind, emitted target) -> rule IDs`` for the authored BPA exceptions (DD-238).
+BpaIgnoreIndex = dict[tuple[str, str], tuple[str, ...]]
+
+
+def _bpa_ignore_index(spec: DimensionalGoldSpec) -> BpaIgnoreIndex:
+    index: dict[tuple[str, str], list[str]] = {}
+    for item in spec.bpa_ignores:
+        index.setdefault((item.kind, item.target), []).append(item.rule_id)
+    return {key: tuple(value) for key, value in index.items()}
 
 
 def _tmdl_text(value: str) -> str:
@@ -755,6 +767,7 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
             f'\tannotation Kairos_GoldProfileVersion = "{spec.profile_version}"',
             f'\tannotation Kairos_Adapter = "{physical.adapter}"',
             f"\tannotation __PBI_TimeIntelligenceEnabled = {time_enabled}",
+            *ignore_annotation(_bpa_ignore_index(spec).get(("model", ""), ()), indent="\t"),
             "",
             *(f"ref table {table.name}" for table in spec.tables),
             # A calculation group is a table and needs its own `ref` for the engine to
@@ -938,12 +951,16 @@ def _table_tmdl(
     product: GoldPhysicalPlan,
     measures: tuple[GoldMeasureSpec, ...],
     connection: GoldDatabricksConnectionSpec | None,
+    *,
+    ignores: BpaIgnoreIndex | None = None,
 ) -> str:
+    ignores = ignores or {}
     lines = [
         f"table {table.name}",
         f"\tlineageTag: {_guid(table.name)}",
         f'\tannotation Kairos_TableRole = "{table.role.value}"',
         f'\tannotation Kairos_SilverBinding = "{table.source_model}@{table.source_version}"',
+        *ignore_annotation(ignores.get(("table", table.name), ()), indent="\t"),
         "",
     ]
     for measure in measures:
@@ -956,6 +973,9 @@ def _table_tmdl(
                 f"\t\tlineageTag: {_guid(f'{table.name}.{measure.measure_id}')}",
                 f'\t\tannotation Kairos_Lifecycle = "{measure.lifecycle.value}"',
                 "\t\tannotation Kairos_DataValidatedByProjection = false",
+                *ignore_annotation(
+                    ignores.get(("measure", measure.measure_id), ()), indent="\t\t"
+                ),
                 "",
             ]
         )
@@ -985,6 +1005,9 @@ def _table_tmdl(
                 f"\t\tlineageTag: {_guid(f'{table.name}.{column.name}')}",
                 f"\t\tsourceColumn: {column.name}",
                 "\t\tsummarizeBy: none",
+                *ignore_annotation(
+                    ignores.get(("column", f"{table.name}.{column.name}"), ()), indent="\t\t"
+                ),
                 "",
             ]
         )
@@ -1016,13 +1039,17 @@ def _date_tmdl(
     calendar: GoldCalendarSpec,
     product: GoldPhysicalPlan,
     connection: GoldDatabricksConnectionSpec | None,
+    *,
+    ignores: BpaIgnoreIndex | None = None,
 ) -> str:
+    ignores = ignores or {}
     lines = [
         "table dim_date",
         f"\tlineageTag: {_guid('dim_date')}",
         "\tdataCategory: Time",
         f'\tannotation Kairos_CalendarApproval = "{"approved" if calendar.approved else "draft"}"',
         f'\tannotation Kairos_CalendarBounds = "{calendar.start_date}/{calendar.end_date}"',
+        *ignore_annotation(ignores.get(("table", "dim_date"), ()), indent="\t"),
         "",
     ]
     # Every declared calendar column, not the two this table used to expose. With only
@@ -1040,6 +1067,11 @@ def _date_tmdl(
         if column.is_key:
             lines.append("\t\tisKey")
         lines.append(f"\t\tsourceColumn: {column.name}")
+        lines.extend(
+            ignore_annotation(
+                ignores.get(("column", f"dim_date.{column.name}"), ()), indent="\t\t"
+            )
+        )
         lines.append("")
     lines.extend(_partition("dim_date", "gold_shared", product, connection))
     return "\n".join(lines)
@@ -1053,9 +1085,14 @@ def _relationships_tmdl(spec: DimensionalGoldSpec) -> str:
     reasoning over the graph. `guid_seed` preserves their original names, because in
     Fabric a renamed relationship is a new object, not an edit.
     """
+    ignores = _bpa_ignore_index(spec)
     lines: list[str] = []
     for relationship in spec.relationships:
         seed = relationship.guid_seed or (relationship.name + relationship.source_table)
+        edge = (
+            f"{relationship.source_table}.{relationship.source_column} -> "
+            f"{relationship.target_table}.{relationship.target_column}"
+        )
         lines.extend(
             [
                 f"relationship {_guid(seed)}",
@@ -1064,6 +1101,7 @@ def _relationships_tmdl(spec: DimensionalGoldSpec) -> str:
                 *([] if relationship.is_active else ["\tisActive: false"]),
                 (f"\tfromColumn: {relationship.source_table}.{relationship.source_column}"),
                 (f"\ttoColumn: {relationship.target_table}.{relationship.target_column}"),
+                *ignore_annotation(ignores.get(("relationship", edge), ()), indent="\t"),
                 "",
             ]
         )
@@ -1282,6 +1320,24 @@ def gold_product_report(
             if any(not item.is_active for item in spec.relationships)
             else {}
         ),
+        # Authored BPA exceptions (DD-238). Each is a registered claim with a reason
+        # (DD-234), so the report is where a reviewer reads them back. Absent when there
+        # are none, so a hub that authors none keeps its report bytes.
+        **(
+            {
+                "bpa_exceptions": [
+                    {
+                        "rule": item.rule_id,
+                        "object": item.kind,
+                        "target": item.target or None,
+                        "reason": item.reason,
+                    }
+                    for item in spec.bpa_ignores
+                ]
+            }
+            if spec.bpa_ignores
+            else {}
+        ),
         "adapter": {
             "name": physical.adapter,
             "version": physical.adapter_version,
@@ -1481,6 +1537,7 @@ def render_powerbi_artifacts(
     definition = f"{prefix}/definition"
     report = f"{domain}/{model_name}.Report"
     physical_by_name = {item.name: item for item in physical.tables}
+    ignores = _bpa_ignore_index(spec)
     artifacts: dict[str, str] = {
         physical.ddl_artifact_path: _ddl(spec, physical),
         physical.erd_artifact_path: _erd(spec, physical),
@@ -1519,12 +1576,14 @@ def render_powerbi_artifacts(
             physical,
             measures,
             connection,
+            ignores=ignores,
         )
     if spec.calendar is not None and spec.calendar.approved:
         artifacts[f"{definition}/tables/dim_date.tmdl"] = _date_tmdl(
             spec.calendar,
             physical,
             connection,
+            ignores=ignores,
         )
         artifacts[f"{definition}/calculationGroups/time-intelligence.tmdl"] = (
             _time_intelligence_tmdl(spec.calendar)

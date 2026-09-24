@@ -912,6 +912,9 @@ class GoldProductFact:
     #: ``kairos-ext:goldPrimaryRelationship`` values, each
     #: ``"Table.column -> Table.column"`` (#792).
     primary_relationships: AuthoredValuesFact | None = None
+    #: ``kairos-ext:bpaIgnoreRule`` values, each
+    #: ``"<RULE_ID> on <kind> [<target>]: <reason>"`` (DD-238).
+    bpa_ignore_rules: AuthoredValuesFact | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1037,6 +1040,9 @@ class GoldProductSpec:
     #: ``"Table.column -> Table.column"`` (#792). Carried verbatim: the relationship set
     #: they select from only exists once the tables have been shaped.
     primary_relationships: tuple[str, ...] = ()
+    #: ``kairos-ext:bpaIgnoreRule`` values (DD-238). Carried verbatim: the objects they
+    #: name only exist once the product has been shaped.
+    bpa_ignore_rules: tuple[str, ...] = ()
     #: The ontology this product was authored on, for diagnostics that have no table.
     ontology_uri: str = ""
 
