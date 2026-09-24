@@ -642,19 +642,27 @@ def parse_model_folder(definition_dir: Path) -> TmdlModel:
         name for name in declared_tables if name.casefold() not in parsed
     ]
 
-    # Derive the model name from whichever folder actually identifies the model.
-    # "MyModel.SemanticModel/definition/" → "MyModel"; a flat export folder names
-    # itself. Falling through to the parent for a flat layout named every export in
-    # one staging directory after that directory, so a batch import silently
-    # overwrote each artifact with the next (issue #TMDL-FLAT).
+    model.name = model_name_for_definition_dir(definition_dir)
+    return model
+
+
+def model_name_for_definition_dir(definition_dir: Path) -> str:
+    """The model name a ``definition`` (or flat export) folder identifies.
+
+    "MyModel.SemanticModel/definition/" → "MyModel"; a flat export folder names
+    itself. Falling through to the parent for a flat layout named every export in
+    one staging directory after that directory, so a batch import silently
+    overwrote each artifact with the next (issue #TMDL-FLAT). Shared with the TOM
+    reader (#879) so both name a model the same way.
+    """
+    definition_dir = Path(definition_dir)
     parent = definition_dir.parent
     if parent.name.endswith(".SemanticModel"):
-        model.name = parent.name.rsplit(".SemanticModel", 1)[0]
+        name = parent.name.rsplit(".SemanticModel", 1)[0]
     elif definition_dir.name.casefold() == "definition":
-        model.name = parent.name
+        name = parent.name
     else:
-        model.name = definition_dir.name
-    if model.name.endswith(".SemanticModel"):
-        model.name = model.name.rsplit(".SemanticModel", 1)[0]
-
-    return model
+        name = definition_dir.name
+    if name.endswith(".SemanticModel"):
+        name = name.rsplit(".SemanticModel", 1)[0]
+    return name

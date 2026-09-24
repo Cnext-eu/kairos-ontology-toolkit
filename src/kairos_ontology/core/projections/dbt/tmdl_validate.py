@@ -9,13 +9,14 @@ Desktop and Fabric use to open a TMDL model -- so a syntax/structure error is ca
 projection time with an exact file and line, instead of only surfacing as a cryptic
 dialog when a human opens the PBIP.
 
-Requires the .NET SDK (``dotnet`` on PATH). Never a build or runtime dependency of the
-toolkit itself: nothing calls this by default, and when ``dotnet`` is unavailable every
-result comes back ``status="unavailable"`` rather than raising, since most toolkit
-installs will never have a .NET SDK. Never talks to a live Power BI workspace or Fabric
-tenant -- this is a pure local file-structure/syntax check, verified against the real
-TOM SDK: it correctly parses a valid TMDL tree and rejects a genuinely malformed one
-with the exact file/line/detail TmdlFormatException carries.
+Requires the .NET SDK (``dotnet`` on PATH). For this write-path validation it stays
+optional: when ``dotnet`` is unavailable every result comes back ``status="unavailable"``
+rather than raising, and ``emit-gold`` reports that without blocking. The same bundled tool
+is the *reader* for ``import-tmdl`` (``--inventory``, #879, DD-237), and there it is
+required -- see ``core.tmdl_tom_reader``. Never talks to a live Power BI workspace or
+Fabric tenant -- this is a pure local file read, verified against the real TOM SDK: it
+correctly parses a valid TMDL tree and rejects a genuinely malformed one with the exact
+file/line/detail TmdlFormatException carries.
 """
 
 from __future__ import annotations
@@ -132,8 +133,11 @@ def _ensure_built() -> Path:
             lock_path.unlink(missing_ok=True)
 
 
-def _invoke_validator(folder: Path) -> dict:
+def _invoke_validator(folder: Path, *extra_args: str) -> dict:
     """Run the bundled validator against *folder* and return its raw JSON payload.
+
+    *extra_args* are passed through to the tool; ``--inventory`` adds the full model
+    reading ``import-tmdl`` consumes (#879).
 
     Always returns a dict with a ``status``; an environment problem comes back as
     ``"unavailable"`` rather than raising, because a missing or broken .NET SDK is a
@@ -142,7 +146,7 @@ def _invoke_validator(folder: Path) -> dict:
     try:
         dll_path = _ensure_built()
         completed = subprocess.run(
-            ["dotnet", str(dll_path), str(folder)],
+            ["dotnet", str(dll_path), str(folder), *extra_args],
             capture_output=True,
             text=True,
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
@@ -177,11 +181,10 @@ def inspect_tmdl_folder(folder: Path) -> dict:
 
     The sibling of :func:`validate_tmdl_artifacts` for the *read* path: that one stages
     generated artifacts and asks whether they are valid, this one points the same engine
-    at an export already on disk and asks what it contains. Used to cross-check the
-    hand-rolled parser against the engine Power BI Desktop and Fabric actually use.
+    at an export already on disk and asks what it contains (counts only;
+    ``core.tmdl_tom_reader`` asks for the full ``--inventory``).
 
-    Returns ``{"status": "unavailable", ...}`` when dotnet is absent. Never raises: a
-    cross-check that can break an import is worse than no cross-check.
+    Returns ``{"status": "unavailable", ...}`` when dotnet is absent. Never raises.
     """
     if shutil.which("dotnet") is None:
         return {"status": "unavailable", "message": "dotnet SDK not found on PATH"}

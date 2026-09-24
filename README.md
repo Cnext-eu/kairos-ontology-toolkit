@@ -48,6 +48,8 @@ dual-format authoring, or automatic v4-to-v5 hub conversion.
 - [uv](https://docs.astral.sh/uv/)
 - Git
 - An authenticated [GitHub CLI](https://cli.github.com/) session
+- The [.NET 8 SDK](https://dotnet.microsoft.com/download), if you will import Power BI
+  models: `import-tmdl` reads them with the Microsoft TOM SDK (DD-237)
 
 For interactive setup in GitHub Copilot, invoke the `kairos-setup-init` skill.
 It performs the required preflight checks and creates the repository through

@@ -4,6 +4,7 @@
 
 import json
 import logging
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -25,11 +26,26 @@ from kairos_ontology.core.import_tmdl import (
 # ---------------------------------------------------------------------------
 # Test fixtures — synthetic TMDL content
 # ---------------------------------------------------------------------------
+#
+# Valid TMDL, because import-tmdl reads through the TOM SDK (#879) and the SDK -- like
+# Power BI Desktop -- rejects what is not. The previous fixtures put compatibilityLevel in
+# model.tmdl and omitted the `model` header; the hand-rolled parser accepted that, which
+# is exactly the class of thing the SDK was brought in to stop.
+
+requires_dotnet = pytest.mark.skipif(
+    shutil.which("dotnet") is None,
+    reason="import-tmdl reads through the TOM SDK, which needs the .NET SDK",
+)
+
+DATABASE_TMDL = """\
+database
+\tcompatibilityLevel: 1604
+"""
 
 MODEL_TMDL = """\
-compatibilityLevel: 1604
-defaultMode: directLake
-culture: en-US
+model Model
+\tculture: en-US
+\tdefaultMode: import
 """
 
 TABLE_CUSTOMER = """\
@@ -44,14 +60,17 @@ table d_Customer
 \t\tdataType: string
 \t\tsourceColumn: Name
 
-\tpartition CustomerData
-\t\tmode: directLake
-\t\ttype: entity
+\tpartition CustomerData = m
+\t\tmode: import
+\t\tsource = 1
 """
 
 TABLE_SALES = """\
 table f_Sales
 \tlineageTag: sales-001
+
+\tmeasure TotalSales = SUM(f_Sales[Amount])
+\t\tformatString: #,##0.00
 
 \tcolumn Amount
 \t\tdataType: double
@@ -62,22 +81,15 @@ table f_Sales
 \t\tdataType: int64
 \t\tsourceColumn: FK_Customer
 
-\tmeasure TotalSales = SUM(f_Sales[Amount])
-\t\tformatString: #,##0.00
-
-\tpartition SalesData
-\t\tmode: directLake
-\t\ttype: entity
+\tpartition SalesData = m
+\t\tmode: import
+\t\tsource = 1
 """
 
 RELATIONSHIPS_TMDL = """\
 relationship rel_001
-\tfromTable: f_Sales
-\tfromColumn: CustomerKey
-\ttoTable: d_Customer
-\ttoColumn: CustomerKey
-\tfromCardinality: many
-\ttoCardinality: one
+\tfromColumn: f_Sales.CustomerKey
+\ttoColumn: d_Customer.CustomerKey
 """
 
 
@@ -88,6 +100,7 @@ def _create_semantic_model(base: Path, model_name: str = "TestModel") -> Path:
     tables_dir = def_dir / "tables"
     tables_dir.mkdir(parents=True)
 
+    (def_dir / "database.tmdl").write_text(DATABASE_TMDL, encoding="utf-8")
     (def_dir / "model.tmdl").write_text(MODEL_TMDL, encoding="utf-8")
     (tables_dir / "d_Customer.tmdl").write_text(TABLE_CUSTOMER, encoding="utf-8")
     (tables_dir / "f_Sales.tmdl").write_text(TABLE_SALES, encoding="utf-8")
@@ -216,12 +229,13 @@ class TestFindDefinitionDirs:
 # ---------------------------------------------------------------------------
 
 
+@requires_dotnet
 class TestEngineeringPack:
     def test_pack_contains_sections(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.core.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_tom_reader import read_model_folder
 
-        model = parse_model_folder(sm_dir / "definition")
+        model = read_model_folder(sm_dir / "definition")
         pack = generate_engineering_pack(model, "test/source")
 
         assert "# TestModel — Ontology Engineering Pack" in pack
@@ -236,9 +250,9 @@ class TestEngineeringPack:
 
     def test_pack_shows_relationship(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.core.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_tom_reader import read_model_folder
 
-        model = parse_model_folder(sm_dir / "definition")
+        model = read_model_folder(sm_dir / "definition")
         pack = generate_engineering_pack(model)
 
         assert "f_Sales.CustomerKey → d_Customer.CustomerKey" in pack
@@ -250,12 +264,13 @@ class TestEngineeringPack:
 # ---------------------------------------------------------------------------
 
 
+@requires_dotnet
 class TestConceptMapping:
     def test_yaml_is_valid(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.core.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_tom_reader import read_model_folder
 
-        model = parse_model_folder(sm_dir / "definition")
+        model = read_model_folder(sm_dir / "definition")
         mapping_str = generate_concept_mapping(model)
 
         # Strip comment header for parsing
@@ -268,9 +283,9 @@ class TestConceptMapping:
 
     def test_table_fields(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.core.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_tom_reader import read_model_folder
 
-        model = parse_model_folder(sm_dir / "definition")
+        model = read_model_folder(sm_dir / "definition")
         mapping_str = generate_concept_mapping(model)
         data = yaml.safe_load(mapping_str)
 
@@ -287,9 +302,9 @@ class TestConceptMapping:
 
     def test_relationship_fields(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path)
-        from kairos_ontology.core.tmdl_parser import parse_model_folder
+        from kairos_ontology.core.tmdl_tom_reader import read_model_folder
 
-        model = parse_model_folder(sm_dir / "definition")
+        model = read_model_folder(sm_dir / "definition")
         mapping_str = generate_concept_mapping(model)
         data = yaml.safe_load(mapping_str)
 
@@ -353,6 +368,7 @@ class TestIncompleteExport:
         model = self._parse(_create_semantic_model(tmp_path / "in") / "definition")
         assert model.unresolved_table_refs == []
 
+    @requires_dotnet
     def test_the_engineering_pack_names_the_missing_tables(self, tmp_path):
         output = tmp_path / "output"
         run_import_tmdl(self._partial(tmp_path), output)
@@ -364,23 +380,27 @@ class TestIncompleteExport:
         # The count itself is qualified: a bare number is what misled.
         assert "absent from this export" in pack
 
+    @requires_dotnet
     def test_a_complete_export_has_no_incomplete_section(self, tmp_path):
         output = tmp_path / "output"
         run_import_tmdl(_create_semantic_model(tmp_path / "in"), output)
         pack = next(output.glob("*-engineering-pack.md")).read_text(encoding="utf-8")
         assert "## Incomplete Export" not in pack
 
+    @requires_dotnet
     def test_the_caller_can_observe_the_partial_model(self, tmp_path):
         partial: list[str] = []
         run_import_tmdl(self._partial(tmp_path), tmp_path / "output", partial)
         assert partial == ["TestModel"]
 
+    @requires_dotnet
     def test_it_warns_and_names_them(self, tmp_path, caplog):
         with caplog.at_level(logging.WARNING):
             run_import_tmdl(self._partial(tmp_path), tmp_path / "output")
         assert "f Missing" in caplog.text
         assert "_measures" in caplog.text
 
+    @requires_dotnet
     def test_exit_code_is_zero_by_default_and_opt_in_under_the_flag(self, tmp_path):
         from click.testing import CliRunner
 
@@ -400,6 +420,7 @@ class TestIncompleteExport:
         assert strict.exit_code == 1, strict.output
 
 
+@requires_dotnet
 class TestRunImportTmdl:
     def test_from_folder(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path / "input")
@@ -469,6 +490,7 @@ class TestCLI:
         assert result.exit_code == 0
         assert "Engineering Pack" in result.output
 
+    @requires_dotnet
     def test_cli_from_folder(self, tmp_path):
         sm_dir = _create_semantic_model(tmp_path / "input")
         output = tmp_path / "output"
@@ -502,6 +524,7 @@ def _bi_dir(hub: Path) -> Path:
     return hub / "integration" / "discovery" / "bi"
 
 
+@requires_dotnet
 class TestHubRootResolution:
     def test_default_output_lands_inside_the_hub_not_at_the_repo_root(self, tmp_path, monkeypatch):
         """The reported bug: run from the repo root, get a stray top-level integration/."""
@@ -594,6 +617,7 @@ class TestHubRootResolution:
         assert all(f.resolve().is_relative_to(_bi_dir(hub).resolve()) for f in files)
 
 
+@requires_dotnet
 class TestZipExtractionStaysOutOfTheHub:
     def test_zip_writes_only_the_two_derived_artifacts(self, tmp_path, monkeypatch):
         """A PBIP archive carries report definitions and connection strings.
@@ -716,6 +740,7 @@ class TestResolvePbipPointer:
             run_import_tmdl(pointer_path, output)
 
 
+@requires_dotnet
 class TestRunImportTmdlFromPbipPointer:
     def test_pointer_end_to_end_matches_folder_result(self, tmp_path):
         """A pointer .pbip must parse to the same shape as importing the
@@ -755,6 +780,7 @@ def _nested_export(root, name, table="Sales"):
     return definition
 
 
+@requires_dotnet
 class TestFlatExportsInADirectory:
     """`.import/powerbi/` is a scaffolded location (DD-233), so a hub routinely stages
     several exports in one directory. Requiring the directory be literally named

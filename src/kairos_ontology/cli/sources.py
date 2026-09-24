@@ -48,7 +48,10 @@ def import_tmdl(source, output, fail_on_partial):
     """Import and inventory TMDL/PBIP files for ontology modeling.
 
     SOURCE is a path to a PBIP ZIP archive, a SemanticModel folder, or a
-    standalone .tmdl file. The command parses TMDL content and generates:
+    standalone .tmdl file. The model is read with the Microsoft TOM SDK, the engine
+    Power BI Desktop and Fabric use (#879), so the .NET 8 SDK must be on PATH; an
+    export TOM refuses -- one Desktop would not open either -- is an error, not a
+    thin reading. The command generates:
 
     \b
     - An Engineering Pack (markdown) with table/column/measure inventory
@@ -70,6 +73,7 @@ def import_tmdl(source, output, fail_on_partial):
     """
     from ..core.hub_utils import resolve_hub_output_dir
     from ..core.import_tmdl import _BI_DISCOVERY_RELPATH, run_import_tmdl
+    from ..core.tmdl_tom_reader import TomUnavailableError
 
     source_path = Path(source)
 
@@ -94,6 +98,8 @@ def import_tmdl(source, output, fail_on_partial):
     partial_models: list[str] = []
     try:
         generated = run_import_tmdl(source_path, output_path, partial_models)
+    except TomUnavailableError as exc:
+        raise click.ClickException(str(exc)) from exc
     except ValueError as exc:
         # An incomplete export -- a .pbip pointer whose artifact folders are absent -- is
         # a fact about the input, not a toolkit failure. The message already names the
@@ -105,10 +111,11 @@ def import_tmdl(source, output, fail_on_partial):
         # Loud on the way out as well as in the log: the written artifacts were the only
         # record, and a bare `Tables: 0` reads as a model that genuinely has none (#807).
         click.echo(
-            "\n⚠️  Incomplete export: model.tmdl declares tables absent from it, for "
-            f"{len(partial_models)} model(s): {', '.join(partial_models)}.\n"
-            "   The Engineering Pack names them under 'Incomplete Export'. "
-            "Re-export with the full definition/tables/ folder.",
+            "\n⚠️  Incomplete export: the TOM SDK refused "
+            f"{len(partial_models)} model(s), so nothing was imported for them: "
+            f"{', '.join(partial_models)}.\n"
+            "   Power BI Desktop would refuse them too. Re-export each with the full "
+            "definition folder (model.tmdl and every table file).",
             err=True,
         )
 
