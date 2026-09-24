@@ -75,6 +75,10 @@ class ReferenceTerm:
     #: three derivations from two loaders, and ~13s of duplicated work on a 109-module
     #: hub (#524). Carried here instead, which is where it is already known.
     property_names: tuple[str, ...] = ()
+    #: ``owl:deprecated true`` on the class (#938). The reference models deprecate the
+    #: role subclasses (Consignee, Carrier, NotifyParty, ...) a normative pattern
+    #: forbids, and their comment names the replacement.
+    deprecated: bool = False
 
 
 @dataclass(frozen=True)
@@ -346,6 +350,7 @@ def _read_reference_terms_uncached(
                     comment=str(cls.get("comment") or ""),
                     module=_module_of(uri),
                     kind="class",
+                    deprecated=bool(cls.get("deprecated")),
                     property_names=tuple(
                         sorted(
                             {

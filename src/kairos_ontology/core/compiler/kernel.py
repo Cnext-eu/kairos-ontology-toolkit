@@ -971,6 +971,64 @@ def _ontology_symbols(
     )
 
 
+def _deprecated_classes(graph: Graph, classes: tuple[ResolvedClass, ...]) -> dict[str, str]:
+    """``uri -> rdfs:comment`` for every in-scope class or ancestor marked deprecated."""
+    candidates = {item.uri for item in classes}
+    for item in classes:
+        candidates.update(item.ancestor_uris)
+    found: dict[str, str] = {}
+    for uri in sorted(candidates):
+        values = graph.objects(URIRef(uri), OWL.deprecated)
+        if any(str(value).strip().lower() in {"true", "1"} for value in values):
+            found[uri] = _literal(graph, URIRef(uri), RDFS.comment, "")
+    return found
+
+
+def _deprecated_target_diagnostics(
+    binding: EntityBinding, context: ResolutionContext
+) -> tuple[CompileDiagnostic, ...]:
+    """Warn when a binding targets a deprecated class, or a subclass of one (#938).
+
+    The reference models deprecate the role subclasses -- Consignee, Carrier,
+    NotifyParty -- that ``qualified-role-assignment`` forbids a hub to build on, and say
+    in the class comment what to use instead. Nothing read the triple: a binding could
+    target ``Consignee`` and compile clean. A warning, because the binding is correct and
+    emittable; the shape is what is wrong.
+    """
+    if not context.deprecated_classes:
+        return ()
+    klass = context.klass(binding.target_class)
+    if klass is None:
+        return ()
+    if klass.uri in context.deprecated_classes:
+        offender, relation = klass.uri, "targets"
+    else:
+        offender = next(
+            (uri for uri in klass.ancestor_uris if uri in context.deprecated_classes), ""
+        )
+        relation = "targets a subclass of"
+    if not offender:
+        return ()
+    comment = context.deprecated_classes[offender]
+    return (
+        CompileDiagnostic(
+            code="binding.target-class-deprecated",
+            severity=DiagnosticSeverity.WARNING,
+            message=(
+                f"binding '{binding.name}' {relation} {offender}, which the reference "
+                "model marks owl:deprecated"
+                + (f" ({comment})" if comment else "")
+                + ". Deprecated role classes are what "
+                "blueprints/patterns/qualified-role-assignment forbids a hub to build "
+                "on: bind the durable identity and assign the role through the module's "
+                "role-assignment class instead."
+            ),
+            location=SourceLocation(path=binding.source_path, pointer="/target/class"),
+            rule_id="DD-133-safety",
+        ),
+    )
+
+
 def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionContext]:
     """Discover and load the deterministic v5 compile scope."""
     candidate = hub_root.resolve()
@@ -1250,6 +1308,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         ),
         prefix_alternatives=prefix_alternatives,
         closure_property_owners=closure_property_owners,
+        deprecated_classes=_deprecated_classes(graph, classes),
     )
     return scope, context
 
@@ -4204,6 +4263,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         # every binding that carries one (see the severity guard below).
         diagnostics.extend(_unrealized_relationship_diagnostics(binding))
         diagnostics.extend(_carried_passthrough_diagnostics(binding))
+        diagnostics.extend(_deprecated_target_diagnostics(binding, context))
         binding_safety = _binding_safety_diagnostics(binding, context)
         if binding_safety:
             diagnostics.extend(binding_safety)

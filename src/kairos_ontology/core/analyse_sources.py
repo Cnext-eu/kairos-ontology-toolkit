@@ -405,6 +405,14 @@ def parse_reference_model(
     }
 
 
+def is_deprecated(graph: Graph, uri: str) -> bool:
+    """Whether *graph* marks *uri* ``owl:deprecated true``."""
+    return any(
+        str(value).strip().lower() in {"true", "1"}
+        for value in graph.objects(URIRef(uri), OWL.deprecated)
+    )
+
+
 def _reference_summary_from_index(
     index,
     graph: Graph,
@@ -446,6 +454,11 @@ def _reference_summary_from_index(
             "properties": [render_property(link) for link in cls.direct_properties],
             "inherited_properties": [render_property(link) for link in cls.inherited_properties],
         }
+        # owl:deprecated (#938): the reference models mark the role subclasses a
+        # normative pattern forbids, and nothing read it. Emitted only when true, so an
+        # undeprecated class renders exactly as before.
+        if is_deprecated(graph, cls.uri):
+            item["deprecated"] = True
         if include_specializations:
             item["specializations"] = [
                 {

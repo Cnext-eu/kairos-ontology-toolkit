@@ -93,6 +93,11 @@ ALLOWED_SHEET_FLAGS = frozenset(
 #: a console warning, now surviving into the reviewable artifact (issue #564).
 PROPERTY_LESS_ANCHOR_FLAG = "property-less-anchor"
 
+#: Deterministic flag for an anchor the reference model marks ``owl:deprecated`` (#938):
+#: the role subclasses a normative pattern forbids. Set by ``run_anchor_tables``, never
+#: model-proposed, and recorded beside the class's own comment, which names what to use.
+DEPRECATED_ANCHOR_FLAG = "deprecated-anchor"
+
 
 def sheet_schema_hash(columns: list[str]) -> str:
     """Stable identity of a table's schema for sticky-entry comparison (DD-190).
@@ -388,6 +393,11 @@ def build_class_catalog(
                 # because `read_reference_terms` dropped the class-to-property link it
                 # already had in hand.
                 "properties": list(term.property_names),
+                **(
+                    {"deprecated": True, "comment": _first_sentence(term.comment)}
+                    if term.deprecated
+                    else {}
+                ),
             }
         )
         # Keep the richest description across copies — the point of the line.
@@ -1448,6 +1458,7 @@ def run_anchor_tables(
     tables: list[dict[str, Any]] = []
     unanchored: list[dict[str, Any]] = []
     propertyless: list[dict[str, Any]] = []
+    deprecated_anchors: list[dict[str, Any]] = []
     invented = 0
     dropped_rels = dropped_secondary = 0
     for system, table, cols in outline:
@@ -1574,6 +1585,17 @@ def run_anchor_tables(
             if PROPERTY_LESS_ANCHOR_FLAG not in entry["flags"]:
                 entry["flags"] = sorted({*entry["flags"], PROPERTY_LESS_ANCHOR_FLAG})
             propertyless.append(entry)
+        if chosen.get("deprecated"):
+            comment = chosen.get("comment") or ""
+            entry["deprecated_anchor"] = (
+                f"{chosen['uri']} is marked owl:deprecated in the reference model"
+                + (f" ({comment})" if comment else "")
+                + "; deprecated role classes are what "
+                "blueprints/patterns/qualified-role-assignment forbids a hub to build on "
+                "-- anchor the durable identity and assign the role instead"
+            )
+            entry["flags"] = sorted({*entry["flags"], DEPRECATED_ANCHOR_FLAG})
+            deprecated_anchors.append(entry)
         tables.append(entry)
 
     unowned = sum(1 for t in tables if t.get("domain_basis") == "unowned")
@@ -1608,6 +1630,20 @@ def run_anchor_tables(
             say(f"       {t['system']}.{t['table']} ({t['columns']} cols) → {t['anchor_uri']}")
             logger.warning(
                 "Anchor %s for %s.%s has no properties in the resolved closure.",
+                t["anchor_uri"],
+                t["system"],
+                t["table"],
+            )
+
+    if deprecated_anchors:
+        say(
+            f"  ⚓ WARNING: {len(deprecated_anchors)} anchor(s) resolve to a class the "
+            "reference model marks owl:deprecated (see 'deprecated_anchor' per table):"
+        )
+        for t in deprecated_anchors:
+            say(f"       {t['system']}.{t['table']} → {t['anchor_uri']}")
+            logger.warning(
+                "Anchor %s for %s.%s is deprecated in the reference model.",
                 t["anchor_uri"],
                 t["system"],
                 t["table"],

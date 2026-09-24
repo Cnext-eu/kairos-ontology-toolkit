@@ -219,6 +219,10 @@ class ResolutionContext:
     #: exists "unresolved in the ontology" (#853). Only ever populated for tokens that
     #: already failed to resolve in scope.
     closure_property_owners: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: Resolved class URI -> its rdfs:comment, for every class in scope (or one of its
+    #: ancestors) the import closure marks ``owl:deprecated true`` (#938). Graph-free for
+    #: the same reason as the two maps above.
+    deprecated_classes: dict[str, str] = field(default_factory=dict)
 
     def relation(self, ref: str) -> ResolvedRelation | None:
         """Return the resolved relation for an author ``source.relation`` token."""

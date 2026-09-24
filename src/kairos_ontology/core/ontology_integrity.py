@@ -95,6 +95,7 @@ ALL_CODES: tuple[str, ...] = (
     "integrity.value-object-collapsed",
     "integrity.class-unanchored",
     "integrity.external-term-unresolved",
+    "integrity.deprecated-reference-class",
 )
 
 # Header block a domain .ttl uses to record what it deliberately leaves to other
@@ -955,6 +956,56 @@ def check_unanchored_classes(
 
 # ---------------------------------------------------------------------------
 # Orchestration
+def check_deprecated_reference_classes(
+    ontologies: dict[str, DomainOntology],
+    module_terms: dict[str, dict],
+) -> list[IntegrityDiagnostic]:
+    """Warn when a hub class subclasses, or a property is scoped to, a deprecated class.
+
+    The reference models mark the role subclasses -- Consignee, Carrier, NotifyParty --
+    ``owl:deprecated true``, and ``qualified-role-assignment`` is normative that a hub
+    must not build its durable identity under them. Until now the only protection was a
+    hardcoded list of seven URIs in ``class_anchoring``; the triple itself was never read,
+    so a hub subclassing ``mmt/party#Consignee`` got no diagnostic anywhere (#938).
+
+    A warning: the ontology is valid, the shape is what is wrong. The message quotes the
+    class's own comment, which in these modules names the replacement.
+    """
+    diagnostics: list[IntegrityDiagnostic] = []
+    for domain, onto in sorted(ontologies.items()):
+        for subject, predicate, target in sorted(onto.external_term_refs):
+            if predicate not in {"subClassOf", "domain", "range", "equivalentClass"}:
+                continue
+            module = _namespace_of(target).rstrip("#/")
+            deprecated = (module_terms.get(module) or {}).get("deprecated") or {}
+            name = _local_name(target)
+            if name not in deprecated:
+                continue
+            comment = str(deprecated[name] or "").strip()
+            diagnostics.append(
+                IntegrityDiagnostic(
+                    level="warning",
+                    code="integrity.deprecated-reference-class",
+                    message=(
+                        f"'{subject}' declares {predicate} <{target}>, which the reference "
+                        "model marks owl:deprecated"
+                        + (f": {comment}" if comment else ".")
+                    ),
+                    domain=domain,
+                    term_uri=target,
+                    remediation=(
+                        "Deprecated role classes are what "
+                        "blueprints/patterns/qualified-role-assignment forbids a hub to "
+                        "build on. Build on the durable identity class and assign the role "
+                        "through the module's role-assignment class; "
+                        "'kairos-ontology list-patterns --pattern qualified-role-assignment' "
+                        "shows the pattern."
+                    ),
+                )
+            )
+    return diagnostics
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -972,6 +1023,10 @@ def _module_terms(catalog_path: Optional[Path]) -> dict[str, dict[str, set[str]]
         bucket = "classes" if term.kind == "class" else "properties"
         terms.setdefault(module, {"classes": set(), "properties": set()})
         terms[module][bucket].add(term.name)
+        if term.kind == "class" and term.deprecated:
+            # name -> comment; a dict in the same bucket shape, read only by
+            # check_deprecated_reference_classes (#938).
+            terms[module].setdefault("deprecated", {})[term.name] = term.comment
     return terms
 
 
@@ -1095,6 +1150,7 @@ def audit_ontology_integrity(
     diagnostics.extend(check_collapsed_value_objects(ontologies))
     diagnostics.extend(check_unanchored_classes(ontologies))
     diagnostics.extend(check_external_terms_resolve(ontologies, module_terms))
+    diagnostics.extend(check_deprecated_reference_classes(ontologies, module_terms))
 
     if domains is not None:
         scope = set(domains)
