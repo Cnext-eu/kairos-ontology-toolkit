@@ -1077,6 +1077,22 @@ def _date_tmdl(
     return "\n".join(lines)
 
 
+#: A bidirectional edge is a recorded DD-238 decision -- the bridge default or an authored
+#: `goldRelationshipCrossFilter` -- so the rule asking a human to check it has been met.
+_CHECKED_BIDIRECTIONAL = ("CHECK_IF_BI-DIRECTIONAL_AND_MANY-TO-MANY_RELATIONSHIPS_ARE_VALID",)
+
+
+def _cardinality_lines(cardinality: str) -> list[str]:
+    """Render an edge's cardinality where it departs from TOM's many-to-one default."""
+    source, _, target = cardinality.partition("-to-")
+    lines = []
+    if source == "one":
+        lines.append("\tfromCardinality: one")
+    if target == "many":
+        lines.append("\ttoCardinality: many")
+    return lines
+
+
 def _relationships_tmdl(spec: DimensionalGoldSpec) -> str:
     """Render the shaped relationship set.
 
@@ -1099,9 +1115,23 @@ def _relationships_tmdl(spec: DimensionalGoldSpec) -> str:
                 # Only the surplus paths are annotated, so a model that never had an
                 # ambiguity keeps exactly the bytes it had before.
                 *([] if relationship.is_active else ["\tisActive: false"]),
+                # TOM defaults are many-to-one and single direction; only a departure is
+                # written, so a model without bridges keeps exactly its bytes (DD-238).
+                *_cardinality_lines(relationship.cardinality),
+                *(
+                    ["\tcrossFilteringBehavior: bothDirections"]
+                    if relationship.bidirectional
+                    else []
+                ),
                 (f"\tfromColumn: {relationship.source_table}.{relationship.source_column}"),
                 (f"\ttoColumn: {relationship.target_table}.{relationship.target_column}"),
-                *ignore_annotation(ignores.get(("relationship", edge), ()), indent="\t"),
+                *ignore_annotation(
+                    (
+                        *ignores.get(("relationship", edge), ()),
+                        *(_CHECKED_BIDIRECTIONAL if relationship.bidirectional else ()),
+                    ),
+                    indent="\t",
+                ),
                 "",
             ]
         )
@@ -1318,6 +1348,31 @@ def gold_product_report(
                 ]
             }
             if any(not item.is_active for item in spec.relationships)
+            else {}
+        ),
+        # Edges that filter both ways, and why (DD-238). A bidirectional edge changes
+        # which rows a slicer reaches, so it is listed for review like a deactivated one.
+        **(
+            {
+                "bidirectional_relationships": [
+                    {
+                        "from": f"{item.source_table}.{item.source_column}",
+                        "to": f"{item.target_table}.{item.target_column}",
+                        "reason": item.cross_filter_reason,
+                    }
+                    for item in spec.relationships
+                    if item.bidirectional
+                ]
+            }
+            if any(item.bidirectional for item in spec.relationships)
+            else {}
+        ),
+        # Many-to-many bridges left single-direction because no single endpoint is on the
+        # fact side. A filter on either endpoint stops at the bridge until the author
+        # declares a goldRelationshipCrossFilter.
+        **(
+            {"undecided_bridge_filters": list(spec.undecided_bridge_filters)}
+            if spec.undecided_bridge_filters
             else {}
         ),
         # Authored BPA exceptions (DD-238). Each is a registered claim with a reason

@@ -221,3 +221,210 @@ class TestTheDeferredEndpointIsPrinted:
                 "endpoint": "https://example.test/ontology/billing#Invoice",
             }
         ]
+
+
+def _product_artifacts(hub: Path) -> dict[str, str]:
+    product = GoldProductConfig(name="invoicing", domains=("party", "billing"))
+    return generate_gold_from_compile_plans(
+        [build_compile_plan(hub, domain) for domain in product.domains], product
+    )
+
+
+def _relationship_blocks(artifacts: dict[str, str]) -> dict[str, str]:
+    """``toColumn`` -> the whole relationship block, so one edge can be asserted alone."""
+    text = artifacts["invoicing/Invoicing.SemanticModel/definition/relationships.tmdl"]
+    blocks = [block for block in text.split("relationship ") if block.strip()]
+    return {
+        line.split("toColumn: ", 1)[1].strip(): block
+        for block in blocks
+        for line in block.splitlines()
+        if "toColumn: " in line
+    }
+
+
+def _with_cross_filter(hub: Path, value: str) -> Path:
+    path = hub / "model" / "extensions" / "party-gold-ext.ttl"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "\n<https://example.test/ontology/party> "
+        + f'kairos-ext:goldRelationshipCrossFilter "{value}" .\n',
+        encoding="utf-8",
+    )
+    return hub
+
+
+class TestBridgeFilterDirection:
+    """DD-238 / #977: a many-to-many bridge must let a far-side filter reach the fact."""
+
+    def test_the_edge_to_the_fact_side_filters_both_ways(self, tmp_path):
+        blocks = _relationship_blocks(_product_artifacts(_cross_domain_hub(tmp_path)))
+        assert "crossFilteringBehavior: bothDirections" in blocks["fact_invoice.invoice_sk"]
+        assert "crossFilteringBehavior" not in blocks["dim_customer.customer_sk"]
+
+    def test_the_bidirectional_edge_records_that_it_was_checked(self, tmp_path):
+        blocks = _relationship_blocks(_product_artifacts(_cross_domain_hub(tmp_path)))
+        assert (
+            "annotation BestPracticeAnalyzer_IgnoreRules = "
+            '{"RuleIDs":["CHECK_IF_BI-DIRECTIONAL_AND_MANY-TO-MANY_RELATIONSHIPS_ARE_VALID"]}'
+        ) in blocks["fact_invoice.invoice_sk"]
+
+    def test_bridge_edges_render_no_cardinality(self, tmp_path):
+        """Each edge is genuinely many-to-one; `bridgeCardinality` relates the endpoints."""
+        artifacts = _product_artifacts(_cross_domain_hub(tmp_path))
+        text = artifacts["invoicing/Invoicing.SemanticModel/definition/relationships.tmdl"]
+        assert "Cardinality" not in text
+
+    def test_the_report_names_the_edge_and_why(self, tmp_path):
+        report = _report(_product_artifacts(_cross_domain_hub(tmp_path)))
+        assert report["bidirectional_relationships"] == [
+            {
+                "from": "bridge_customer_invoice.country_name",
+                "to": "fact_invoice.invoice_sk",
+                "reason": "bridge-default",
+            }
+        ]
+        assert "undecided_bridge_filters" not in report
+
+    def test_the_author_can_turn_it_off(self, tmp_path):
+        hub = _with_cross_filter(
+            _cross_domain_hub(tmp_path),
+            "bridge_customer_invoice.country_name -> fact_invoice.invoice_sk = single",
+        )
+        artifacts = _product_artifacts(hub)
+        block = _relationship_blocks(artifacts)["fact_invoice.invoice_sk"]
+        assert "crossFilteringBehavior" not in block
+        assert "bidirectional_relationships" not in _report(artifacts)
+
+    def test_the_author_can_turn_another_edge_on(self, tmp_path):
+        hub = _with_cross_filter(
+            _cross_domain_hub(tmp_path),
+            "bridge_customer_invoice.code -> dim_customer.customer_sk = both",
+        )
+        report = _report(_product_artifacts(hub))
+        assert {
+            (item["to"], item["reason"]) for item in report["bidirectional_relationships"]
+        } == {
+            ("fact_invoice.invoice_sk", "bridge-default"),
+            ("dim_customer.customer_sk", "authored"),
+        }
+
+    def test_a_stale_override_fails_closed_at_product_level(self, tmp_path):
+        hub = _with_cross_filter(
+            _cross_domain_hub(tmp_path),
+            "bridge_customer_invoice.code -> dim_nope.customer_sk = both",
+        )
+        with pytest.raises(GoldContractError) as excinfo:
+            _product_artifacts(hub)
+        assert excinfo.value.code == "gold.unknown-relationship-cross-filter"
+
+    def test_a_malformed_override_fails_the_domain_compile(self, tmp_path):
+        """No edge is out of scope for a syntax error, so it fails in `compile --check`."""
+        hub = _with_cross_filter(
+            _cross_domain_hub(tmp_path),
+            "bridge_customer_invoice.code -> dim_customer.customer_sk = sideways",
+        )
+        plan = build_compile_plan(hub, "party")
+        assert "gold.unknown-relationship-cross-filter" in {
+            item.code for item in plan.diagnostics.items
+        }
+
+    @pytest.mark.skipif(shutil.which("dotnet") is None, reason="dotnet SDK not installed")
+    def test_the_bidirectional_model_deserializes_in_tom(self, tmp_path):
+        from kairos_ontology.core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
+
+        results = validate_tmdl_artifacts(_product_artifacts(_cross_domain_hub(tmp_path)))
+        assert results and all(item.status == "pass" for item in results), [
+            item.message for item in results
+        ]
+
+
+class TestUndecidedBridge:
+    """With no single fact-side endpoint the projector does not guess (DD-238)."""
+
+    @staticmethod
+    def _shape(tables, relationships, *overrides):
+        from types import SimpleNamespace
+
+        from kairos_ontology.core.projections.dbt.gold_shape import _bridge_cross_filters
+
+        member = SimpleNamespace(
+            policy=SimpleNamespace(
+                gold=SimpleNamespace(relationship_cross_filters=overrides, ontology_uri="urn:t")
+            )
+        )
+        return _bridge_cross_filters((member,), tables, relationships)
+
+    @staticmethod
+    def _fixture():
+        from types import SimpleNamespace
+
+        from kairos_ontology.core.projections.dbt.gold_specs import GoldRelationshipSpec
+        from kairos_ontology.core.projections.dbt.policy_specs import (
+            BridgeCardinality,
+            GoldTableRole,
+        )
+
+        def table(name, role, cardinality=None):
+            return SimpleNamespace(name=name, role=role, bridge_cardinality=cardinality)
+
+        def edge(source, target):
+            return GoldRelationshipSpec(
+                name=f"{source}_{target}",
+                source_table=source,
+                source_column=f"{target}_sk",
+                target_table=target,
+                target_column=f"{target}_sk",
+                cardinality="many-to-one",
+                version_binding=None,
+            )
+
+        tables = (
+            table("bridge_a_b", GoldTableRole.BRIDGE, BridgeCardinality.MANY_TO_MANY),
+            table("dim_a", GoldTableRole.DIMENSION),
+            table("dim_b", GoldTableRole.DIMENSION),
+        )
+        return tables, (edge("bridge_a_b", "dim_a"), edge("bridge_a_b", "dim_b"))
+
+    def test_two_dimensions_leave_it_single_and_reported(self):
+        tables, relationships = self._fixture()
+        shaped, undecided = self._shape(tables, relationships)
+        assert not any(item.bidirectional for item in shaped)
+        assert undecided == ("bridge_a_b",)
+
+    def test_an_authored_direction_decides_it(self):
+        tables, relationships = self._fixture()
+        shaped, undecided = self._shape(
+            tables, relationships, "bridge_a_b.dim_a_sk -> dim_a.dim_a_sk = both"
+        )
+        assert [item.target_table for item in shaped if item.bidirectional] == ["dim_a"]
+        assert undecided == ()
+
+
+def test_a_model_without_bridges_keeps_its_relationship_bytes():
+    """DD-226's compatibility promise, restated for DD-238: no bridge, no new lines."""
+    import tests.test_gold_projector as harness
+
+    artifacts = harness._generate("invoice")
+    relationships = next(
+        content for path, content in artifacts.items() if path.endswith("/relationships.tmdl")
+    )
+    assert "crossFilteringBehavior" not in relationships
+    assert "Cardinality" not in relationships
+    report = harness._report(artifacts, "invoice")
+    assert "bidirectional_relationships" not in report
+    assert "undecided_bridge_filters" not in report
+
+
+@pytest.mark.parametrize(
+    ("cardinality", "lines"),
+    [
+        ("many-to-one", []),
+        ("one-to-one", ["\tfromCardinality: one"]),
+        ("many-to-many", ["\ttoCardinality: many"]),
+        ("one-to-many", ["\tfromCardinality: one", "\ttoCardinality: many"]),
+    ],
+)
+def test_cardinality_renders_only_where_it_departs_from_many_to_one(cardinality, lines):
+    from kairos_ontology.core.projections.dbt.gold_render import _cardinality_lines
+
+    assert _cardinality_lines(cardinality) == lines

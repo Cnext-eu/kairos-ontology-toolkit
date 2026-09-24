@@ -3457,6 +3457,11 @@ def _normalize_gold(
         bpa_ignore_rules=(
             tuple(fact.bpa_ignore_rules.values) if fact.bpa_ignore_rules is not None else ()
         ),
+        relationship_cross_filters=(
+            tuple(fact.relationship_cross_filters.values)
+            if fact.relationship_cross_filters is not None
+            else ()
+        ),
         ontology_uri=fact.ontology_uri,
         profile=profile,
         schema=(

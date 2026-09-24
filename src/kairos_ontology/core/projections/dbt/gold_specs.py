@@ -143,6 +143,13 @@ class GoldRelationshipSpec:
     #: it closed a cycle (#792); "unproven-key" when the one side has no declared unique
     #: key to back the cardinality (#794). Empty for an active relationship.
     inactive_reason: str = ""
+    #: True when Power BI filters both ways across this edge (DD-238). Only a bridge's
+    #: edge to its fact-side endpoint defaults to it, so a filter on the far endpoint
+    #: can reach the fact; everything else stays single-direction.
+    bidirectional: bool = False
+    #: Why the direction is what it is, for the product report: "bridge-default" or
+    #: "authored". Empty for an ordinary single-direction edge.
+    cross_filter_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +253,11 @@ class DimensionalGoldSpec:
     #: Authored ``kairos-ext:bpaIgnoreRule`` exceptions (DD-238), each resolved to an
     #: object this product emits, with the target spelled as the emitted name.
     bpa_ignores: tuple[BpaIgnore, ...] = ()
+    #: Many-to-many bridges whose filter direction the projector could not decide -- no
+    #: endpoint, or both, is on the fact side -- and the author did not declare (DD-238).
+    #: Their edges stay single-direction, so a filter on either endpoint stops at the
+    #: bridge; reported because that is rarely what a report author expects.
+    undecided_bridge_filters: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
