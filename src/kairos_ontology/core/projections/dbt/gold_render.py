@@ -945,6 +945,35 @@ def _parameter_yaml(connection: GoldDatabricksConnectionSpec) -> str:
     )
 
 
+#: `measureDataType` -> TMDL `dataType` (DD-238). Currency is a fixed decimal and a
+#: percentage a double; the format string, not the type, is what shows the symbol.
+_MEASURE_TMDL_TYPES = {
+    "string": "string",
+    "boolean": "boolean",
+    "int64": "int64",
+    "decimal": "decimal",
+    "currency": "decimal",
+    "double": "double",
+    "percentage": "double",
+    "datetime": "dateTime",
+}
+
+
+def _measure_header(measure: GoldMeasureSpec) -> list[str]:
+    """Render `measure '<name>' = <DAX>`, fencing a multi-line expression (DD-238).
+
+    Written inline, a multi-line expression put its second line at an indent TMDL reads
+    as a property, so the model failed to parse or parsed wrongly. A ``` fence keeps the
+    body verbatim. A single-line expression stays inline, byte-identical.
+    """
+    name = measure.name.replace("'", "''")
+    expression = measure.expression.replace("\r\n", "\n").strip("\n")
+    if "\n" not in expression:
+        return [f"\tmeasure '{name}' = {expression}"]
+    body = [f"\t\t\t{line}" if line.strip() else "" for line in expression.split("\n")]
+    return [f"\tmeasure '{name}' = ```", *body, "\t\t\t```"]
+
+
 def _table_tmdl(
     table: GoldTableSpec,
     physical: GoldPhysicalTablePlan,
@@ -967,7 +996,12 @@ def _table_tmdl(
         lines.extend(
             [
                 f"\t/// {_tmdl_text(measure.definition)}",
-                f"\tmeasure '{measure.measure_id}' = {measure.expression}",
+                *_measure_header(measure),
+                *(
+                    [f"\t\tdataType: {_MEASURE_TMDL_TYPES[measure.data_type]}"]
+                    if measure.data_type in _MEASURE_TMDL_TYPES
+                    else []
+                ),
                 f"\t\tformatString: {measure.format_string}",
                 f"\t\tdisplayFolder: {measure.folder}",
                 f"\t\tlineageTag: {_guid(f'{table.name}.{measure.measure_id}')}",
@@ -1274,7 +1308,7 @@ def _dax(spec: DimensionalGoldSpec) -> str:
             [
                 f"// Lifecycle: {measure.lifecycle.value}",
                 f"// Home table: {measure.home_table}",
-                f"[{measure.measure_id}] = {measure.expression}",
+                f"[{measure.name}] = {measure.expression}",
                 f"// Format: {measure.format_string}",
                 "",
             ]
@@ -1453,6 +1487,7 @@ def gold_product_report(
         "measures": [
             {
                 "id": measure.measure_id,
+                **({"name": measure.display_name} if measure.display_name else {}),
                 "lifecycle": measure.lifecycle.value,
                 "emitted": measure.emitted,
                 "home_table": measure.home_table or None,

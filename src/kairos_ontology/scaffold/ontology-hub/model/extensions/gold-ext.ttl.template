@@ -86,12 +86,19 @@
 # capture a reviewed business definition before DAX and dependencies are ready.
 # Provisional, validated, and approved measures require both.
 #
+# Best practice by design (DD-238, docs/guide/BPA_PROFILE.md): give the measure a
+# display name report users read, qualify every column reference with its table
+# (fact_my_event[amount], not [amount]), reference other measures unqualified by
+# their display name, and prefer DIVIDE() to "/". compile --check enforces the first
+# two DAX rules; a deliberate exception is a kairos-ext:bpaIgnoreRule with its reason.
+#
 # <{DOMAIN_ONTOLOGY_URI}> kairos-ext:measure domain:TotalAmount .
 #
 # domain:TotalAmount a kairos-ext:Measure ;
 #     kairos-ext:measureId "{domain}.total-amount" ;
+#     kairos-ext:measureDisplayName "Total Amount" ;
 #     kairos-ext:measureDefinition "Sum of governed amounts in the active filter context." ;
-#     kairos-ext:measureExpression "SUM([amount])" ;
+#     kairos-ext:measureExpression "SUM(fact_my_event[amount])" ;
 #     kairos-ext:measureColumnDependency domain:amount ;
 #     kairos-ext:measureLifecycleState "approved" ;
 #     kairos-ext:measureDataType "decimal" ;

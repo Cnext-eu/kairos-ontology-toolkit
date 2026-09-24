@@ -754,7 +754,13 @@ kairos-ext:measureLifecycleState a owl:AnnotationProperty ;
 
 kairos-ext:measureDataType a owl:AnnotationProperty ;
     rdfs:label "measure data type"@en ;
-    rdfs:comment "Semantic result type required from provisional state onward."@en ;
+    rdfs:comment "Semantic result type required from provisional state onward. Emitted as the TMDL measure dataType: currency renders as decimal and percentage as double."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureDisplayName a owl:AnnotationProperty ;
+    rdfs:label "measure display name"@en ;
+    rdfs:comment "The name the semantic model gives this measure, and so the one a report user sees and DAX references (DD-238, issue #978). measureId stays the stable key: the measure's lineageTag derives from it, so Fabric treats a changed display name as an edit, not a new object. Without it the measure is named by its measureId. No control characters, square brackets, or leading/trailing whitespace; unique in the model and distinct from its home table's columns. Another measure's DAX must reference it by this name -- a reference by measureId fails (gold.dax-measure-reference-by-id)."@en ;
     rdfs:domain kairos-ext:Measure ;
     rdfs:range xsd:string .
 

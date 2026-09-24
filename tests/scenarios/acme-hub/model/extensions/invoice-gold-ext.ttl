@@ -54,8 +54,9 @@ acme-inv:InvoiceLine
 
 acme-inv:TotalInvoiceAmount a kairos-ext:Measure ;
     kairos-ext:measureId "invoice.total-amount" ;
+    kairos-ext:measureDisplayName "Total Invoice Amount" ;
     kairos-ext:measureDefinition "Sum of invoice total amounts in the active filter context." ;
-    kairos-ext:measureExpression "SUM([total_amount])" ;
+    kairos-ext:measureExpression "SUM(fact_invoice[total_amount])" ;
     kairos-ext:measureColumnDependency acme-inv:totalAmount ;
     kairos-ext:measureLifecycleState "approved" ;
     kairos-ext:measureDataType "decimal" ;
@@ -67,8 +68,9 @@ acme-inv:TotalInvoiceAmount a kairos-ext:Measure ;
 
 acme-inv:TotalLineAmount a kairos-ext:Measure ;
     kairos-ext:measureId "invoice.total-line-amount" ;
+    kairos-ext:measureDisplayName "Total Line Amount" ;
     kairos-ext:measureDefinition "Sum of invoice line amounts in the active filter context." ;
-    kairos-ext:measureExpression "SUM([line_total])" ;
+    kairos-ext:measureExpression "SUM(fact_invoice_line[line_total])" ;
     kairos-ext:measureColumnDependency acme-inv:lineTotal ;
     kairos-ext:measureLifecycleState "approved" ;
     kairos-ext:measureDataType "decimal" ;

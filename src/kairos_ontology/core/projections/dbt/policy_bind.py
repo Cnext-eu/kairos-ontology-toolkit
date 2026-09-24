@@ -172,6 +172,7 @@ def _measures(graph: Graph) -> tuple[MeasureFact, ...]:
             owner_role=_values(graph, resource, EXT.measureOwnerRole),
             tests=_values(graph, resource, EXT.measureValidationTest),
             evidence=_values(graph, resource, EXT.measureValidationEvidence),
+            display_name=_values(graph, resource, EXT.measureDisplayName),
         )
         for resource in _subjects_of_type(graph, EXT.Measure)
     )
