@@ -674,7 +674,9 @@ def _blank_report(model_name: str) -> dict[str, str]:
 
     Kairos generates the semantic model, not the visuals — this exists only so
     the project is openable, giving an author an empty canvas already bound to
-    the generated model. Deterministic page name so re-projection is a no-op.
+    the generated model. Blank on purpose (DD-236, #830): the insight brief is the
+    report deliverable, and pages belong to the BI engineer's own report item.
+    Deterministic page name so re-projection is a no-op.
     """
     page = _guid(f"{model_name}.Report/page")
     return {
