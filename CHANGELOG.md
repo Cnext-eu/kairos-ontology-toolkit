@@ -60,6 +60,149 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.22.0rc1] — 2026-09-24
+
+Release candidate for 5.22.0. It includes the 5.21.1rc1 fix (#948) plus the rest of the
+September issue review: per-source ledgers, clearer `_analysis/` file names, gates that
+passed silently or destroyed data, compile checks on Silver contract quality, and
+`validate-dbt` working offline on every adapter.
+
+**What to expect on the first run after upgrading.**
+
+| you will see | why |
+|---|---|
+| **`update` renames `_analysis/` files** (`tms-affinity.yaml` → `src-tms.affinity.yaml`, `booking-alignment.yaml` → `dom-booking.alignment.yaml`, `table-anchors.yaml` → `hub.table-anchors.yaml`, …) and **splits `table-dispositions.yaml`** into one file per source system | DD-235 and #943. `update --check` lists the changes without making them. Old names are still read for this release, so nothing breaks if you run a command first |
+| **`update` reports table-grain dispositions that no longer decide their columns** | #948. A table-grain `deferred` or `bound` stopped answering for its columns in #881, and the gate and `draft-gap-decisions` now agree about that. Decide the columns with `draft-gap-decisions --suggest`, then `--apply` |
+| **`build-glossary` refuses to empty a glossary**, and keeps hand-written concepts on rebuild | #906. `--allow-empty` overrides the refusal |
+| **`validate` fails on a hub with no ontology yet** if client evidence is staged where nothing reads it | #903. The DD-233 gate now covers that state; the gate was written for it |
+| **new warnings**: cross-domain join keys the parent does not emit (`validate`), carried passthrough outnumbering canonical fields (`compile`), `int_merged__` models calling `source()` and `stg_` models joining (`validate-dbt-contracts`) | #934, #854, #949. All warnings, so none blocks an existing hub |
+
+### Added
+- **`validate` checks every cross-domain join key against the parent's binding (#934).**
+  An `externalReference.key` must name a column the parent *emits*, not a source column
+  of the child's binding. `compile` checks this only against the parent's Silver
+  contract, and most hubs author none. So a join on a column the parent never emits
+  passed `compile --check`, emitted SQL and cleared `audit-silver-samples`, and failed in
+  the warehouse. `validate` now derives the parent's columns from its binding (a
+  `technicalFields` name, or else the mapped property's snake_case name) and warns on a
+  key that is not among them (`relationship.external-reference-key-not-emitted`). Where
+  the parent has a Silver contract, `compile` stays the authority.
+- **`compile` says when it could not check a join key.** A new info-level note,
+  `relationship.external-reference-key-unverified`, replaces the silence when no Silver
+  contract declares the parent class. It never blocks.
+- **A warning when a Silver model is mostly raw passthrough (#854).**
+  `binding.carried-outnumbers-canonical` fires, per binding, when there are more
+  `technicalFields` of `purpose: carried` than ontology-backed `fields:`. On one hub the
+  ratio was 89 to 82, with columns that looked canonical downstream and were not.
+- **`validate-dbt-contracts` enforces the dbt layering rule, as warnings (#949).**
+  - `dbt-contract.merge-model-reads-source`: an `int_merged__` model calls `source()`.
+  - `dbt-contract.staging-model-joins`: a `stg_` model joins.
+
+  The managed `transforms/dbt/README.md` and the `kairos-develop-dbt-transformation`
+  skill now state the three layers as rules, with migration steps: move each source's
+  logic into its own `int_<source>__` model and compare Silver row counts and keys
+  before and after.
+
+### Changed
+- **A handled model-parameter rejection now says it was handled (#911).** When a model
+  rejects a parameter such as `temperature`, the toolkit drops or weakens it and retries.
+  The only visible output used to be the provider's bare `Error code: 400`, repeated once
+  per parallel call, which read as four failures. Now one line per model and parameter
+  says the rejection was handled.
+- **The scaffolded `release-projections.yml` recognises every pre-release tag spelling
+  (#864).** Its pattern missed a bare `…rc` and the PEP 440 forms (`1.0.0b1`, `1.0.0a1`),
+  which were published as full releases. `update --refresh-workflows` delivers the fix.
+  The previous generation is registered as superseded, so an unmodified copy is replaced.
+- **The disposition ledger is one file per source system (#943).**
+  `table-dispositions.yaml` held every system's table and column decisions in one file,
+  799 KB on one hub. It is now `src-<system>.table-dispositions.yaml`, one per source,
+  in the same directory and with the same entry format. Commands read all of them as
+  one ledger. The old single file is still read, and the first command that records or
+  clears a decision splits it per system. No entry is lost: where both copies hold the
+  same key, the per-system one wins, because it was written after the upgrade.
+- **`_analysis/` file names now say what they are about (DD-235).** Files under
+  `integration/sources/_analysis/` put their scope in the name. Before, you could not
+  tell whether `booking-alignment.yaml` was about a source system or an ontology domain.
+
+  | before | after |
+  |---|---|
+  | `tms-affinity.yaml` | `src-tms.affinity.yaml` |
+  | `booking-alignment.yaml` | `dom-booking.alignment.yaml` |
+  | `booking-unresolved-anchors.yaml` | `dom-booking.unresolved-anchors.yaml` |
+  | `table-anchors.yaml` | `hub.table-anchors.yaml` |
+  | `gap-decisions.yaml` | `hub.gap-decisions.yaml` |
+  | `affinity-matrix.yaml` | `hub.affinity-matrix.yaml` |
+
+  Commands write the new names and still read the old ones for this minor release; where
+  both exist, the new one wins.
+
+### Fixed
+- **`validate-dbt` passes offline on dbt-fabric 1.10.1 (#825).** The offline profile used
+  service-principal authentication. dbt-fabric turns that into an `Authority Id`
+  connection keyword, which the mssql-python driver in dbt-fabric 1.10.1+ rejects before
+  connecting ("Unknown keyword 'authority id'"). So the gate could not pass on any
+  current dbt-fabric, and hubs were pinned to exactly `dbt-fabric==1.10.0`. The profile
+  now supplies an access token instead. Verified against dbt-fabric 1.10.0 and 1.10.1:
+  both parse, then fail only at the connection attempt, which reads as
+  `environment-blocked`, as the offline gate intends. The pin is now
+  `dbt-fabric>=1.10.0,<1.11`; 1.11 needs dbt-core 1.11, which is outside the supported
+  range.
+- **`validate-dbt` no longer spends 120 s failing on databricks (#922).** dbt-databricks
+  connects during `compile`, and its SQL connector retried name resolution 30 times, so
+  the phase never finished and was reported as a timeout. The offline profile now makes
+  one connection attempt with short timeouts, so compile reaches `environment-blocked`
+  in seconds. The host is now a bare hostname: dbt-databricks adds `https://` itself, and
+  the old value made its log blame a host named `https`.
+- **`build-glossary` no longer destroys a hand-authored glossary (#906).** It used to
+  overwrite the target file with whatever the extractions produced. With no extractions
+  yet, that was an empty glossary, reported with a green check. With extractions, it
+  replaced the file instead of merging: on one hub, 37 of 52 hand-written terms were
+  lost. Now:
+  - It refuses to write when the build yields no concepts and the file already holds
+    some. `--allow-empty` overrides this; it is a registered gate escape, for humans only.
+  - A concept a person wrote is carried over and marked (`dcterms:provenance`), so every
+    later rebuild keeps it too.
+  - Where a hand-written concept and a generated one share an IRI, the hand-written one
+    wins.
+  - The command reports how many hand-written concepts it kept.
+- **`validate` reports staged business evidence on a hub with no domain ontology yet
+  (#903).** The DD-233 check sat inside the ontology-validation block, so it said nothing
+  in the one state it was written for: sources imported, nothing modelled yet. It now
+  always runs.
+- **The engineering pack's cross-check note no longer runs into the next heading
+  (#905).**
+- **The glossary gate declares the evidence it actually reads.** It listed
+  `businessdiscovery/glossary/*.ttl`; the check reads `businessdiscovery/*.ttl`.
+
+### Performance
+- **Recording many decisions went from minutes to under a second (#943).**
+  `draft-gap-decisions --apply` / `--auto` / `--accept-proposals` and
+  `source-disposition set --all-tables` used to re-read and re-write the entire ledger
+  once per column. 1,113 decisions took about 12 minutes, with no output, so the run
+  looked like a hang. They now write each source system's file once per batch, and print
+  one line per system as it is written. On a 1,127-entry ledger, 1,113 decisions take
+  0.24 s.
+- The ledger is parsed and written with PyYAML's C loader and dumper when available,
+  about 5× faster for the same result. Output is byte-identical, which a test checks.
+  This speeds up every `validate`, `compile` and `generate-bindings`, since each one
+  reads the ledger.
+- Writes are atomic (a temp file, then a replace), so an interrupted run cannot leave a
+  half-written ledger. A ledger file that cannot be parsed is now refused instead of
+  silently replaced.
+
+### Notes
+- Hubs scaffolded before this release pin `dbt-fabric==1.10.0` in their `pyproject.toml`.
+  That keeps working, and they can widen it to `>=1.10.0,<1.11`.
+- `update` splits an existing `table-dispositions.yaml` per source system, and
+  `update --check` reports the split without doing it. An entry with no `system` cannot
+  be placed, so it stays in the old file, which then holds only such entries.
+- **`update` renames existing files.** It uses `git mv`, so history follows the file.
+  `update --check` lists the renames without making them. If a file exists under both
+  names, `update` reports the pair and leaves both alone. Delete the old one once you have
+  checked it.
+- Scripts or CI that reference the old file names need updating. The skills and the CLI
+  reference already use the new names.
+
 ## [5.21.1rc1] — 2026-09-24
 
 Release candidate for a 5.21.1 patch. It unblocks hubs upgraded past #881, where `compile` blocked on
