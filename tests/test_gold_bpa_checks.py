@@ -304,3 +304,14 @@ def test_every_enforcing_code_exists_in_the_toolkit():
             code = item.disposition(target).enforced_by
             if code:
                 assert f'"{code}"' in source, (item.rule_id, code)
+
+
+def test_a_perspective_lists_its_tables_members():
+    """TE's BPA read a bare `perspectiveTable` as a perspective with no objects."""
+    perspectives = next(
+        content
+        for path, content in harness._generate("invoice").items()
+        if path.endswith("/perspectives/perspectives.tmdl")
+    )
+    assert "\tperspectiveTable fact_invoice\n\t\tperspectiveColumn " in perspectives
+    assert "\t\tperspectiveMeasure 'Total Invoice Amount'" in perspectives

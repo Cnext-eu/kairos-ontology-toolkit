@@ -26,3 +26,7 @@
   `measure.incomplete-semantic-contract` with its rule, located at the domain's Gold
   extension.
 - Descriptions drop control characters before they reach the TMDL.
+- **Perspectives are no longer empty.** A perspective was emitted as bare `perspectiveTable`
+  lines with no members, which Tabular Editor's Best Practice Analyzer, run against the acme
+  model, reported as a perspective with no objects. Each perspective now lists every column and
+  emitted measure of the tables it declares, as Desktop writes them.

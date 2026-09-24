@@ -1227,6 +1227,19 @@ def _security_tmdl(spec: DimensionalGoldSpec) -> str:
 
 
 def _perspectives_tmdl(spec: DimensionalGoldSpec) -> str:
+    """Render each perspective with its tables' columns and measures as members.
+
+    A bare `perspectiveTable` carries no member, and Tabular Editor's Best Practice
+    Analyzer -- run against the acme model for DD-238 -- reported the perspective as
+    having no objects at all (PERSPECTIVES_WITH_NO_OBJECTS). Desktop writes perspectives
+    the same explicit way, so a perspective now lists every column and emitted measure of
+    each table it declares.
+    """
+    columns = {table.name: [column.name for column in table.columns] for table in spec.tables}
+    measures: dict[str, list[str]] = {}
+    for measure in spec.measures:
+        if measure.emitted:
+            measures.setdefault(measure.home_table, []).append(measure.name)
     lines: list[str] = []
     for name, tables in spec.perspectives:
         lines.extend(
@@ -1237,7 +1250,13 @@ def _perspectives_tmdl(spec: DimensionalGoldSpec) -> str:
             ]
         )
         for table in tables:
-            lines.extend([f"\tperspectiveTable {table}", ""])
+            lines.append(f"\tperspectiveTable {table}")
+            lines.extend(f"\t\tperspectiveColumn {column}" for column in columns.get(table, ()))
+            lines.extend(
+                "\t\tperspectiveMeasure '{}'".format(measure.replace("'", "''"))
+                for measure in measures.get(table, ())
+            )
+            lines.append("")
     return "\n".join(lines)
 
 
