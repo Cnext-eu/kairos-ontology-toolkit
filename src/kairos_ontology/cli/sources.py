@@ -4498,6 +4498,14 @@ def draft_gap_decisions_cmd(
             f"across {s['column_names']} distinct names"
         )
         click.echo(f"   {s['with_a_proposal']} loose name(s) carry a proposed disposition")
+        if s.get("with_bi_demand"):
+            # #942: the one piece of evidence that most reliably separates "a report is
+            # built on this" from "a timestamp on a table".
+            click.echo(
+                f"   📊 {s['with_bi_demand']} name(s) are used by an imported Power BI model "
+                "(see 'bi_demand' on each entry); never drafted as deferred or "
+                "not-business-data, and left for a human by --accept-proposals"
+            )
         if s["auto_disposition_conflicts"]:
             click.echo(
                 f"   ⚠ {s['auto_disposition_conflicts']} auto-disposition conflict(s) "

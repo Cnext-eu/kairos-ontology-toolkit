@@ -62,6 +62,7 @@ from .ai_provider import (
     resolve_reasoning_effort,
 )
 from .anchor_tables import load_excluded_tables
+from .bi_demand import load_bi_demand
 from .source_disposition import (
     DISPOSITIONS,
     DispositionInput,
@@ -144,6 +145,9 @@ class GapProposal:
     #: (``name``/``range``/``on_class``/``why``). More than one means the aligner read
     #: the same name differently in different tables -- shown, never averaged (#880).
     suggested_properties: list[dict[str, str]] = field(default_factory=list)
+    #: Where an imported Power BI model uses this column name (#942). Evidence for the
+    #: reviewer: a column a report is built on is not one to defer on a hunch.
+    bi_demand: list[str] = field(default_factory=list)
 
     def to_entry(self) -> dict[str, Any]:
         return {
@@ -158,10 +162,49 @@ class GapProposal:
             "data_types": self.data_types,
             **({"suggested_properties": self.suggested_properties}
                if self.suggested_properties else {}),
+            **({"bi_demand": self.bi_demand} if self.bi_demand else {}),
         }
 
 
-def propose_for_group(group: GapGroup, domain: str = "") -> GapProposal:
+#: Dispositions a rule may not draft for a column a BI model uses (#942): both take the
+#: column out of Silver, one for now and one for good, on no evidence about its use.
+_WITHDRAWN_UNDER_BI_DEMAND = frozenset({"deferred", "not-business-data"})
+
+
+def propose_for_group(
+    group: GapGroup, domain: str = "", bi_demand: list[str] | None = None
+) -> GapProposal:
+    """Draft a proposal, with the BI evidence on it when a report uses the column (#942).
+
+    A name rule that would draft ``deferred`` or ``not-business-data`` is withdrawn when
+    an imported Power BI model references the column: on one hub a sailing date the
+    headline report is grained on was deferred like any other timestamp, and the report
+    became unbuildable with no diagnostic anywhere. The rule's reading stays in the
+    reasoning, so the reviewer sees both.
+    """
+    proposal = _rule_proposal(group, domain)
+    if not bi_demand:
+        return proposal
+    proposal.bi_demand = list(bi_demand)
+    note = (
+        "A Power BI model depends on this column ("
+        + "; ".join(bi_demand)
+        + "). Bind it, or register it as an extension, unless you know the report no "
+        "longer needs it."
+    )
+    if proposal.proposed_disposition in _WITHDRAWN_UNDER_BI_DEMAND:
+        proposal.reasoning = (
+            f"{note} The name rule would have drafted '{proposal.proposed_disposition}': "
+            f"{proposal.reasoning}"
+        )
+        proposal.proposed_disposition = ""
+        proposal.confidence = "low"
+    else:
+        proposal.reasoning = f"{note} {proposal.reasoning}"
+    return proposal
+
+
+def _rule_proposal(group: GapGroup, domain: str = "") -> GapProposal:
     """Draft a disposition proposal for one column name, with its reasoning.
 
     The proposal is a starting point that states *why*, so a reviewer can agree or
@@ -329,6 +372,11 @@ def group_into_families(
                 "source_columns": sum(m.occurrences for m in coherent),
                 "members": sorted(m.column for m in coherent),
                 "data_types": sorted({t for m in coherent for t in m.data_types}),
+                **(
+                    {"bi_demand_members": sorted(m.column for m in coherent if m.bi_demand)}
+                    if any(m.bi_demand for m in coherent)
+                    else {}
+                ),
             }
         )
     families.sort(key=lambda f: (-f["source_columns"], f["domain"], f["family"]))
@@ -651,6 +699,7 @@ def find_disposition_conflicts(
         excluded_tables = load_excluded_tables(analysis)
     mapped, anchors = load_alignment_facts(analysis)
     recorded = load_dispositions(hub_root)
+    demand = load_bi_demand(hub_root)
 
     conflicts: dict[tuple[str, str, str], DispositionConflict] = {}
     suppressed: set[tuple[str, str, str]] = set()
@@ -663,6 +712,11 @@ def find_disposition_conflicts(
                 suppressed.add((column.system, column.table, column.column))
                 continue
             why, evidence = _auto_disposition_conflict(column, mapped=mapped, anchors=anchors)
+            if not why and demand.references_for(column.column):
+                # A column a Power BI model uses is not silenced by a name rule (#942).
+                refs = demand.describe(column.column)
+                why = "a Power BI model depends on it: " + "; ".join(refs)
+                evidence = tuple(f"bi-demand:{ref}" for ref in refs)
             if not why:
                 continue
             key = (column.system, column.table, column.column)
@@ -806,8 +860,9 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             key = (occurrence.domain, g.column)
             per_domain.setdefault(key, GapGroup(column=g.column)).occurrences.append(occurrence)
 
+    demand = load_bi_demand(Path(hub_root))
     proposals = [
-        propose_for_group(group, domain)
+        propose_for_group(group, domain, demand.describe(group.column) or None)
         for (domain, _name), group in sorted(
             per_domain.items(), key=lambda kv: (-kv[1].count, kv[0][0], kv[0][1])
         )
@@ -826,6 +881,9 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             "families": len(families),
             "loose_names": len(loose),
             "with_a_proposal": sum(1 for p in loose if p.proposed_disposition),
+            # Names an imported Power BI model uses (#942): held out of
+            # --accept-proposals, and never drafted as deferred or not-business-data.
+            "with_bi_demand": sum(1 for p in proposals if p.bi_demand),
             "auto_disposition_conflicts": len(conflicts),
             "conflicts_already_recorded": sum(1 for c in conflicts if c.recorded_disposition),
             "schema_catalogue_tables_excluded": len(excluded_tables),
@@ -934,6 +992,14 @@ def suggest_loose_dispositions(
                 f"types: {', '.join(entry.get('data_types') or []) or 'unknown'}"
                 + (f"; aligner drafted property: {', '.join(drafted)}" if drafted else "")
                 + (f"; domain anchors: {', '.join(anchor_names)}" if anchor_names else "")
+                # #942: a report depends on it, so deferring or discarding it is the
+                # one answer the evidence already rules out.
+                + (
+                    f"; USED BY A POWER BI MODEL ({'; '.join(entry['bi_demand'][:2])}), "
+                    "so do not propose deferred or not-business-data"
+                    if entry.get("bi_demand")
+                    else ""
+                )
             )
 
         prompt = f"""These are single source column names with no reference-model property and no
@@ -1106,6 +1172,12 @@ def suggest_family_dispositions(
             f"{family['distinct_names']} names / {family['source_columns']} columns; "
             f"members: {', '.join(family['members'][:14])}"
             + (f"; anchors: {', '.join(anchor_names)}" if anchor_names else "")
+            + (
+                f"; members a Power BI model uses: {', '.join(family['bi_demand_members'][:6])}"
+                " (so not deferred or not-business-data)"
+                if family.get("bi_demand_members")
+                else ""
+            )
         )
 
     glossary_block = _glossary_prompt_block(hub_root, subject="family")
@@ -1215,11 +1287,16 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
     (``not-business-data``) nor asserts a reference-model defect to file upstream
     (``blueprint-gap``), and it leaves the column visible for a later pass.
 
-    A decision a human already typed is never overwritten.
+    A decision a human already typed is never overwritten, and an entry a Power BI
+    model depends on is left for one (#942): accepting blanket answers is exactly how a
+    report's grain column was deferred. Those are counted as ``held-for-bi-demand``.
     """
     counts: dict[str, int] = {}
     for entry in list(sheet.get("families") or []) + list(sheet.get("decisions") or []):
         if str(entry.get("decision") or "").strip():
+            continue
+        if entry.get("bi_demand") or entry.get("bi_demand_members"):
+            counts["held-for-bi-demand"] = counts.get("held-for-bi-demand", 0) + 1
             continue
         decision = str(entry.get("proposed_disposition") or "").strip() or fallback
         entry["decision"] = decision
