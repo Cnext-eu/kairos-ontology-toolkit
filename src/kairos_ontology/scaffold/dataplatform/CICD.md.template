@@ -133,7 +133,9 @@ Set these up once per target before the first deploy (DD-239):
 - **One GitHub Environment per target** (`DEV`, `UAT`, `PROD`, matching the environment keys
   in the hub's `parameter.yml`; keys are case-sensitive). Each holds `FABRIC_WORKSPACE_ID`,
   `FABRIC_ITEM_ID` (the Warehouse dbt writes Gold into) and the Azure IDs `AZURE_CLIENT_ID`
-  and `AZURE_TENANT_ID`. Add required reviewers on UAT and PROD to gate promotion.
+  and `AZURE_TENANT_ID`. The two Fabric IDs may be Environment variables or secrets; every
+  step reads the variable first and falls back to the secret. The Azure IDs are secrets. Add
+  required reviewers on UAT and PROD to gate promotion.
 - **An Entra ID app (service principal) with a federated credential per Environment.** The
   subject is `repo:<org>/<repo>:environment:<ENV>`. *Upgrading from a workflow without
   Environments:* the subject used to be `repo:<org>/<repo>:ref:refs/heads/<branch>`, so
@@ -249,9 +251,14 @@ referential-integrity violations, and Direct Lake guardrails and fallback.
   `bpaIgnoreRule`, are expected. Anything left to review is a hub change: a measure, a
   `goldHideColumn`, or a `bpaIgnoreRule` with its reason. Never fix it in the deployed model,
   because the next release overwrites it (DD-224).
+- **Every model in the release.** Each semantic model in the archive gets its own run, with
+  its own storage mode. One model's failure does not skip the others.
+- **Needs a framed model.** A Direct Lake model reads no data until it is refreshed, so with
+  `refresh_after_publish` set to false the cardinality and VertiPaq rules have nothing to
+  report. The step says so in a notice and still runs.
 - **Keeping findings.** Set the `FABRIC_BPA_LAKEHOUSE_ID` and `FABRIC_BPA_LAKEHOUSE_NAME`
-  repository variables, and findings are appended to that lakehouse's `kairos_bpa_findings`
-  table. Without them they are only shown in the notebook run.
+  Environment (or repository) variables, and findings are appended to that lakehouse's
+  `kairos_bpa_findings` table. Without them they are only shown in the notebook run.
 
 The two targets differ:
 
