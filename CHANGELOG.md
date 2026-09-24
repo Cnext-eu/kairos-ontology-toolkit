@@ -5,40 +5,35 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.21.0** is the latest GA release (2026-09-22), superseding
-> **5.20.0** (2026-09-20). 5.20.0 fixed what the pipeline's stages *decide*; this release
-> fixes what `propose-relationships` *proposes*. Every relationship finding in it was
-> measured on a real hub, and the command's output changes substantially as a result.
+> **Release status.** **5.22.0** is the latest GA release (2026-09-24), superseding
+> **5.21.0** (2026-09-22). It makes the Gold semantic model best practice by design: a
+> Kairos-owned Power BI Best Practice Analyzer profile (DD-238), and a best-practice
+> catalogue whose model-shape checks prefer a Kimball star (DD-240). It also puts Fabric
+> deploys on GitHub Environments with a model that must frame before the deploy counts
+> (DD-239), and reads TMDL with the TOM SDK (DD-237). Everything under the `5.22.0rc*`
+> headings below is part of this release.
 >
-> **What to expect on the first run after upgrading from 5.20.0.**
+> **What to expect on the first run after upgrading from 5.21.0.**
 >
 > | you will see | why |
 > |---|---|
-> | **`generate-bindings` deletes a binding**, naming it as retracted | A table you ruled out in the ledger was skipped on regeneration, but the binding written *before* the ruling stayed on disk — and `compile` globs the directory, so the table still reached Silver with no warning. Retraction is automatic on any run; `--dry-run` reports it first, and an explicit `--table` still regenerates one dispositioned table deliberately |
-> | **`validate` newly fails** with `disposition.bound-and-ruled-out` | The same contradiction, whatever wrote the file. This is an **error**, so a hub carrying a binding for a ruled-out table stops. Delete the binding if the ruling stands, or clear the ledger row if the table is genuinely in scope |
-> | **`validate` stops reporting `disposition.undecided-source-table`** for tables bound through `source.dbtModel` | The audit read only `source.relation`, so a DD-133 §3d binding contributed nothing to the bound set. If you silenced this with a ledger row, remove it — both available workarounds were ones the ledger's own documentation argues against |
-> | **fewer relationship proposals, with different join columns** | See below. Re-run `propose-relationships`; do not paste from a 5.20.0 run |
+> | **`update` renames `_analysis/` files** and splits `table-dispositions.yaml` into one file per source system | DD-235, #943. `update --check` lists the changes first; the old names are still read this release |
+> | **`compile --check` fails with `gold.dax-column-unqualified`** | A measure references a column without its table, e.g. `SUM([total_amount])`. Write `SUM(fact_invoice[total_amount])`, or record a `kairos-ext:practiceException` with its reason |
+> | **`compile --check` reports Gold product findings** — `gold.ambiguous-path`, `gold.fact-to-fact`, `gold.star-schema`, `gold.fact-without-date` and others | DD-240. They never block. Read `docs/toolkit/practices/semantic-model.md`; fix each one or excuse it. `--all` checks every product |
+> | **`emit-gold` writes `<product>-bus-matrix.md`**, and the re-emitted model has a re-keyed `dim_date` and bidirectional bridge edges | DD-240, DD-238. Numbers through a many-to-many bridge change from wrong to right: republish the model |
+> | **`import-tmdl` fails without the .NET 8 SDK** | DD-237. It reads models with the Microsoft TOM SDK and has no fallback |
+> | **`validate --ddd` warns about aggregates and cross-context properties** | DD-240. Warnings only; never Silver |
 >
-> **Re-run `propose-relationships` before accepting anything from 5.20.0.** Three of its
-> defects produced proposals that looked derived and were not. Competing proposals are now
-> collapsed: a reference model declaring a generic "has party" alongside consignor,
-> consignee, carrier and notify party matched the same join five times, and accepting them
-> as printed asserted five mutually exclusive roles on one foreign key (nine proposals on
-> one hub were three distinct joins). `join.foreign` now names the column the parent
-> actually emits, cross-domain, and the parent's *source* column, same-domain — 5.20.0 got
-> the first right and thereby broke the second, and a same-domain proposal pasted from it
-> fails `safety.column-unresolved`. Where the command cannot derive an answer it now says
-> so with `<CONFIRM_PROPERTY>` or `<CONFIRM_JOIN_COLUMN>` rather than rendering a
-> plausible guess, and a proposal whose target class the child domain cannot import is
-> flagged instead of failing `compile` on paste.
+> **Dataplatforms.** Run `kairos-ontology update --refresh-workflows`. The Power BI deploy job
+> now runs in a GitHub Environment, so the Azure federated credential subject becomes
+> `repo:<org>/<repo>:environment:<ENV>`: add one per Environment before the first deploy, or
+> `azure/login` fails. The deploy also refreshes every Direct Lake model and fails when one
+> cannot read its tables. `FABRIC_WORKSPACE_ID` and `FABRIC_ITEM_ID` may be Environment
+> variables or secrets.
 >
-> **`compile <domain>` is roughly 2.5x faster**, and `compile --all` multiplies the saving
-> by the domain count. One domain's plan build read 36 Turtle files 13,464 times; the
-> prefix parse is now cached on file identity.
->
-> **A same-domain relationship may now join on a composite key**, which the cross-domain
-> shape always could. A hub whose parent entity has a multi-column natural key could not
-> relate to it at all before this.
+> **Upgrading from 5.20.0 or earlier?** Read 5.21.0's notes as well: re-run
+> `propose-relationships` rather than pasting from a 5.20.0 run, and expect
+> `disposition.bound-and-ruled-out` from `validate` for a binding of a ruled-out table.
 >
 > **Upgrading from 5.19.0 or earlier?** 5.20.0's first-run notes still apply on top of the
 > above: re-anchoring drops operational columns from `grain_columns` (a **Silver grain
@@ -59,6 +54,137 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `--without-anchors` is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.22.0] — 2026-09-24
+
+General availability of the 5.22 line. Everything under `5.22.0rc1` to `rc5` below is part
+of this release. The entries in this section are what landed after rc5:
+- the Fabric deploy fixes (DD-239);
+- the best-practice catalogue with its Kimball model-shape and DDD checks (DD-240);
+- the advisory BPA step running on every model.
+
+### Added
+- **A deploy is green only when the model can read its data.** After publishing, every Direct
+  Lake model is refreshed (framed), and the deploy fails when one cannot read its tables: a
+  wrong item ID, a missing `gold_*` table, or a missing Warehouse permission. Before this, all
+  three surfaced only when a report user opened the report. DirectQuery models are skipped.
+  The new `refresh_after_publish` input turns the check off, for diagnosing credentials only.
+- `CICD.md` documents the Fabric deploy prerequisites: Environments, federated credentials,
+  the "Service principals can use Fabric APIs" tenant setting, the workspace role, capacity,
+  Warehouse read access for viewers under SSO, and how the RLS placeholder roles behave.
+- **A best-practice catalogue for Gold and DDD (DD-240).** Every modelling rule the toolkit
+  knows is listed in one place, with why it matters, how it is enforced, which stage checks it,
+  and whether a hub may excuse it. Hubs receive the generated pages as
+  `docs/toolkit/practices/semantic-model.md` and `docs/toolkit/practices/ddd.md` on the next
+  `kairos-ontology update`. The Power BI BPA rules are summarised there too;
+  `docs/toolkit/BPA_PROFILE.md` keeps their per-target detail.
+- **`compile --check` reports the shape of each Gold product.** After the domains compile,
+  every product whose domains all compiled in the same run is checked, and these are
+  reported, never blocking:
+  - `gold.ambiguous-path`: a relationship the projector deactivated and no measure activates
+    with `USERELATIONSHIP`, and the active route it lost to. Before this, such edges were
+    listed only in the product report, so a model could show the grand total on every row
+    without any warning.
+  - `gold.fact-to-fact`: a fact that references another fact.
+  - `gold.snowflake-chain`: a dimension chain that the same fact also reaches directly.
+  - `gold.fact-without-date` and `gold.snapshot-shape`: a fact with no calendar role, a
+    periodic snapshot with no calendar, an accumulating snapshot with one date role.
+  - `gold.duplicate-dimension`: two dimensions built from the same class or Silver model.
+  - `gold.unconnected-table`: a fact with no relationships, or a dimension that reaches no
+    fact.
+  - `gold.bridge-weight-unused`: a bridge weight no measure reads.
+
+  These are reported as info (Kimball design advice): `gold.star-schema` (every
+  dimension-to-dimension edge), `gold.role-playing-dimension`, `gold.semi-additive-sum`,
+  `gold.measure-on-dimension`, `gold.bridge-unweighted`, `gold.product-spans-processes`,
+  `gold.table-name-role`.
+
+  Use `--all`, or name every domain of a product, to check it. `emit-gold` prints the same
+  findings.
+- **`emit-gold` writes a bus matrix.** `<product>/<product>-bus-matrix.md` shows which facts
+  share which dimensions, the roles of each, and which dimensions are conformed across
+  facts.
+- **`validate --ddd` checks the design against three DDD practices:** an aggregate member
+  with more than one root, or a root not tagged `AggregateRoot`; an object property that
+  crosses two bounded contexts the context map does not connect; and a reference into another
+  aggregate that bypasses its root. They are warnings, are listed in
+  `contexts/design-notes.md`, and never change Silver.
+- **One way to record an exception.** Use `kairos-ext:practiceException` in the Gold
+  extension, or `kairos-ddd:practiceException` in a DDD overlay, with the same
+  `"<rule> on <object> <target>: <reason>"` form. The reason is mandatory, and an exception
+  that excuses nothing fails. `kairos-ext:bpaIgnoreRule` keeps working.
+
+### Changed
+- **`item_id` replaces `lakehouse_id`** in `gold.direct_lake_connection` and in the
+  dataplatform's `gold-connections.yml`. dbt writes Gold into a Fabric **Warehouse**, and that
+  Warehouse is the item Direct Lake reads through OneLake. The old name sent authors looking for
+  a lakehouse that does not hold the tables. `lakehouse_id` still works, with a deprecation
+  warning. Setting both is rejected. Emitted artifacts are unchanged.
+- fabric-cicd is pinned (1.3.0) instead of installed unpinned, and bumped only with a toolkit
+  release. `azure/login` allows a service principal with no Azure subscription.
+- The `kairos-design-gold` and `kairos-design-architecture` skills point at the catalogue
+  instead of restating its rules. The Gold skill now asks you to review
+  `deactivated_relationships` after `emit-gold`.
+- **The BPA profile is version 2 (DD-240 amends DD-238 and DD-226).** Three rules change:
+  - `SNOWFLAKE_SCHEMA_ARCHITECTURE` is now checked by `gold.star-schema`: the toolkit
+    prefers a Kimball star.
+  - `INACTIVE_RELATIONSHIPS_THAT_ARE_NEVER_ACTIVATED` is now checked by
+    `gold.ambiguous-path`.
+  - `ENSURE_TABLES_HAVE_RELATIONSHIPS` is now checked at compile time by
+    `gold.unconnected-table`.
+
+  The Gold provenance sidecar records the new profile version.
+- `validate --ddd` now prints the `ddd.tactical-in-strategic-file` code with its finding.
+- The DDD vocabulary is now version 1.2.0: it adds `kairos-ddd:practiceException`.
+
+### Changed (BREAKING for deploys that relied on the silent fallback)
+- **`apply-gold-connection` fails closed** when the archive carries no `parameter.yml`, or
+  when the target environment is declared neither by the hub nor by `gold-connections.yml`.
+  Environment keys are case-sensitive. A `DEV`/`dev` mismatch used to deploy the default
+  workspace without a word. A release packaged by an older toolkit has no `parameter.yml`:
+  re-release the hub. Existing dataplatforms receive the fixed workflow and example with
+  `kairos-ontology update --refresh-workflows`; update `gold-connections.yml` to the
+  `${FABRIC_WORKSPACE_ID}` / `${FABRIC_ITEM_ID}` form.
+
+### Changed (BREAKING for existing dataplatform Azure logins)
+- **The Power BI deploy job runs in a GitHub Environment (DD-239).** Its `target_environment`
+  input names the GitHub Environment, so each target has its own `FABRIC_WORKSPACE_ID`,
+  `FABRIC_ITEM_ID`, Azure IDs and required reviewers. Before this, DEV, UAT and PROD shared one
+  workspace secret and had no approvals. **Upgrade step:** the Azure federated credential
+  subject changes to `repo:<org>/<repo>:environment:<ENV>`. Add one per Environment before the
+  first deploy, or `azure/login` fails. Repository-level secrets still resolve inside an
+  Environment. Receive the workflow with `kairos-ontology update --refresh-workflows`.
+
+### Removed
+- `.github/fabric/deployment-settings.json.example` is no longer scaffolded: nothing read it.
+  Existing copies are harmless.
+
+### Fixed
+- **`FABRIC_WORKSPACE_ID` can be an Environment variable, not only a secret.** The Direct Lake
+  override step read the variable first and fell back to the secret, but publish, refresh and
+  the advisory BPA run read only the secret. A workspace ID stored as an Environment variable
+  passed the override and then published nowhere. Every step now reads it the same way.
+  Receive the workflow with `kairos-ontology update --refresh-workflows`.
+- **The advisory BPA run analyses every semantic model in the release.** It used to analyse
+  the first one only, and took the storage mode from any TMDL file in the whole package, so a
+  mixed release could run the Direct Lake checks against a DirectQuery model. Each model now
+  gets its own run in its own mode, and one model's failure does not skip the rest.
+- A Direct Lake model published with `refresh_after_publish: false` has read no data, so its
+  cardinality and VertiPaq rules find nothing. The BPA step now says so in a notice.
+- The refresh step reports a published model that is missing from the workspace as an error
+  naming the model, instead of failing with a Python traceback.
+- **Promoting a Power BI release to another environment now actually repoints it.** The
+  release archive left out `parameter.yml`, the file fabric-cicd uses to rewrite the model's
+  OneLake URL (or Databricks warehouse) per environment. `apply-gold-connection` then reported
+  "nothing to parameterise" and exited 0, and **every environment silently deployed the
+  hub's default workspace and item**. The hub-wide `parameter.yml` now ships at the archive
+  root, which is where fabric-cicd reads it. Products that render different
+  parameterisations fail the packaging instead of shipping one of them. (#993)
+- **`${VAR}` values in `.github/fabric/gold-connections.yml` resolve.** The deploy step passed
+  only the target environment name, so the documented `${FABRIC_PROD_WORKSPACE_ID}` form
+  always failed with "unset or empty". The step now passes `FABRIC_WORKSPACE_ID` and
+  `FABRIC_ITEM_ID` (a repository variable, or secret, of that name). Only the *target*
+  environment is resolved, so a DEV deploy no longer fails on PROD's unset variables.
 
 ## [5.22.0rc5] — 2026-09-24
 
