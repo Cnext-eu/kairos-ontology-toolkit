@@ -268,6 +268,12 @@ kairos-ext:goldPrimaryRelationship a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
+kairos-ext:bpaIgnoreRule a owl:AnnotationProperty ;
+    rdfs:label "BPA ignore rule"@en ;
+    rdfs:comment "Record that one Power BI Best Practice Analyzer rule does not hold for one object of this Gold product, as \"<RULE_ID> on <model|table|column|measure|relationship> [<target>]: <reason>\" (DD-238, issue #976). Targets are a table name, \"table.column\", a measureId, or \"Table.column -> Table.column\"; 'model' takes none. The reason is mandatory: an exception is a registered claim that someone looked and decided (DD-234), not a suppression list. Emitted on that object as the BestPracticeAnalyzer_IgnoreRules annotation, which Tabular Editor and Semantic Link Labs honour, and listed in the product report. A blocking compile check honours it for the object it names. Repeatable; set on the owl:Ontology resource. Fail-closed: an unknown rule ID, a rule that cannot apply to that kind of object, or a target the product does not emit is rejected. The rule IDs and their dispositions are listed in docs/guide/BPA_PROFILE.md."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
 kairos-ext:goldIncludeImports a owl:AnnotationProperty ;
     rdfs:label "gold include imports"@en ;
     rdfs:comment "Bulk-claim all first-level imported classes for gold projection (DD-021). Set on the owl:Ontology resource. Peer hub domain imports are excluded."@en ;

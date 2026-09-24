@@ -117,6 +117,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     from ..cli.compile import _hub_domains
     from ..core.compiler.emit import emit_artifacts
     from ..core.compiler.provenance import provenance_artifact
+    from ..core.projections.dbt.bpa_profile import profile_stamp
     from ..core.insights import InsightsError
     from ..core.projections.dbt.gold_connection import resolve_gold_product
     from ..core.projections.dbt.gold_specs import GoldContractError
@@ -173,8 +174,12 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     # own sidecar rather than relying on the Silver one; `lane` keeps the two paths apart
     # when both land under the same `metadata/` prefix. One per participating domain: the
     # sidecar records a build scope, and a product has one scope per domain it compiled.
+    # The stamp says which BPA profile judged this model (DD-238), so a model reviewed
+    # against a later snapshot can tell the two apart.
     for plan in plans:
-        provenance_path, provenance_content = provenance_artifact(plan.scope, lane="gold")
+        provenance_path, provenance_content = provenance_artifact(
+            plan.scope, lane="gold", extra={"bpaProfile": profile_stamp()}
+        )
         artifacts[provenance_path] = provenance_content
 
     # Always on, unlike the TMDL gate: this is pure Python against vendored schemas,

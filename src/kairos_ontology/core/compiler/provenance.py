@@ -45,7 +45,7 @@ def provenance_artifact_path(domain: str, *, lane: str = "") -> str:
     return f"metadata/{domain}{suffix}.provenance.json"
 
 
-def build_provenance_document(scope: BuildScope) -> str:
+def build_provenance_document(scope: BuildScope, *, extra: dict | None = None) -> str:
     """Render the provenance sidecar for one build scope.
 
     Inputs are ordered by ``(name, content)`` -- the same total order
@@ -54,6 +54,9 @@ def build_provenance_document(scope: BuildScope) -> str:
     varies with ``PYTHONHASHSEED``. Keeping the two orders identical means the sidecar
     can be read as an itemisation of the hash rather than a second, differently-ordered
     view of it.
+
+    *extra* adds lane-specific keys -- the Gold lane records which BPA profile judged
+    the model (DD-238). Additive only: an existing key is never overridden.
     """
     document = {
         "schema": PROVENANCE_SCHEMA,
@@ -71,9 +74,16 @@ def build_provenance_document(scope: BuildScope) -> str:
             for item in sorted(scope.inputs, key=lambda i: (i.name, i.content))
         ],
     }
+    for key, value in (extra or {}).items():
+        document.setdefault(key, value)
     return json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
-def provenance_artifact(scope: BuildScope, *, lane: str = "") -> tuple[str, str]:
+def provenance_artifact(
+    scope: BuildScope, *, lane: str = "", extra: dict | None = None
+) -> tuple[str, str]:
     """Return the ``(path, content)`` pair to merge into a rendered artifact mapping."""
-    return provenance_artifact_path(scope.domain, lane=lane), build_provenance_document(scope)
+    return (
+        provenance_artifact_path(scope.domain, lane=lane),
+        build_provenance_document(scope, extra=extra),
+    )

@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+from .bpa_profile import BpaIgnore, BpaIgnoreError, parse_bpa_ignore
 from .calendar_columns import CALENDAR_COLUMN_NAMES
 from ..uri_utils import camel_to_snake
 from .gold_specs import (
@@ -1498,6 +1499,98 @@ def _sole(
     return declaring[0] if declaring else None
 
 
+def _relationship_key(item: GoldRelationshipSpec) -> tuple[str, str, str, str]:
+    return (
+        item.source_table.casefold(),
+        item.source_column.casefold(),
+        item.target_table.casefold(),
+        item.target_column.casefold(),
+    )
+
+
+def _shape_bpa_ignores(
+    members: tuple["GoldDomainInput", ...],
+    tables: tuple[GoldTableSpec, ...],
+    measures: tuple[GoldMeasureSpec, ...],
+    relationships: tuple[GoldRelationshipSpec, ...],
+    *,
+    has_calendar: bool,
+    defer: bool,
+) -> tuple[BpaIgnore, ...]:
+    """Resolve every authored ``bpaIgnoreRule`` to an emitted object (DD-238).
+
+    Fail-closed, like ``goldExcludeColumn`` (DD-217): an exception naming nothing must
+    not read as a recorded decision. On a single-domain compile (*defer*) a target may
+    belong to another domain of the product, exactly as a bridge endpoint may (#763), so
+    an unresolved target is skipped there and fails only at product level.
+    """
+    table_names = {table.name.casefold(): table.name for table in tables}
+    columns = {
+        f"{table.name}.{column.name}".casefold(): f"{table.name}.{column.name}"
+        for table in tables
+        for column in table.columns
+    }
+    if has_calendar:
+        table_names["dim_date"] = "dim_date"
+        columns.update({f"dim_date.{name}": f"dim_date.{name}" for name in CALENDAR_COLUMN_NAMES})
+    emitted_measures = {item.measure_id.casefold(): item.measure_id for item in measures if item.emitted}
+    edges = {
+        _relationship_key(item): (
+            f"{item.source_table}.{item.source_column} -> "
+            f"{item.target_table}.{item.target_column}"
+        )
+        for item in relationships
+    }
+    resolved: dict[tuple[str, str, str], BpaIgnore] = {}
+    for member in members:
+        for value in tuple(getattr(member.policy.gold, "bpa_ignore_rules", ()) or ()):
+            try:
+                item = parse_bpa_ignore(value)
+            except BpaIgnoreError as exc:
+                _fail(
+                    exc.code,
+                    str(exc),
+                    rule_id="DD-238-bpa-profile",
+                    resource_uri=member.policy.gold.ontology_uri,
+                )
+            if item.kind == "model":
+                target = ""
+            elif item.kind == "table":
+                target = table_names.get(item.target.casefold())
+            elif item.kind == "column":
+                target = columns.get(item.target.casefold())
+            elif item.kind == "measure":
+                target = emitted_measures.get(item.target.casefold())
+            else:
+                match = _PRIMARY_RELATIONSHIP.fullmatch(item.target)
+                target = (
+                    edges.get(
+                        (
+                            match.group("from_table").casefold(),
+                            match.group("from_column").casefold(),
+                            match.group("to_table").casefold(),
+                            match.group("to_column").casefold(),
+                        )
+                    )
+                    if match is not None
+                    else None
+                )
+            if target is None:
+                if defer:
+                    continue
+                _fail(
+                    "gold.bpa-ignore-unknown-target",
+                    (
+                        f"bpaIgnoreRule {value!r} names {item.kind} {item.target!r}, which "
+                        "this Gold product does not emit"
+                    ),
+                    rule_id="DD-238-bpa-profile",
+                    resource_uri=member.policy.gold.ontology_uri,
+                )
+            resolved[(item.rule_id, item.kind, target.casefold())] = replace(item, target=target)
+    return tuple(resolved[key] for key in sorted(resolved))
+
+
 def _shape_dimensional_product(
     members: tuple["GoldDomainInput", ...],
     product_name: str,
@@ -1648,6 +1741,15 @@ def _shape_dimensional_product(
                     ),
                 )
             )
+    ordered_measures = tuple(sorted(measures, key=lambda item: item.measure_id))
+    bpa_ignores = _shape_bpa_ignores(
+        members,
+        ordered,
+        ordered_measures,
+        relationships,
+        has_calendar=calendar is not None and calendar.approved,
+        defer=defer_bridges,
+    )
     registry_names: list[tuple[str, str]] = []
     registry_columns: list[tuple[str, frozenset[str]]] = []
     for member in members:
@@ -1663,7 +1765,7 @@ def _shape_dimensional_product(
         adapter=primary.policy.target_adapter.value.value,
         tables=ordered,
         relationships=relationships,
-        measures=tuple(sorted(measures, key=lambda item: item.measure_id)),
+        measures=ordered_measures,
         calendar=calendar,
         security=security,
         perspectives=tuple(sorted(perspectives)),
@@ -1672,6 +1774,7 @@ def _shape_dimensional_product(
         domains=tuple(member.ontology_name for member in members),
         unresolved_relationships=unresolved,
         unresolved_bridges=tuple(sorted(set(unresolved_bridges))),
+        bpa_ignores=bpa_ignores,
     )
 
 

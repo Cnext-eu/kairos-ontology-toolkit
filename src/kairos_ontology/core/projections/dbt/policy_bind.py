@@ -342,6 +342,7 @@ def bind_policy_facts(
         excluded_columns=_values(policy_graph, ontology, EXT.goldExcludeColumn),
         hidden_columns=_values(policy_graph, ontology, EXT.goldHideColumn),
         primary_relationships=_values(policy_graph, ontology, EXT.goldPrimaryRelationship),
+        bpa_ignore_rules=_values(policy_graph, ontology, EXT.bpaIgnoreRule),
     )
     return MedallionPolicyFacts(
         ontology_uri=ontology_uri,
