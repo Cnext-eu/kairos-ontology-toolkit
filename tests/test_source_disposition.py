@@ -13,11 +13,17 @@ from kairos_ontology.core.source_disposition import (
     DEFAULT_ROW_THRESHOLD,
     DISPOSITIONS,
     DISPOSITIONS_RELPATH,
+    DispositionInput,
     audit_source_dispositions,
+    clear_dispositions,
+    ledger_files,
+    ledger_path,
     load_bound_relations,
     load_dispositions,
     load_source_tables,
     record_disposition,
+    record_dispositions,
+    split_legacy_ledger,
 )
 
 _VOCAB_HEADER = """\
@@ -270,7 +276,7 @@ def test_bound_is_still_recordable_for_a_single_column(tmp_path: Path) -> None:
         rationale="mapped by the binding",
     )
 
-    assert (tmp_path / DISPOSITIONS_RELPATH).is_file()
+    assert ledger_path(tmp_path, "qargo").is_file()
 
 
 def test_disposition_requiring_a_reason_is_rejected_without_one(tmp_path: Path) -> None:
@@ -536,3 +542,147 @@ class TestBoundAndRuledOutIsAConflict:
         assert not [d for d in report.diagnostics
                     if d.code == "disposition.bound-and-ruled-out"]
         assert report.tables_bound == 1
+
+
+# --- One ledger per source system (#943) ----------------------------------------------
+
+
+def _legacy_ledger(hub: Path, rows: list[dict]) -> Path:
+    path = hub / DISPOSITIONS_RELPATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"schema_version": 1, "tables": rows}), encoding="utf-8")
+    return path
+
+
+def test_each_system_gets_its_own_file(tmp_path: Path) -> None:
+    record_disposition(hub_root=tmp_path, system="tms", table="t", disposition="deferred",
+                       rationale="later")
+    record_disposition(hub_root=tmp_path, system="erp", table="u", disposition="deferred",
+                       rationale="later")
+
+    assert [p.name for p in ledger_files(tmp_path / DISPOSITIONS_RELPATH.parent)] == [
+        "src-erp.table-dispositions.yaml",
+        "src-tms.table-dispositions.yaml",
+    ]
+    assert not (tmp_path / DISPOSITIONS_RELPATH).exists()
+    assert set(load_dispositions(tmp_path)) == {("tms", "t", ""), ("erp", "u", "")}
+
+
+def test_the_legacy_single_file_is_still_read(tmp_path: Path) -> None:
+    _legacy_ledger(tmp_path, [{"system": "tms", "table": "t", "disposition": "deferred"}])
+    assert set(load_dispositions(tmp_path)) == {("tms", "t", "")}
+
+
+def test_the_first_write_splits_the_legacy_file_without_losing_an_entry(tmp_path: Path) -> None:
+    legacy = _legacy_ledger(tmp_path, [
+        {"system": "tms", "table": "t", "disposition": "deferred", "rationale": "old"},
+        {"system": "erp", "table": "u", "column": "c", "disposition": "blueprint-gap"},
+        # A system-wide column wildcard: anchoring honours it, so the split must keep it.
+        {"system": "tms", "table": "", "column": "tenant_id",
+         "disposition": "not-business-data"},
+    ])
+
+    record_disposition(hub_root=tmp_path, system="tms", table="v", disposition="deferred",
+                       rationale="new")
+
+    assert not legacy.exists()
+    tms = yaml.safe_load(ledger_path(tmp_path, "tms").read_text(encoding="utf-8"))["tables"]
+    assert [(e["table"], e.get("column", "")) for e in tms] == [
+        ("", "tenant_id"), ("t", ""), ("v", "")
+    ]
+    assert set(load_dispositions(tmp_path)) == {("tms", "t", ""), ("tms", "v", ""),
+                                                ("erp", "u", "c")}
+    from kairos_ontology.core.anchor_tables import load_excluded_columns
+
+    assert ("tms", "", "tenant_id") in load_excluded_columns(tmp_path / DISPOSITIONS_RELPATH.parent)
+
+
+def test_a_per_system_entry_wins_over_the_legacy_copy(tmp_path: Path) -> None:
+    record_disposition(hub_root=tmp_path, system="tms", table="t", disposition="deferred",
+                       rationale="newer")
+    _legacy_ledger(tmp_path, [{"system": "tms", "table": "t", "disposition": "blueprint-gap",
+                               "rationale": "older"}])
+
+    assert load_dispositions(tmp_path)[("tms", "t", "")]["rationale"] == "newer"
+    split_legacy_ledger(tmp_path)
+    assert load_dispositions(tmp_path)[("tms", "t", "")]["rationale"] == "newer"
+
+
+def test_an_entry_without_a_system_keeps_the_legacy_file_alive(tmp_path: Path) -> None:
+    legacy = _legacy_ledger(tmp_path, [
+        {"system": "tms", "table": "t", "disposition": "deferred"},
+        {"table": "orphan", "disposition": "deferred"},
+    ])
+
+    split_legacy_ledger(tmp_path)
+
+    kept = yaml.safe_load(legacy.read_text(encoding="utf-8"))["tables"]
+    assert kept == [{"table": "orphan", "disposition": "deferred"}]
+
+
+def test_a_batch_writes_what_one_at_a_time_writes(tmp_path: Path) -> None:
+    decisions = [
+        DispositionInput(system=s, table=f"t{i}", column=f"c{i}", disposition="deferred",
+                         rationale=f"r{i}")
+        for i in range(30)
+        for s in ("tms", "erp")
+    ]
+    one, batch = tmp_path / "one", tmp_path / "batch"
+    for d in decisions:
+        record_disposition(hub_root=one, system=d.system, table=d.table, column=d.column,
+                           disposition=d.disposition, rationale=d.rationale)
+    record_dispositions(batch, decisions)
+
+    for system in ("tms", "erp"):
+        assert ledger_path(one, system).read_bytes() == ledger_path(batch, system).read_bytes()
+
+
+def test_a_large_batch_is_one_write_per_system(tmp_path: Path) -> None:
+    """#943: 1,113 decisions took twelve minutes when each rewrote the whole ledger."""
+    import time
+
+    decisions = [
+        DispositionInput(system=f"s{i % 3}", table=f"t{i % 97}", column=f"c{i}",
+                         disposition="deferred", rationale="batch")
+        for i in range(2000)
+    ]
+    seen: list[tuple[str, int]] = []
+    started = time.perf_counter()
+    record_dispositions(tmp_path, decisions, progress=lambda s, n: seen.append((s, n)))
+    elapsed = time.perf_counter() - started
+
+    assert seen == [("s0", 667), ("s1", 667), ("s2", 666)]
+    assert len(load_dispositions(tmp_path)) == 2000
+    assert elapsed < 10, f"{elapsed:.1f}s for one batch"
+
+
+def test_a_bad_decision_in_a_batch_writes_nothing(tmp_path: Path) -> None:
+    good = DispositionInput(system="tms", table="t", disposition="deferred", rationale="r")
+    bad = DispositionInput(system="tms", table="u", disposition="deferred")  # no rationale
+    with pytest.raises(ValueError, match="requires a rationale"):
+        record_dispositions(tmp_path, [good, bad])
+    assert load_dispositions(tmp_path) == {}
+
+
+def test_an_unparseable_ledger_is_refused_rather_than_overwritten(tmp_path: Path) -> None:
+    path = ledger_path(tmp_path, "tms")
+    path.parent.mkdir(parents=True)
+    path.write_text("{[ not yaml", encoding="utf-8")
+
+    with pytest.raises(yaml.YAMLError):
+        record_disposition(hub_root=tmp_path, system="tms", table="t",
+                           disposition="deferred", rationale="r")
+    assert path.read_text(encoding="utf-8") == "{[ not yaml"
+
+
+def test_clearing_every_entry_of_a_system_removes_its_file(tmp_path: Path) -> None:
+    record_disposition(hub_root=tmp_path, system="tms", table="t", disposition="deferred",
+                       rationale="r")
+    record_disposition(hub_root=tmp_path, system="erp", table="u", disposition="deferred",
+                       rationale="r")
+
+    outcome = clear_dispositions(tmp_path, tables={("tms", "t")})
+
+    assert outcome["removed"] == 1 and outcome["kept"] == 1
+    assert not ledger_path(tmp_path, "tms").exists()
+    assert ledger_path(tmp_path, "erp").exists()

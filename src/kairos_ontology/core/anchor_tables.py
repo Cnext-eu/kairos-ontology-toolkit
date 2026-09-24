@@ -106,8 +106,6 @@ def sheet_schema_hash(columns: list[str]) -> str:
 
     return hashlib.sha256("\n".join(sorted(columns)).encode("utf-8")).hexdigest()[:16]
 
-#: The human-governed table/column ledger (DD-164).
-DISPOSITIONS_FILENAME = "table-dispositions.yaml"
 
 
 class MalformedLedgerError(RuntimeError):
@@ -410,6 +408,26 @@ def build_class_catalog(
     return ClassCatalog(text="\n".join(lines), index=index, owners=owners, bridged_from=bridged)
 
 
+def _ledger_rows(analysis_dir: Path, *, what: str, consequence: str) -> list[dict[str, Any]]:
+    """Every entry across the disposition ledger's files (DD-164, one per system: #943).
+
+    Fails closed on a file that exists and cannot be parsed: the ledger is where a
+    human's decision lives, and reading past a broken file would drop it silently.
+    """
+    from .source_disposition import ledger_files
+
+    rows: list[dict[str, Any]] = []
+    for path in ledger_files(Path(analysis_dir)):
+        state, payload = _read_yaml_artifact(path, what=what)
+        if state is ArtifactState.UNPARSEABLE:
+            raise MalformedLedgerError(
+                f"{path} exists but could not be parsed. {consequence} Fix the YAML, or "
+                "move the file aside to run without it."
+            )
+        rows.extend(e for e in payload.get("tables") or [] if isinstance(e, dict))
+    return rows
+
+
 def load_excluded_columns(analysis_dir: Path) -> set[tuple[str, str, str]]:
     """Columns the disposition ledger (DD-164) marks as not business data.
 
@@ -421,17 +439,15 @@ def load_excluded_columns(analysis_dir: Path) -> set[tuple[str, str, str]]:
     The ledger is the governed home for this knowledge: durable, reviewed, and
     now consumed by the prompt builders rather than living in someone's memory.
     """
-    path = Path(analysis_dir) / DISPOSITIONS_FILENAME
-    state, payload = _read_yaml_artifact(path, what="the column exclusions")
-    if state is ArtifactState.UNPARSEABLE:
-        raise MalformedLedgerError(
-            f"{path} exists but could not be parsed. It is the governed home for "
-            "column exclusions (DD-164), so continuing would silently ignore every "
-            "exclusion recorded in it. Fix the YAML, or move the file aside to run "
-            "without it."
-        )
     excluded: set[tuple[str, str, str]] = set()
-    for entry in payload.get("tables") or []:
+    for entry in _ledger_rows(
+        analysis_dir,
+        what="the column exclusions",
+        consequence=(
+            "It is the governed home for column exclusions (DD-164), so continuing "
+            "would silently ignore every exclusion recorded in it."
+        ),
+    ):
         if not isinstance(entry, dict) or not entry.get("column"):
             continue
         if str(entry.get("disposition") or "") == "not-business-data":
@@ -506,18 +522,17 @@ def load_table_dispositions(analysis_dir: Path) -> dict[tuple[str, str], str]:
     than ``not-business-data`` is someone having already decided the table IS in
     scope, and a heuristic must not overrule that.
     """
-    path = Path(analysis_dir) / DISPOSITIONS_FILENAME
-    state, payload = _read_yaml_artifact(path, what="the table dispositions")
-    if state is ArtifactState.UNPARSEABLE:
-        raise MalformedLedgerError(
-            f"{path} exists but could not be parsed. Every disposition other than "
-            "not-business-data is someone having decided the table IS in scope, and "
-            "this function is what stops the schema-catalogue heuristic overruling "
-            "them -- so continuing would let a heuristic silently overrule a recorded "
-            "human decision. Fix the YAML, or move the file aside to run without it."
-        )
     decided: dict[tuple[str, str], str] = {}
-    for entry in payload.get("tables") or []:
+    for entry in _ledger_rows(
+        analysis_dir,
+        what="the table dispositions",
+        consequence=(
+            "Every disposition other than not-business-data is someone having decided "
+            "the table IS in scope, and this function is what stops the "
+            "schema-catalogue heuristic overruling them -- so continuing would let a "
+            "heuristic silently overrule a recorded human decision."
+        ),
+    ):
         if not isinstance(entry, dict) or entry.get("column") or not entry.get("table"):
             continue
         decided[(str(entry.get("system") or ""), str(entry["table"]))] = str(

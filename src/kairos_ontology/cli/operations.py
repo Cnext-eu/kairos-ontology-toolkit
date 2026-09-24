@@ -315,7 +315,24 @@ def _migrate_analysis_file_names(repo_root: Path, check: bool) -> None:
     hub_root = find_hub_root(repo_root, require_model=False)
     if hub_root is None:
         return
+    from ..core.source_disposition import split_legacy_ledger
+
     directory = analysis_paths.analysis_dir(hub_root)
+    # The single ledger is split per source system rather than renamed (#943): same
+    # contract -- report under --check, never lose an entry, silent once done.
+    try:
+        split = split_legacy_ledger(hub_root, dry_run=check)
+    except Exception as exc:  # an unparseable ledger is validate's to report, not ours to eat
+        print(f"⚠  Could not split table-dispositions.yaml per source system: {exc}")
+        split = {}
+    if split:
+        verb = "will be split" if check else "Split"
+        print(
+            f"{'ℹ ' if check else '📦'} {verb} table-dispositions.yaml into one ledger per "
+            f"source system ({sum(split.values())} entr(y/ies)):"
+        )
+        for system, count in split.items():
+            print(f"   {system}: {count} -> src-{system}.table-dispositions.yaml")
     renames = analysis_paths.legacy_renames(directory)
     conflicts = analysis_paths.legacy_conflicts(directory)
     for old, new in conflicts:

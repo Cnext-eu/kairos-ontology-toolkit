@@ -153,3 +153,46 @@ class TestUpdateRename:
         assert (directory / "tms-affinity.yaml").exists()
         assert (directory / "src-tms.affinity.yaml").read_text(encoding="utf-8") == "regenerated"
         assert "Both tms-affinity.yaml and src-tms.affinity.yaml exist" in capsys.readouterr().out
+
+
+class TestUpdateSplitsTheLedger:
+    """`update` splits the single ledger per source system (#943)."""
+
+    def _hub(self, tmp_path):
+        import yaml
+
+        from kairos_ontology.core.source_disposition import DISPOSITIONS_RELPATH
+
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        path = tmp_path / DISPOSITIONS_RELPATH
+        path.parent.mkdir(parents=True)
+        path.write_text(yaml.safe_dump({"schema_version": 1, "tables": [
+            {"system": "tms", "table": "a", "disposition": "deferred"},
+            {"system": "tms", "table": "b", "column": "c", "disposition": "blueprint-gap"},
+            {"system": "erp", "table": "x", "disposition": "not-business-data"},
+        ]}), encoding="utf-8")
+        return tmp_path, path
+
+    def test_check_reports_the_split_and_changes_nothing(self, tmp_path, capsys):
+        from kairos_ontology.cli.operations import _migrate_analysis_file_names
+
+        hub, legacy = self._hub(tmp_path)
+        _migrate_analysis_file_names(hub, check=True)
+
+        assert legacy.exists()
+        out = capsys.readouterr().out
+        assert "will be split" in out and "3 entr(y/ies)" in out
+        assert "tms: 2 -> src-tms.table-dispositions.yaml" in out
+
+    def test_update_splits_and_keeps_every_entry(self, tmp_path):
+        from kairos_ontology.cli.operations import _migrate_analysis_file_names
+        from kairos_ontology.core.source_disposition import ledger_path, load_dispositions
+
+        hub, legacy = self._hub(tmp_path)
+        before = load_dispositions(hub)
+
+        _migrate_analysis_file_names(hub, check=False)
+
+        assert not legacy.exists()
+        assert ledger_path(hub, "tms").is_file() and ledger_path(hub, "erp").is_file()
+        assert load_dispositions(hub) == before

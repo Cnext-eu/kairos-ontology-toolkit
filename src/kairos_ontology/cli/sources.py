@@ -3458,6 +3458,11 @@ def source_disposition_group() -> None:
     """
 
 
+def _ledger_progress(system: str, count: int) -> None:
+    """One line per source system's ledger file as a batch writes it (#943)."""
+    click.echo(f"   ✎ {system}: {count} decision(s) written to its ledger")
+
+
 def _cascade_warning(hub_root, system: str, table: str, disposition: str) -> list[str]:
     """Lines saying what a table-grain disposition just retired from the DD-169 gate.
 
@@ -3613,7 +3618,7 @@ def source_disposition_set_cmd(
         --rationale "Generic notes table; no claim-specific columns (3,149 rows)."
     """
     from ..core.hub_utils import find_hub_root
-    from ..core.source_disposition import record_disposition
+    from ..core.source_disposition import DispositionInput, record_dispositions
 
     hub_root = find_hub_root(Path.cwd(), require_model=False)
     if hub_root is None:
@@ -3638,21 +3643,26 @@ def source_disposition_set_cmd(
             )
         targets = sorted({(c.system, c.table) for c in matches})
 
-    path = None
+    # One write per source system however many tables --all-tables expands to (#943).
+    try:
+        paths = record_dispositions(
+            hub_root,
+            [
+                DispositionInput(
+                    system=target_system,
+                    table=target_table,
+                    column=column,
+                    disposition=disposition,
+                    rationale=rationale,
+                    decided_by=decided_by,
+                    evidence=evidence,
+                )
+                for target_system, target_table in targets
+            ],
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     for target_system, target_table in targets:
-        try:
-            path = record_disposition(
-                hub_root=hub_root,
-                system=target_system,
-                table=target_table,
-                column=column,
-                disposition=disposition,
-                rationale=rationale,
-                decided_by=decided_by,
-                evidence=evidence,
-            )
-        except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
         label = (
             f"{target_system}.{target_table}.{column}"
             if column
@@ -3662,7 +3672,9 @@ def source_disposition_set_cmd(
         if not column:
             for line in _cascade_warning(hub_root, target_system, target_table, disposition):
                 click.echo(line)
-    click.echo(f"  {len(targets)} entr(y/ies) written to {path}")
+    click.echo(
+        f"  {len(targets)} entr(y/ies) written to " + ", ".join(str(p) for p in paths)
+    )
 
 
 @source_disposition_group.command(name="list")
@@ -4270,7 +4282,7 @@ def draft_gap_decisions_cmd(
         raise SystemExit(1)
 
     if auto:
-        stats = apply_auto_dispositions(hub, dry_run=dry_run)
+        stats = apply_auto_dispositions(hub, dry_run=dry_run, progress=_ledger_progress)
         verb = "would record" if dry_run else "recorded"
         click.echo(
             f"🤖 {verb} {stats['written']} rule-decidable disposition(s): "
@@ -4328,7 +4340,9 @@ def draft_gap_decisions_cmd(
             "🤖 accepted drafted proposals as decisions (decided_by=autopilot): "
             + ", ".join(f"{n} {d}" for d, n in sorted(counts.items(), key=lambda kv: -kv[1]))
         )
-        stats = apply_decision_sheet(hub, dry_run=dry_run, decided_by="autopilot")
+        stats = apply_decision_sheet(
+            hub, dry_run=dry_run, decided_by="autopilot", progress=_ledger_progress
+        )
         click.echo(
             f"✅ applied {stats['families_applied']} family + {stats['names_applied']} "
             f"name-level decision(s) to {stats['columns_written']} source column(s)"
@@ -4336,7 +4350,7 @@ def draft_gap_decisions_cmd(
         return
 
     if apply_sheet:
-        stats = apply_decision_sheet(hub, dry_run=dry_run)
+        stats = apply_decision_sheet(hub, dry_run=dry_run, progress=_ledger_progress)
         verb = "would apply" if dry_run else "applied"
         click.echo(
             f"✅ {verb} {stats['families_applied']} family + "

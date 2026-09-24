@@ -294,7 +294,7 @@ GATES: tuple[Gate, ...] = (
         commands=("compile",),
         requires=(
             "integration/sources/_analysis/dom-*.alignment.yaml",
-            "integration/sources/_analysis/table-dispositions.yaml",
+            "integration/sources/_analysis/src-*.table-dispositions.yaml",
         ),
     ),
     Gate(

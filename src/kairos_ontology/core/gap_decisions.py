@@ -40,6 +40,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import yaml
@@ -63,9 +64,10 @@ from .ai_provider import (
 from .anchor_tables import load_excluded_tables
 from .source_disposition import (
     DISPOSITIONS,
+    DispositionInput,
     column_decision,
     load_dispositions,
-    record_disposition,
+    record_dispositions,
 )
 from .tracing import call_metadata, flush_tracing, new_session_id
 
@@ -690,7 +692,12 @@ def find_disposition_conflicts(
     return sorted(conflicts.values(), key=lambda c: (c.system, c.table, c.column))
 
 
-def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+def apply_auto_dispositions(
+    hub_root: Path,
+    *,
+    dry_run: bool = False,
+    progress: Callable[[str, int], None] | None = None,
+) -> dict[str, Any]:
     """Record the rule-decidable dispositions, skipping anything already decided.
 
     Idempotent and never overwrites: a column a human has already dispositioned is
@@ -714,6 +721,7 @@ def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[st
     skipped = 0
     withheld = 0
     by_reason: dict[str, int] = {}
+    pending: list[DispositionInput] = []
     for domain in report.domains:
         for column in domain.unmapped:
             disposition = AUTO_DISPOSITIONS.get(column.reason)
@@ -733,16 +741,19 @@ def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[st
             written += 1
             if dry_run:
                 continue
-            record_disposition(
-                hub_root=Path(hub_root),
-                system=column.system,
-                table=column.table,
-                column=column.column,
-                disposition=disposition,
-                rationale=_AUTO_RATIONALE[column.reason].format(reason=column.reason),
-                decided_by="autopilot",
-                evidence=(f"reason-code:{column.reason}", f"data-type:{column.data_type}"),
+            pending.append(
+                DispositionInput(
+                    system=column.system,
+                    table=column.table,
+                    column=column.column,
+                    disposition=disposition,
+                    rationale=_AUTO_RATIONALE[column.reason].format(reason=column.reason),
+                    decided_by="autopilot",
+                    evidence=(f"reason-code:{column.reason}", f"data-type:{column.data_type}"),
+                )
             )
+    # One write per source system, not one per column (#943).
+    record_dispositions(Path(hub_root), pending, progress=progress)
     return {
         "written": written,
         "skipped_already_decided": skipped,
@@ -1254,7 +1265,11 @@ def write_decision_sheet(hub_root: Path, sheet: dict[str, Any]) -> Path:
 
 
 def apply_decision_sheet(
-    hub_root: Path, *, dry_run: bool = False, decided_by: str = "user"
+    hub_root: Path,
+    *,
+    dry_run: bool = False,
+    decided_by: str = "user",
+    progress: Callable[[str, int], None] | None = None,
 ) -> dict[str, Any]:
     """Apply every filled-in ``decision`` to the ledger, for all its occurrences.
 
@@ -1315,6 +1330,7 @@ def apply_decision_sheet(
     already = load_dispositions(Path(hub_root))
     applied = 0
     skipped = 0
+    pending: list[DispositionInput] = []
     for group in group_gaps_by_column(report):
         for occurrence in group.occurrences:
             decision = filled.get((occurrence.domain, group.column))
@@ -1329,26 +1345,30 @@ def apply_decision_sheet(
             applied += 1
             if dry_run:
                 continue
-            record_disposition(
-                hub_root=Path(hub_root),
-                system=occurrence.system,
-                table=occurrence.table,
-                column=occurrence.column,
-                disposition=decision,
-                rationale=" ".join(
-                    part
-                    for part in (
-                        _DISPOSITION_FRAMING.get(decision, ""),
-                        why.get((occurrence.domain, group.column), ""),
-                        f"Decision recorded for column name '{group.column}' and applied "
-                        f"to all {group.count} occurrence(s) via the gap decision sheet.",
-                    )
-                    if part
-                ),
-                decided_by=decided_by,
-                evidence=(f"gap-reason:{occurrence.reason}", f"occurrences:{group.count}"),
-                proposed_property=drafted.get((occurrence.domain, group.column)),
+            pending.append(
+                DispositionInput(
+                    system=occurrence.system,
+                    table=occurrence.table,
+                    column=occurrence.column,
+                    disposition=decision,
+                    rationale=" ".join(
+                        part
+                        for part in (
+                            _DISPOSITION_FRAMING.get(decision, ""),
+                            why.get((occurrence.domain, group.column), ""),
+                            f"Decision recorded for column name '{group.column}' and applied "
+                            f"to all {group.count} occurrence(s) via the gap decision sheet.",
+                        )
+                        if part
+                    ),
+                    decided_by=decided_by,
+                    evidence=(f"gap-reason:{occurrence.reason}", f"occurrences:{group.count}"),
+                    proposed_property=drafted.get((occurrence.domain, group.column)),
+                )
             )
+    # One write per source system, not one per occurrence: a 1,113-column sheet spent
+    # twelve minutes rewriting the whole ledger once per column (#943).
+    record_dispositions(Path(hub_root), pending, progress=progress)
     return {
         "names_applied": len(filled),
         "families_applied": families_applied,
