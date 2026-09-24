@@ -221,7 +221,7 @@ jobs:
       # (SemanticModel and Report) are deployed together.
       - name: Publish semantic model and report to Fabric workspace
         env:
-          FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
+          FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
         run: |
           python - <<'PY'
@@ -257,7 +257,7 @@ jobs:
       - name: Refresh the semantic model (Direct Lake)
         if: ${{ inputs.refresh_after_publish }}
         env:
-          FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
+          FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
         run: |
           python - <<'PY'
           import json
@@ -309,14 +309,7 @@ jobs:
           )["value"]
           failed = []
           for name in models:
-              model_id = next(
-                  (item["id"] for item in items if item["displayName"] == name), None
-              )
-              if model_id is None:
-                  failed.append(name)
-                  print("::error::" + name + " was published but is not in the workspace's"
-                        " semantic models.")
-                  continue
+              model_id = next(item["id"] for item in items if item["displayName"] == name)
               base = (
                   "https://api.powerbi.com/v1.0/myorg/groups/" + workspace_id
                   + "/datasets/" + model_id + "/refreshes"
@@ -354,17 +347,14 @@ jobs:
       # Fabric, Premium or PPU capacity -- Semantic Link Labs needs XMLA read access,
       # which a Pro workspace (typical for a Databricks DirectQuery model) does not give;
       # CICD.md describes the manual check for that case. Set the FABRIC_BPA_LAKEHOUSE_ID
-      # and FABRIC_BPA_LAKEHOUSE_NAME Environment (or repository) variables to persist
-      # findings to the kairos_bpa_findings table of that lakehouse; without them they are
-      # only printed. Every semantic model in the release is analysed, each with its own
-      # storage mode, and one model's failure does not skip the others.
+      # and FABRIC_BPA_LAKEHOUSE_NAME repository variables to persist findings to the
+      # kairos_bpa_findings table of that lakehouse; without them they are only printed.
       - name: Advisory Best Practice Analyzer run (non-blocking)
         if: ${{ inputs.run_bpa_advisory }}
         continue-on-error: true
         env:
-          FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
+          FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
-          REFRESH_AFTER_PUBLISH: ${{ inputs.refresh_after_publish }}
           FABRIC_BPA_LAKEHOUSE_ID: ${{ vars.FABRIC_BPA_LAKEHOUSE_ID }}
           FABRIC_BPA_LAKEHOUSE_NAME: ${{ vars.FABRIC_BPA_LAKEHOUSE_NAME }}
         run: |
@@ -425,64 +415,49 @@ jobs:
                   item["id"] for item in items["value"] if item["displayName"] == NOTEBOOK
               )
 
-          except Exception as exc:
-              print("::warning::The advisory BPA run could not run:", exc)
-              sys.exit(0)
-
-          lakehouse_id = os.environ.get("FABRIC_BPA_LAKEHOUSE_ID", "")
-          framed = os.environ.get("REFRESH_AFTER_PUBLISH", "true").lower() == "true"
-          for platform in sorted(Path("semantic-model").rglob("*.SemanticModel/.platform")):
-              dataset = "?"
-              try:
-                  metadata = json.loads(platform.read_text(encoding="utf-8"))["metadata"]
-                  dataset = metadata["displayName"]
-                  direct_lake = any(
-                      "mode: directLake" in path.read_text(encoding="utf-8")
-                      for path in (platform.parent / "definition").rglob("*.tmdl")
-                  )
-                  if direct_lake and not framed:
-                      print("::notice::" + dataset + " was not refreshed after publish"
-                            " (refresh_after_publish is false), so the Direct Lake model has"
-                            " read no data and the cardinality and VertiPaq rules have"
-                            " nothing to report.")
-                  execution = {
-                      "parameters": {
-                          "dataset": {"value": dataset, "type": "string"},
-                          "workspace": {"value": workspace_id, "type": "string"},
-                          "semantic_mode": {
-                              "value": "directLake" if direct_lake else "directQuery",
-                              "type": "string",
-                          },
+              platform = next(Path("semantic-model").rglob("*.SemanticModel/.platform"))
+              dataset = json.loads(platform.read_text(encoding="utf-8"))["metadata"]["displayName"]
+              direct_lake = any(
+                  "mode: directLake" in path.read_text(encoding="utf-8")
+                  for path in Path("semantic-model").rglob("*.tmdl")
+              )
+              execution = {
+                  "parameters": {
+                      "dataset": {"value": dataset, "type": "string"},
+                      "workspace": {"value": workspace_id, "type": "string"},
+                      "semantic_mode": {
+                          "value": "directLake" if direct_lake else "directQuery",
+                          "type": "string",
+                      },
+                  }
+              }
+              lakehouse_id = os.environ.get("FABRIC_BPA_LAKEHOUSE_ID", "")
+              if lakehouse_id:
+                  execution["configuration"] = {
+                      "defaultLakehouse": {
+                          "id": lakehouse_id,
+                          "name": os.environ.get("FABRIC_BPA_LAKEHOUSE_NAME", ""),
+                          "workspaceId": workspace_id,
                       }
                   }
-                  if lakehouse_id:
-                      execution["configuration"] = {
-                          "defaultLakehouse": {
-                              "id": lakehouse_id,
-                              "name": os.environ.get("FABRIC_BPA_LAKEHOUSE_NAME", ""),
-                              "workspaceId": workspace_id,
-                          }
-                      }
-                  headers, _ = call(
-                      "POST",
-                      "/workspaces/" + workspace_id + "/items/" + notebook_id
-                      + "/jobs/instances?jobType=RunNotebook",
-                      {"executionData": execution},
-                  )
-                  status = "NotStarted"
-                  for _ in range(60):
-                      time.sleep(20)
-                      _, job = call("GET", headers["Location"])
-                      status = job.get("status", "")
-                      if status in ("Completed", "Failed", "Cancelled", "Deduped"):
-                          break
-                  print("Advisory BPA run for", dataset, "finished with status:", status)
-                  if status != "Completed":
-                      print("::warning::The advisory BPA run for " + dataset + " did not"
-                            " complete (" + status + "); the deploy itself succeeded. Open"
-                            " the notebook run in Fabric.")
-              except Exception as exc:
-                  print("::warning::The advisory BPA run for " + dataset + " could not run:",
-                        exc)
+              headers, _ = call(
+                  "POST",
+                  "/workspaces/" + workspace_id + "/items/" + notebook_id
+                  + "/jobs/instances?jobType=RunNotebook",
+                  {"executionData": execution},
+              )
+              status = "NotStarted"
+              for _ in range(60):
+                  time.sleep(20)
+                  _, job = call("GET", headers["Location"])
+                  status = job.get("status", "")
+                  if status in ("Completed", "Failed", "Cancelled", "Deduped"):
+                      break
+              print("Advisory BPA notebook run finished with status:", status)
+              if status != "Completed":
+                  print("::warning::The advisory BPA run did not complete (" + status + ");"
+                        " the deploy itself succeeded. Open the notebook run in Fabric.")
+          except Exception as exc:
+              print("::warning::The advisory BPA run could not run:", exc)
           sys.exit(0)
           PY
