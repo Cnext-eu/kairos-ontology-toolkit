@@ -5,13 +5,13 @@
 **Affects:** new `practices/` package (`semantic-model/rules.yaml`, `ddd/rules.yaml`,
 `exceptions.py`), new `core/projections/dbt/gold_shape_checks.py`, new `core/ddd_practices.py`,
 `core/projections/dbt/bpa_profile.py` (`parse_bpa_ignore`, `is_bpa_rule`),
-`core/projections/dbt/gold_shape.py`, `gold_render.py` (`practice_exceptions`), `policy_bind.py`,
+`core/projections/dbt/gold_shape.py`, `gold_render.py` (`practice_exceptions`), `medallion_gold_projector.py` (bus matrix), `policy_bind.py`,
 `policy_specs.py`, `policy_normalize.py`, `core/ddd.py` (`audit_ddd_practices`),
 `core/projections/ddd_context_projector.py` (design-notes sections), `cli/compile.py` (the Gold
 product pass), `cli/emit_gold.py`, `scaffold/kairos-ext.ttl` (`practiceException`),
 `scaffold/kairos-ddd.ttl` 1.2.0 (`practiceException`), new `scripts/generate_practices.py`,
 `docs/guide/practices/`, the `kairos-design-gold` and `kairos-design-architecture` skills
-**Issue:** #996 (extends DD-238 and DD-091)
+**Issue:** #996 (extends DD-238 and DD-091, amends DD-238 and DD-226)
 
 ### Context
 
@@ -64,11 +64,37 @@ of object; an exception that excuses nothing fails.
 - DDD: `kairos-ddd:practiceException` on an overlay or the strategic file, not in `kairos-ext`,
   so the DD-091 firewall and the overlay leak scan are unchanged.
 
-**Semantic-model shape rules**, in `gold_shape_checks.py`, run on the whole product only:
-`gold.ambiguous-path` (with the active route the edge lost to), `gold.fact-to-fact`,
-`gold.snowflake-chain` (a dimension chain the same fact also reaches directly) as warnings, and
-`gold.role-playing-dimension` (an inactive second role of a dimension the fact already reaches)
-as info. They never block. `compile --check` gains a **Gold product pass**: after the domains
+**The semantic model prefers a Kimball star.** The shape rules in `gold_shape_checks.py`
+judge the product against a dimensional design, on the whole product only:
+
+| Rule | Code | Level |
+|---|---|---|
+| deactivated edge no measure activates, with the active route it lost to | `gold.ambiguous-path` | warning |
+| a fact references a fact | `gold.fact-to-fact` | warning |
+| a dimension chain the fact also reaches directly | `gold.snowflake-chain` | warning |
+| a fact with no calendar role | `gold.fact-without-date` | warning |
+| a periodic snapshot with no calendar, an accumulating snapshot with fewer than two date roles | `gold.snapshot-shape` | warning |
+| a declared bridge weight no measure reads | `gold.bridge-weight-unused` | warning |
+| two dimensions from one class or one Silver model | `gold.duplicate-dimension` | warning |
+| a fact with no relationships, a dimension that reaches no fact | `gold.unconnected-table` | warning |
+| an inactive role of a dimension whose other role is active | `gold.role-playing-dimension` | info |
+| any other dimension-to-dimension edge (an outrigger) | `gold.star-schema` | info |
+| a `SUM` over a periodic snapshot that takes no single date's value | `gold.semi-additive-sum` | info |
+| a non-count measure homed on a dimension | `gold.measure-on-dimension` | info |
+| a many-to-many bridge with no weight | `gold.bridge-unweighted` | info |
+| facts that share no dimension besides the calendar | `gold.product-spans-processes` | info |
+| a `dim_`/`fact_`/`bridge_` prefix that contradicts the role | `gold.table-name-role` | info |
+
+The existing blocking `gold.incompatible-dimension-version` is catalogued as
+`semantic-model.version-binding-matches-exposure`. Three BPA dispositions change, so the
+profile is version 2. `SNOWFLAKE_SCHEMA_ARCHITECTURE` was rejected by DD-238 and is now
+checked by `gold.star-schema`. `INACTIVE_RELATIONSHIPS_THAT_ARE_NEVER_ACTIVATED` was rejected
+by DD-226 and is now checked by `gold.ambiguous-path`: an edge a measure activates is
+intended and no longer reported. `ENSURE_TABLES_HAVE_RELATIONSHIPS` was a post-deploy check
+and is now `gold.unconnected-table`. `emit-gold` also writes `<product>/<product>-bus-matrix.md`,
+Kimball's fact-by-dimension grid, as the review artifact for these rules.
+
+None of these rules blocks. `compile --check` gains a **Gold product pass**: after the domains
 compile, every product whose member domains all compiled in the run is shaped from the plans
 just built, and only the shape findings are reported (the BPA ones were already reported per
 domain). A product with a member missing from the run, or one that does not shape at product
@@ -86,9 +112,17 @@ that is itself a member of a larger aggregate is allowed, as the projector alrea
 
 - The `ddd.*` consistency codes keep their levels. `ddd.tactical-in-strategic-file`, defined but
   never printed before, now appears in the output it described.
-- `SNOWFLAKE_SCHEMA_ARCHITECTURE` stays `rejected` (DD-238): an ordinary snowflake is the
-  ontology's decision. The narrower harmful case, a chain the fact also shortcuts, is now its
-  own rule, and the rejection reason says so.
+- Amends DD-238 and DD-226 (both carry the note). DD-238 left snowflaking to the ontology.
+  It still is the ontology's decision -- flattening is authored, never done by the renderer --
+  but the toolkit now states a preference, as an advisory an outrigger can be excused from.
+  The deactivation of surplus paths (DD-226) is unchanged; only what gets reported about it
+  changes.
+- Every existing product gets `<product>-bus-matrix.md` on its next `emit-gold`, a new file
+  in the Gold output. That is deliberate: a review artifact that exists only for some products
+  would not be looked for.
+- The `USERELATIONSHIP` match is on the two bracketed column references a measure names. A
+  measure that builds the reference indirectly, through a variable say, is not recognised,
+  and its edge is still reported. That errs toward reporting.
 - A shape exception is only proven stale at product level. A single-domain compile cannot tell
   whether it excuses something in another domain, exactly as for `bpaIgnoreRule` targets.
 - `compile --check` on a domain of a multi-domain product checks the product only when every

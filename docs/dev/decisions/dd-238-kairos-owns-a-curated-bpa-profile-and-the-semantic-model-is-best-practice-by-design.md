@@ -199,3 +199,7 @@ fires for visible columns without an ontology `rdfs:comment`. `gold_assert` asse
   relationship and reports it under `dropped_relationships`, and the render assertion covers
   inactive relationships too. The rerun's 37 findings are all `rejected`,
   `post-deploy-advisory`, or the `OBJECTS_WITH_NO_DESCRIPTION` warning.
+- **Amended by DD-240**: `SNOWFLAKE_SCHEMA_ARCHITECTURE` is no longer rejected. The toolkit
+  now prefers a Kimball star and reports every dimension-to-dimension edge as the advisory
+  `semantic-model.star-schema`. `ENSURE_TABLES_HAVE_RELATIONSHIPS` moves from post-deploy to
+  `compile --check` (`gold.unconnected-table`). Profile version 2.

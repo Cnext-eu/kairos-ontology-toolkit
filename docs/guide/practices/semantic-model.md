@@ -58,6 +58,136 @@ After emit-gold, review deactivated_relationships in the product report, and fix
 - **Source:** #996
 - **Excusable:** no
 
+### `semantic-model.star-schema`
+
+Prefer a star: a dimension carries its own attributes rather than referencing another dimension (an outrigger).
+
+- **Why:** Kimball's star schema joins every dimension straight to the fact, so a report filters one table per question and each dimension is one join away. A chain adds a hop to every query, splits one business concept over two tables in the field list, and is where redundant filter paths come from. An outrigger can be deliberate -- a large, slowly changing sub-dimension shared by several dimensions -- which is what an exception records. Replaces the rejection of BPA SNOWFLAKE_SCHEMA_ARCHITECTURE.
+- **Enforcement:** advisory, at `compile --check`
+- **Check:** `gold.star-schema`
+- **Source:** Kimball, BPA SNOWFLAKE_SCHEMA_ARCHITECTURE, DD-240
+- **Excusable:** yes, on a relationship
+
+### `semantic-model.every-fact-has-a-date`
+
+Every fact has at least one relationship to the calendar.
+
+- **Why:** A fact records something that happened at a time. Without a date role it cannot be sliced by period, compared year on year, or used with the Time Intelligence calculation group, and a report author cannot tell which date the numbers belong to.
+- **Enforcement:** warning, at `compile --check`
+- **Check:** `gold.fact-without-date`
+- **Source:** Kimball, DD-112
+- **Excusable:** yes, on a table
+
+### `semantic-model.snapshot-fact-shape`
+
+A periodic snapshot has a calendar to read its snapshot date from, and an accumulating snapshot has a date role per milestone.
+
+- **Why:** A periodic snapshot is only meaningful one snapshot date at a time. An accumulating snapshot follows one process instance through its milestones (ordered, shipped, delivered), and a milestone without its date role cannot be measured in time.
+- **Enforcement:** warning, at `compile --check`
+- **Check:** `gold.snapshot-shape`
+- **Source:** Kimball, DD-112
+- **Excusable:** yes, on a table
+
+### `semantic-model.semi-additive-snapshot-measure`
+
+A measure over a periodic snapshot does not sum a balance across snapshot dates.
+
+- **Why:** Balances, stock levels and headcounts are semi-additive: they add up across customers or warehouses, never across time. A plain SUM over a month of daily snapshots reports thirty times the stock. Take one date's value over time (LASTNONBLANK, CLOSINGBALANCEMONTH); an additive flow column in the snapshot is what an exception records.
+- **Enforcement:** advisory, at `compile --check`
+- **Check:** `gold.semi-additive-sum`
+- **Source:** Kimball
+- **Excusable:** yes, on a measure
+
+### `semantic-model.measures-live-on-facts`
+
+A measure that aggregates numbers lives on the fact whose grain it aggregates; a dimension carries descriptions and counts of its own rows.
+
+- **Why:** A measure homed on a dimension is found by report authors in the wrong place, and is usually aggregating a numeric attribute that belongs on a fact at a declared grain. Counting the dimension's own rows (COUNTROWS, DISTINCTCOUNT) is allowed.
+- **Enforcement:** advisory, at `compile --check`
+- **Check:** `gold.measure-on-dimension`
+- **Source:** Kimball
+- **Excusable:** yes, on a measure
+
+### `semantic-model.bridge-allocation`
+
+A many-to-many bridge either carries an allocation weight or is confirmed to count a fact row once per endpoint.
+
+- **Why:** Across a many-to-many bridge a fact row joins several endpoint rows, so a plain total counts it several times and the grand total is not the sum of its rows. That is right for some questions and wrong for others, and the author has to have decided which.
+- **Enforcement:** advisory, at `compile --check`
+- **Check:** `gold.bridge-unweighted`
+- **Source:** Kimball, DD-112
+- **Excusable:** yes, on a table
+
+### `semantic-model.bridge-weight-used`
+
+A declared bridge weight column is read by the measures that cross the bridge.
+
+- **Why:** Declaring kairos-ext:bridgeWeightColumn states that totals across the bridge are allocated. If no measure multiplies by the weight, the allocation exists only on paper and every total double-counts.
+- **Enforcement:** warning, at `compile --check`
+- **Check:** `gold.bridge-weight-unused`
+- **Source:** DD-112
+- **Excusable:** yes, on a table
+
+### `semantic-model.conformed-dimension`
+
+One concept is one dimension in a product: two dimensions built from the same class or the same Silver model are one conformed dimension.
+
+- **Why:** Two customer dimensions in one model mean a filter on one leaves the facts joined to the other unfiltered, and the report author has to guess which to use. A conformed dimension -- one table, reused by every fact that needs it -- is what lets facts from different processes be compared. Declare the owning domain shared (gold.shared_domains) and reuse its table.
+- **Enforcement:** warning, at `compile --check`
+- **Check:** `gold.duplicate-dimension`
+- **Source:** Kimball,
+- **Excusable:** yes, on a table
+
+### `semantic-model.connected-tables`
+
+Every fact has relationships, and every dimension reaches a fact.
+
+- **Why:** A dimension that reaches no fact filters nothing: a slicer on it changes no number, silently. A fact with no relationships can be analysed by nothing. Replaces the post-deploy disposition of BPA ENSURE_TABLES_HAVE_RELATIONSHIPS, since the compiler already knows every relationship.
+- **Enforcement:** warning, at `compile --check`
+- **Check:** `gold.unconnected-table`
+- **Source:** BPA ENSURE_TABLES_HAVE_RELATIONSHIPS, DD-240
+- **Excusable:** yes, on a table
+
+### `semantic-model.product-is-one-process`
+
+The facts of one product share at least one conformed dimension besides the calendar.
+
+- **Why:** Kimball's bus matrix gives each business process its own fact tables, joined across processes by conformed dimensions. Facts that share none cannot be analysed together, so a product holding them is two products in one model, larger and slower than either needs to be.
+- **Enforcement:** advisory, at `compile --check`
+- **Check:** `gold.product-spans-processes`
+- **Source:** Kimball,
+- **Excusable:** yes, on a model
+
+### `semantic-model.table-name-matches-role`
+
+A table's name prefix matches its role: fact_ for a fact, dim_ for a dimension, bridge_ for a bridge.
+
+- **Why:** Report authors read the prefix to tell a fact from a dimension in the field list. A dimension called fact_... is summed where it should be sliced.
+- **Enforcement:** advisory, at `compile --check`
+- **Check:** `gold.table-name-role`
+- **Source:** DD-112
+- **Excusable:** yes, on a table
+
+### `semantic-model.version-binding-matches-exposure`
+
+A fact that joins dimension history (as of an event, invoice or effective date) joins a dimension that exposes history.
+
+- **Why:** A fact bound as-of-event-date to a current-only dimension would resolve every historical fact to today's version of the dimension, silently restating history. The compiler refuses the combination.
+- **Enforcement:** blocking, at `compile --check`
+- **Check:** `gold.incompatible-dimension-version`
+- **Source:** Kimball (slowly changing dimensions), DD-112
+- **Excusable:** no
+
+### `semantic-model.review-bus-matrix`
+
+Review the product's bus matrix (<product>-bus-matrix.md) with the business: which facts share which dimensions.
+
+- **Why:** The matrix is Kimball's review artifact for a dimensional model. One glance shows a fact with no dimensions, a dimension no fact uses, a dimension that should be shared and is not, and a role-playing dimension with no active role.
+- **Enforcement:** advisory (design guidance)
+- **Check:** none
+- **Source:** Kimball, DD-240
+- **Excusable:** no
+
 ## Exceptions
 
 Record an exception to an excusable rule in the Gold extension, on the `owl:Ontology` resource:
@@ -77,7 +207,7 @@ The reason is mandatory, and an exception that excuses nothing fails the check t
 | `SPLIT_DATE_AND_TIME` | post-deploy | dataplatform | — |
 | `LARGE_TABLES_SHOULD_BE_PARTITIONED` | none | none | — |
 | `REDUCE_USAGE_OF_CALCULATED_COLUMNS_THAT_USE_THE_RELATED_FUNCTION` | none | none | — |
-| `SNOWFLAKE_SCHEMA_ARCHITECTURE` | none | none | — |
+| `SNOWFLAKE_SCHEMA_ARCHITECTURE` | warning | compile --check | `gold.star-schema` |
 | `MODEL_SHOULD_HAVE_A_DATE_TABLE` | blocking | emit-gold | `gold.date-table-not-marked` |
 | `DATE/CALENDAR_TABLES_SHOULD_BE_MARKED_AS_A_DATE_TABLE` | blocking | emit-gold | `gold.date-table-not-marked` |
 | `REMOVE_AUTO-DATE_TABLE` | none | none | — |
@@ -103,7 +233,7 @@ The reason is mandatory, and an exception that excuses nothing fails the check t
 | `MEASURES_SHOULD_NOT_BE_DIRECT_REFERENCES_OF_OTHER_MEASURES` | post-deploy | dataplatform | — |
 | `FILTER_COLUMN_VALUES` | post-deploy | dataplatform | — |
 | `FILTER_MEASURE_VALUES_BY_COLUMNS` | post-deploy | dataplatform | — |
-| `INACTIVE_RELATIONSHIPS_THAT_ARE_NEVER_ACTIVATED` | none | none | — |
+| `INACTIVE_RELATIONSHIPS_THAT_ARE_NEVER_ACTIVATED` | warning | compile --check | `gold.ambiguous-path` |
 | `AVOID_USING_'1-(X/Y)'_SYNTAX` | post-deploy | dataplatform | — |
 | `EVALUATEANDLOG_SHOULD_NOT_BE_USED_IN_PRODUCTION_MODELS` | post-deploy | dataplatform | — |
 | `DATA_COLUMNS_MUST_HAVE_A_SOURCE_COLUMN` | none | none | `gold.column-source-missing` |
@@ -119,7 +249,7 @@ The reason is mandatory, and an exception that excuses nothing fails the check t
 | `FIX_REFERENTIAL_INTEGRITY_VIOLATIONS` | post-deploy | dataplatform | — |
 | `REMOVE_DATA_SOURCES_NOT_REFERENCED_BY_ANY_PARTITIONS` | none | none | — |
 | `REMOVE_ROLES_WITH_NO_MEMBERS` | none | none | — |
-| `ENSURE_TABLES_HAVE_RELATIONSHIPS` | post-deploy | dataplatform | — |
+| `ENSURE_TABLES_HAVE_RELATIONSHIPS` | warning | compile --check | `gold.unconnected-table` |
 | `OBJECTS_WITH_NO_DESCRIPTION` | warning | compile --check | `gold.description-missing` |
 | `PERSPECTIVES_WITH_NO_OBJECTS` | none | none | — |
 | `CALCULATION_GROUPS_WITH_NO_CALCULATION_ITEMS` | blocking | emit-gold | `gold.calculation-group-ordinals` |

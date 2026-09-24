@@ -149,17 +149,33 @@ generated from the toolkit, so read them rather than this skill for what is enfo
 **This skill advises; the compiler enforces** (DD-163). Ask the questions below while
 designing, so `compile --check` has nothing to say.
 
-For the shape of the product, confirm:
+Design the product as a Kimball star (DD-240). Start from the business process and its
+grain, then the dimensions that describe it, and draw the bus matrix before any TTL: one row
+per fact, one column per dimension. For the shape of the product, confirm:
 
+- **One business process per product** (`semantic-model.product-is-one-process`): its facts
+  share at least one conformed dimension besides the calendar.
 - **Facts reference dimensions only** (`semantic-model.fact-to-fact`). A fact pointing at a
   fact filters one by the other's rows; share a dimension or model the header as one.
-- **No chain the fact also shortcuts** (`semantic-model.snowflake-chain`): fact -> job ->
-  branch next to fact -> branch gives the branch two routes, and one is switched off.
+- **A star, not a snowflake** (`semantic-model.star-schema`): a dimension carries its own
+  attributes instead of referencing another. An outrigger is a deliberate exception. A chain
+  the fact also shortcuts (`semantic-model.snowflake-chain`) is always a problem.
+- **One conformed dimension per concept** (`semantic-model.conformed-dimension`): reuse the
+  shared domain's table instead of a second copy.
+- **Every fact has a date** (`semantic-model.every-fact-has-a-date`), and a snapshot has the
+  shape its type needs (`semantic-model.snapshot-fact-shape`): a snapshot date for a periodic
+  snapshot, a date role per milestone for an accumulating one.
 - **Each role of a role-playing dimension is decided** (`semantic-model.role-playing-dimension`):
   one active relationship plus `USERELATIONSHIP` measures, or a separate copy of the dimension.
 - **Every deactivated relationship is intended** (`semantic-model.ambiguous-path`). Only one
   filter path between two tables can be active. Keep the right one active with
-  `kairos-ext:goldPrimaryRelationship`, remove the redundant route, or record why.
+  `kairos-ext:goldPrimaryRelationship`, add a `USERELATIONSHIP` measure, remove the redundant
+  route, or record why.
+- **Many-to-many bridges are allocated or confirmed** (`semantic-model.bridge-allocation`,
+  `semantic-model.bridge-weight-used`).
+- **Measures live on facts** (`semantic-model.measures-live-on-facts`), and a balance over a
+  periodic snapshot takes one date's value over time instead of a `SUM`
+  (`semantic-model.semi-additive-snapshot-measure`).
 
 For each measure, confirm:
 
@@ -192,7 +208,9 @@ The shape rules are reported by `compile --check` once every domain of the produ
 in the same run (`--all`, or name them all), and by `emit-gold`. **After `emit-gold`, review
 `deactivated_relationships` in `<product>-gold-product.json`**
 (`semantic-model.review-deactivated-relationships`): each entry is a relationship that filters
-nothing unless a measure activates it. Fix it or excuse it; do not leave it unexamined.
+nothing unless a measure activates it. Fix it or excuse it; do not leave it unexamined. Then
+review `<product>-bus-matrix.md` with the business (`semantic-model.review-bus-matrix`):
+which facts share which dimensions, and which dimensions no fact uses.
 
 When a rule genuinely does not hold for one object, record it rather than working around it:
 `kairos-ext:practiceException "semantic-model.fact-to-fact on relationship

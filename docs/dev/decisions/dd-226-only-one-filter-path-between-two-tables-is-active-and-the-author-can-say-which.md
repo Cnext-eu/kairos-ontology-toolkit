@@ -90,3 +90,7 @@ simultaneously make the only DAX workaround uncompilable.
 - `GoldRelationshipSpec.cardinality` is still computed and still unread by any renderer.
   Emitting `fromCardinality`/`toCardinality` would change bytes for every existing hub for
   no correctness gain today, so it stays out of this change.
+- **Amended by DD-240**: a deactivated edge that no measure activates with
+  `USERELATIONSHIP` is reported as `gold.ambiguous-path` by `compile --check` and
+  `emit-gold`, so BPA `INACTIVE_RELATIONSHIPS_THAT_ARE_NEVER_ACTIVATED` is checked rather
+  than rejected. The deactivation itself is unchanged.

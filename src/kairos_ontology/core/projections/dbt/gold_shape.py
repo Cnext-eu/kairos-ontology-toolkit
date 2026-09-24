@@ -2003,7 +2003,8 @@ def _shape_dimensional_product(
             ordered,
             relationships,
             bpa_ignores,
-            extra_dimensions=frozenset({"dim_date"}) if calendar is not None else frozenset(),
+            measures=ordered_measures,
+            calendar_table=CALENDAR_TABLE if calendar is not None and calendar.approved else "",
         )
     registry_names: list[tuple[str, str]] = []
     registry_columns: list[tuple[str, frozenset[str]]] = []

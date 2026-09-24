@@ -937,10 +937,15 @@ def compile_cmd(
 
     After the domains compile, ``--check`` also shapes every Gold product whose member
     domains all compiled in the same run, and reports the model-shape practices it breaks
-    (DD-240, ``docs/guide/practices/semantic-model.md``): ``gold.ambiguous-path``,
-    ``gold.fact-to-fact`` and ``gold.snowflake-chain`` as warnings,
-    ``gold.role-playing-dimension`` as info. They never block. A product with a member
-    domain missing from the run is named and skipped; use ``--all`` to check every product.
+    (DD-240, ``docs/guide/practices/semantic-model.md``). Warnings:
+    ``gold.ambiguous-path``, ``gold.fact-to-fact``, ``gold.snowflake-chain``,
+    ``gold.fact-without-date``, ``gold.snapshot-shape``, ``gold.bridge-weight-unused``,
+    ``gold.duplicate-dimension``, ``gold.unconnected-table``. Info (Kimball advice):
+    ``gold.role-playing-dimension``, ``gold.star-schema``, ``gold.semi-additive-sum``,
+    ``gold.measure-on-dimension``, ``gold.bridge-unweighted``,
+    ``gold.product-spans-processes``, ``gold.table-name-role``. They never block. A product
+    with a member domain missing from the run is named and skipped; use ``--all`` to check
+    every product.
     """
     if emit_mode and (check_mode or explain_mode):
         raise click.UsageError("--emit cannot be combined with --check or --explain")

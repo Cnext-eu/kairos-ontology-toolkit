@@ -2652,6 +2652,10 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         # Pre-DD-239 generation: no GitHub Environment, no refresh, unpinned fabric-cicd.
         "dataplatform-deploy-powerbi-semantic-model/4.template",
     ),
+    # DD-240: the notebook embeds the BPA profile, which moved to version 2.
+    "fabric/KairosModelBpa.Notebook/notebook-content.py": (
+        "dataplatform-bpa-notebook/1.template",
+    ),
 }
 
 
