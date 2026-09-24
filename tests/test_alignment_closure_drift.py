@@ -128,3 +128,51 @@ def test_a_file_name_fallback_domain_is_the_bare_domain(tmp_path, name):
     message = drift.describe()
     assert message.startswith("dom-equipment.alignment.yaml is stale")
     assert "alignment-alignment" not in message
+
+
+class TestResolvedClosure:
+    """#865: the module list can stay the same while what it resolves to changes."""
+
+    def _artifact(self, tmp_path, resolved="abc"):
+        path = tmp_path / "dom-equipment.alignment.yaml"
+        path.write_text(
+            yaml.safe_dump({"domain": "equipment", "domain_uris": list(_WAS),
+                            "resolved_closure_sha256": resolved, "tables": []}),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_changed_closure_behind_the_same_modules_is_stale(self, tmp_path):
+        drift = detect_closure_drift(self._artifact(tmp_path), _WAS, "def")
+        assert drift is not None and drift.closure_changed
+        assert drift.added == () and drift.removed == ()
+        assert "resolved import closure" in drift.describe()
+
+    def test_the_same_closure_is_silent(self, tmp_path):
+        assert detect_closure_drift(self._artifact(tmp_path), _WAS, "abc") is None
+
+    def test_no_evidence_on_either_side_is_not_drift(self, tmp_path):
+        """A pre-#865 artifact, or a check with no catalog, must not cry wolf."""
+        assert detect_closure_drift(self._artifact(tmp_path, resolved=""), _WAS, "def") is None
+        assert detect_closure_drift(self._artifact(tmp_path), _WAS, "") is None
+
+    def test_the_fingerprint_covers_every_module_closure_once(self):
+        from kairos_ontology.core.alignment_closure import resolved_closure_fingerprint
+
+        a = [{"_semantic": {"closure_hash": "h1"}}, {"_semantic": {"closure_hash": "h2"}}]
+        b = [{"_semantic": {"closure_hash": "h2"}}, {"_semantic": {"closure_hash": "h1"}},
+             {"_semantic": {"closure_hash": "h1"}}]
+        assert resolved_closure_fingerprint(a) == resolved_closure_fingerprint(b) != ""
+        assert resolved_closure_fingerprint([{"_semantic": {"closure_hash": "h3"}}]) != (
+            resolved_closure_fingerprint(a)
+        )
+        assert resolved_closure_fingerprint([{}]) == ""
+
+    def test_the_artifact_records_it(self):
+        from kairos_ontology.core.propose_alignment import DomainAlignment, alignment_to_dict
+
+        document = alignment_to_dict(DomainAlignment(
+            domain="equipment", domain_uris=list(_WAS), generated_at="t", model_used="m",
+            resolved_closure_sha256="abc",
+        ))
+        assert document["resolved_closure_sha256"] == "abc"

@@ -7,11 +7,13 @@ A ``<domain>-alignment.yaml`` records the ``domain_uris`` it was generated again
 of the comparison reads. When a blueprint change adds or removes an activated module, the
 file is silently stale and downstream stages consume it as if it were current.
 
-What this does *not* see: a change inside an activated module (a reference-models upgrade
-that adds an ``owl:imports`` two hops down) or an added ``cross_domain_relationships``
-bridge. Both change the class inventory the alignment was built from and leave the module
-list unchanged. A resolved-closure comparison would need the catalog at check time; this
-one deliberately stays a cheap list comparison.
+A change *inside* an activated module -- a reference-models upgrade that adds an
+``owl:imports`` two hops down, or new classes in a module already imported -- changes the
+class inventory the alignment was built from and leaves the module list unchanged. So the
+artifact also records ``resolved_closure_sha256`` (#865): a fingerprint of the canonical
+loader's closure hashes for the inventory it aligned against, which covers every file in
+the resolved import closure. ``design-landscape`` recomputes it when the catalog is
+available and reports a mismatch as a closure change.
 
 The failure is invisible *and it points the wrong way*. What surfaces is
 ``integrity.managed-import-unused``: "this domain imports a module and references nothing
@@ -42,12 +44,25 @@ class ClosureDrift:
     domain: str
     added: tuple[str, ...]
     removed: tuple[str, ...]
+    #: The activated modules are the same, but the resolved closure behind them is not
+    #: (#865): an owl:imports inside a module, or a module's own content, changed.
+    closure_changed: bool = False
 
     @property
     def is_stale(self) -> bool:
-        return bool(self.added or self.removed)
+        return bool(self.added or self.removed or self.closure_changed)
 
     def describe(self) -> str:
+        if self.closure_changed and not (self.added or self.removed):
+            file_name = analysis_paths.keyed_path(Path(), analysis_paths.ALIGNMENT, self.domain).name
+            return (
+                f"{file_name} is stale against the domain's resolved import closure -- the "
+                "activated modules are unchanged, but what they import or declare is not "
+                "(a reference-models upgrade, or an owl:imports inside a module). The "
+                "alignment was built from a different class inventory; an 'unused import' "
+                "finding for it is a staleness gap, not a sourcing gap. Re-run "
+                "`propose-alignment` for this domain."
+            )
         """One line naming what moved, and which direction the reader should read it."""
         parts: list[str] = []
         if self.added:
@@ -75,9 +90,44 @@ def closure_fingerprint(domain_uris: Iterable[str]) -> str:
     return hashlib.sha256("\n".join(normalized).encode("utf-8")).hexdigest()
 
 
+def resolved_closure_fingerprint(inventory: Iterable[dict]) -> str:
+    """Fingerprint the resolved closures a reference inventory was read from (#865).
+
+    Each inventory class carries the canonical loader's ``closure_hash`` for the module it
+    came from, which covers every file in that module's import closure. Hashing the set of
+    them answers "is this still the inventory the alignment was built from" without
+    storing the inventory. Empty when no class carries a hash.
+    """
+    hashes = sorted(
+        {
+            str((item.get("_semantic") or {}).get("closure_hash") or "")
+            for item in inventory
+            if isinstance(item, dict)
+        }
+        - {""}
+    )
+    if not hashes:
+        return ""
+    return hashlib.sha256("\n".join(hashes).encode("utf-8")).hexdigest()
+
+
+def current_resolved_fingerprint(domain_uris: Iterable[str], catalog_path: Path | None) -> str:
+    """Recompute :func:`resolved_closure_fingerprint` for *domain_uris* today."""
+    uris = [str(uri) for uri in domain_uris if str(uri).strip()]
+    if not uris or catalog_path is None:
+        return ""
+    try:
+        from .propose_alignment import extract_ref_model_inventory
+
+        return resolved_closure_fingerprint(extract_ref_model_inventory(uris, catalog_path))
+    except Exception:  # advisory: a closure that will not load is reported elsewhere
+        return ""
+
+
 def detect_closure_drift(
     alignment_path: Path,
     current_uris: Iterable[str],
+    current_resolved: str | None = None,
 ) -> ClosureDrift | None:
     """Compare one alignment artifact against the domain's current closure.
 
@@ -107,9 +157,15 @@ def detect_closure_drift(
     domain = str(
         document.get("domain") or analysis_paths.key_of(Path(alignment_path), analysis_paths.ALIGNMENT)
     )
+    recorded_resolved = str(document.get("resolved_closure_sha256") or "")
     drift = ClosureDrift(
         domain=domain,
         added=tuple(sorted(now - was)),
         removed=tuple(sorted(was - now)),
+        # Only when both sides have a fingerprint: a pre-#865 artifact, or a check with no
+        # catalog, is not evidence of drift.
+        closure_changed=bool(
+            recorded_resolved and current_resolved and recorded_resolved != current_resolved
+        ),
     )
     return drift if drift.is_stale else None

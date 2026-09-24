@@ -51,7 +51,7 @@ from .conformance_artifact import ARTIFACT_RELPATH, ConformanceArtifactError, re
 from .evidence_loaders import scan_concept_mapping_worksheets
 from .fit_report import FitReportError, resolve_token_uri, run_fit_report
 from .ontology_loader import SemanticProfile, load_ontology
-from .alignment_closure import detect_closure_drift
+from .alignment_closure import current_resolved_fingerprint, detect_closure_drift
 from .reference_modules import build_reference_module_context, resolve_hub_accelerator_detailed
 
 SCHEMA_VERSION = 1
@@ -624,9 +624,13 @@ def run_design_landscape(
         # reads as a sourcing gap when the cause is "we never looked" (#518).
         current_domain_uris = _current_domain_uris(ref_models_dir, resolved_accelerator)
         for alignment_path in alignment_files:
+            domain_key = analysis_paths.key_of(alignment_path, analysis_paths.ALIGNMENT)
+            domain_uris_now = current_domain_uris.get(domain_key, ())
             drift = detect_closure_drift(
                 alignment_path,
-                current_domain_uris.get(analysis_paths.key_of(alignment_path, analysis_paths.ALIGNMENT), ()),
+                domain_uris_now,
+                # #865: the resolved closure too, where the catalog lets us read it.
+                current_resolved_fingerprint(domain_uris_now, catalog_path),
             )
             if drift is not None:
                 gaps.append(drift.describe())
