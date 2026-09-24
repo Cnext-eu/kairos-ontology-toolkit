@@ -36,6 +36,9 @@ dbt-validate-databricks = [
 flatfile = [
     "kairos-ontology-toolkit[flatfile]",
 ]
+documents = [
+    "kairos-ontology-toolkit[documents]",
+]
 azure = [
     "kairos-ontology-toolkit[azure]",
 ]

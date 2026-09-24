@@ -48,6 +48,13 @@ foundry = [
 flatfile = [
     "openpyxl>=3.1.0,<4.0.0",
 ]
+# Text readers for business-discovery documents (#907): `read-document` turns a staged
+# .docx / .pptx / .xlsx into text for the discovery step. PDF is read by core pypdf.
+documents = [
+    "python-docx>=1.1.0,<2.0.0",
+    "python-pptx>=1.0.0,<2.0.0",
+    "openpyxl>=3.1.0,<4.0.0",
+]
 parquet = [
     "pyarrow>=14.0.0",
 ]
@@ -99,6 +106,13 @@ foundry = [
     "azure-identity>=1.15.0,<2.0.0",
 ]
 flatfile = [
+    "openpyxl>=3.1.0,<4.0.0",
+]
+# Text readers for business-discovery documents (#907): `read-document` turns a staged
+# .docx / .pptx / .xlsx into text for the discovery step. PDF is read by core pypdf.
+documents = [
+    "python-docx>=1.1.0,<2.0.0",
+    "python-pptx>=1.0.0,<2.0.0",
     "openpyxl>=3.1.0,<4.0.0",
 ]
 parquet = [

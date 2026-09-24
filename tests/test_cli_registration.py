@@ -17,6 +17,7 @@ RETAINED_COMMANDS = {
     "audit-silver-samples",
     "audit-column-coverage",
     "build-glossary",
+    "read-document",
     "bump-hub",
     "catalog-test",
     "check-ai-config",

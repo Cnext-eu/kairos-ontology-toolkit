@@ -309,6 +309,15 @@ def init(
     if pbi_readme_src.is_file() and (not (imports_pbi / "README.md").exists() or force):
         shutil.copy2(pbi_readme_src, imports_pbi / "README.md")
 
+    # Drafts: staged files that should NOT be extracted. Every file under
+    # businessdiscovery/ must be (DD-233), so this is the one place to park the rest
+    # without validate reporting it as misplaced (#907).
+    imports_drafts = cwd / ".import" / "drafts"
+    imports_drafts.mkdir(parents=True, exist_ok=True)
+    drafts_readme_src = _SCAFFOLD_DIR / "import" / "drafts" / "README.md"
+    if drafts_readme_src.is_file() and (not (imports_drafts / "README.md").exists() or force):
+        shutil.copy2(drafts_readme_src, imports_drafts / "README.md")
+
     # Modeling — toolkit-managed, git-tracked OKF-style records (distinct from raw
     # client evidence in .import/businessdiscovery/, which stays gitignored).
     imports_modeling = cwd / ".import" / "modeling"
@@ -1162,6 +1171,13 @@ def new_repo(
     pbi_readme_src = _SCAFFOLD_DIR / "import" / "powerbi" / "README.md"
     if pbi_readme_src.is_file():
         shutil.copy2(pbi_readme_src, imports_pbi / "README.md")
+
+    # Drafts: staged files that should not be extracted (#907).
+    imports_drafts = repo_dir / ".import" / "drafts"
+    imports_drafts.mkdir(parents=True, exist_ok=True)
+    drafts_readme_src = _SCAFFOLD_DIR / "import" / "drafts" / "README.md"
+    if drafts_readme_src.is_file():
+        shutil.copy2(drafts_readme_src, imports_drafts / "README.md")
 
     # Modeling — toolkit-managed, git-tracked OKF-style records (distinct from raw
     # client evidence in .import/businessdiscovery/, which stays gitignored).

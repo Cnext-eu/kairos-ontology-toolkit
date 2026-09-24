@@ -11,13 +11,19 @@ company operates before any modeling or mapping begins.
 ## What to put here
 
 - Meeting notes / workshop write-ups
-- Company decks and PowerPoints (exported to PDF/text where possible)
+- Company decks and PowerPoints (`.pptx` is read directly; so are `.docx`, `.xlsx` and
+  PDF — `kairos-ontology read-document <file>` prints the text, after
+  `uv sync --extra documents`)
 - Screenshots, diagrams, scanned PDFs, slide images, and visual process flows
 - Product / service brochures, "about us" exports
 - Process descriptions, internal terminology lists
 - Anything that explains **how this specific company operates** — especially
   where they use industry terms (freight forwarding, logistics, …) with their
   own meaning.
+
+**Every file in this folder counts.** `validate` fails until each one has an extraction
+(DD-233). A file you want to keep but not extract — an outdated deck, a working copy —
+belongs in `.import/drafts/` instead, which nothing reads.
 
 ## How it is used
 

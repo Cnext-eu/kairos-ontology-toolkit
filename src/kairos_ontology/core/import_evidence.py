@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .document_text import BUSINESS_DOCUMENT_SUFFIXES
+
 logger = logging.getLogger(__name__)
 
 #: Rule id for the gate, quoted in diagnostics the way DD-164/DD-169 are.
@@ -48,15 +50,16 @@ IMPORT_EVIDENCE_RULE_ID = "DD-233"
 #: Directories under ``.import/`` that a command actually reads.
 #:
 #: ``businessdiscovery`` feeds kairos-design-discovery; ``powerbi`` feeds import-tmdl;
-#: ``modeling`` holds the feedback ledger, which is hub output rather than client input.
-KNOWN_IMPORT_DIRS = ("businessdiscovery", "powerbi", "modeling")
+#: ``modeling`` holds the feedback ledger, which is hub output rather than client input;
+#: ``drafts`` is where a file goes that should *not* be extracted -- an outdated deck, a
+#: working copy -- so nothing reads it and this audit does not report it (#907).
+KNOWN_IMPORT_DIRS = ("businessdiscovery", "powerbi", "modeling", "drafts")
 
-#: Document kinds that carry business context. Deliberately narrow: a stray .txt or .csv
-#: is far more likely to be scratch than a briefing, and a false "you forgot this" is
-#: how a gate gets disabled.
-BUSINESS_DOC_SUFFIXES = frozenset(
-    {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".md"}
-)
+#: What counts as a business document outside those directories. One list, shared with
+#: the discovery readers (#907): two commands used to hold two definitions, so a hub
+#: could stage an .htm the discovery step would process and this gate could not see.
+#: Inside ``businessdiscovery/`` every file counts, whatever its suffix.
+BUSINESS_DOC_SUFFIXES = BUSINESS_DOCUMENT_SUFFIXES
 
 #: Markers that identify a Power BI / TMDL export folder.
 PBI_MARKERS = (".pbip", "model.tmdl", "database.tmdl")
@@ -211,8 +214,9 @@ def audit_import_evidence(repo_root: Path, hub_root: Path) -> ImportEvidenceRepo
                 path=_rel(doc, repo_root),
                 detail="staged for business discovery but never extracted",
                 remediation=(
-                    "Run the kairos-design-discovery skill, or "
-                    "'kairos-ontology discovery-status' to see the full list."
+                    "Run the kairos-design-discovery skill ('kairos-ontology "
+                    "read-document <file>' gives its text), or move it to .import/drafts/ "
+                    "if it should not be extracted."
                 ),
             )
         )
@@ -253,7 +257,8 @@ def audit_import_evidence(repo_root: Path, hub_root: Path) -> ImportEvidenceRepo
                 ),
                 remediation=(
                     "Move it under .import/businessdiscovery/ (subfolders are scanned "
-                    "recursively), or under .import/powerbi/ if it is a report export."
+                    "recursively), under .import/powerbi/ if it is a report export, or "
+                    "under .import/drafts/ if it should not be extracted."
                 ),
             )
         )
