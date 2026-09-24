@@ -144,7 +144,10 @@ HIGH_ACCURACY_MODEL = "gpt-5.4"
 
 # ---------------------------------------------------------------------------
 # Alignment-reliability — typed per-table generation outcomes
-from kairos_ontology.core.alignment_closure import closure_fingerprint  # noqa: E402
+from kairos_ontology.core.alignment_closure import (  # noqa: E402
+    closure_fingerprint,
+    resolved_closure_fingerprint,
+)
 from kairos_ontology.core.discovery_currency import (  # noqa: E402
     GLOSSARY_FINGERPRINT_KEY,
     UNGROUNDED,
@@ -681,6 +684,9 @@ class DomainAlignment:
     #: DD-070 (issue #166) — params signature (cross_module/accelerator/pool) so the
     #: freshness skip distinguishes a cross-module run from a home-only one.
     alignment_params_sha256: str | None = None
+    #: #865: fingerprint of the resolved closures the reference inventory came from, so
+    #: a change inside an activated module is detected, not only a changed module list.
+    resolved_closure_sha256: str = ""
     #: DD-094 — SHA-256 over the affinity ``(system, table)`` set this run saw,
     #: enabling the canonical completeness freshness check.
     affinity_sha256: str | None = None
@@ -4798,6 +4804,7 @@ def _propose_alignments(
 
         # Resolve reference model inventory (home domain — STEP 1 + rollup + hints)
         ref_classes = extract_ref_model_inventory(domain_uris, catalog_path)
+        resolved_closure = resolved_closure_fingerprint(ref_classes)
         if ref_classes:
             report(
                 f"     Ref model: {len(ref_classes)} class(es), "
@@ -4911,6 +4918,7 @@ def _propose_alignments(
             glossary_sha256=glossary_hash,
             excluded_tables=excluded_by_domain.get(domain_id, []),
             enforcement=enforcement_provenance(),
+            resolved_closure_sha256=resolved_closure,
         )
 
         # uri-anchor-contract: a previously-persisted "resolved" unresolved_anchor
@@ -6039,6 +6047,11 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         # (#518). `domain_uris` alone was recorded and never compared to anything, so a
         # refmodels upgrade that widened owl:imports left the file silently stale.
         "closure_sha256": closure_fingerprint(alignment.domain_uris),
+        **(
+            {"resolved_closure_sha256": alignment.resolved_closure_sha256}
+            if alignment.resolved_closure_sha256
+            else {}
+        ),
         # Digest of the business glossary this alignment was grounded in (#885). The
         # glossary is maintained by hand between runs, so it moves more often than
         # either input above, and nothing recorded it.
