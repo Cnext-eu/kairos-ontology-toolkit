@@ -298,5 +298,6 @@ during cleanup.
 | [DD-233](decisions/dd-233-staged-business-evidence-nothing-consumed-fails-validate.md) | Staged business evidence nothing consumed fails validate | Accepted | 2026-09-20 |
 | [DD-234](decisions/dd-234-a-gate-declares-its-evidence-its-escape-and-the-modes-that-may-use-it.md) | A gate declares its evidence, its escape, and the modes that may use it | Accepted | 2026-09-20 |
 | [DD-235](decisions/dd-235-analysis-file-names-state-their-scope.md) | Analysis file names state their scope | Accepted | 2026-09-24 |
+| [DD-236](decisions/dd-236-the-insight-brief-is-the-report-deliverable-and-the-emitted-report-stays-blank.md) | The insight brief is the report deliverable and the emitted report stays blank | Accepted | 2026-09-24 |
 
 ---

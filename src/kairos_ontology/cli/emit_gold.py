@@ -81,6 +81,9 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
 
     Builds the same typed ``CompilePlan`` ``compile`` uses, then projects its Gold
     product the same way ``project_downstream_compile_plan('powerbi', plan)`` does.
+    The emitted ``.Report`` is intentionally one blank page (DD-236): the report
+    deliverable is ``<product>-insight-brief.md``, and pages are built as a separate
+    Fabric item bound to the deployed model.
     Requires the domain to have an authored Gold profile (``kairos-ext:goldProductProfile``)
     and, for a Direct Lake or Databricks-backed product, the matching connection block
     in ``kairos.yaml`` (``gold.direct_lake_connection`` / ``gold.databricks_connection``).

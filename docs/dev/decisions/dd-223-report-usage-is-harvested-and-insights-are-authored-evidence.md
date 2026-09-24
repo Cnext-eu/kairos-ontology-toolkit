@@ -71,7 +71,8 @@ gets no brief, no warnings and no new artifacts.
 **A brief, not a report.** `<product>-insight-brief.md` states which question each measure
 answers, for whom, against what comparison, and whether the model can answer it. Page
 layout, visual choice and look and feel belong to whoever builds the report — the hub
-governs the model. Generating PBIR pages is explicitly not decided here.
+governs the model. Generating PBIR pages is explicitly not decided here; DD-236 later
+decided it: the emitted report stays blank and the brief is the deliverable.
 
 ### Consequences
 

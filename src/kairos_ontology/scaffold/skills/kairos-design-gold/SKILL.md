@@ -62,7 +62,9 @@ business semantics.
 ## Where the hub stops and the report begins
 
 - The hub owns everything governed: tables, relationships, measures, calendar, security,
-  column visibility and descriptions. It also emits a **stub** `<Product>.Report`.
+  column visibility and descriptions. It also emits `<Product>.Report`, which is
+  **intentionally blank** (DD-236): one empty page so the project opens. The report
+  deliverable is `<product>-insight-brief.md`.
 - The BI engineer owns look and feel: pages, visuals, bookmarks, theme, and the report's
   own layout. Build that as a **separate Fabric item with its own name**, bound to the
   deployed model — the generated stub is republished on every hub release, so edits to it

@@ -93,8 +93,9 @@ project under `ontology-hub-publish/powerbi/<product>/`. Read two things in the 
 
 Give the BI engineer the insight brief and the design guide that ships with the
 `kairos-design-gold` skill. They build the report as a **separate Fabric item with its own
-name**, bound to the deployed model. The generated `<Product>.Report` is a stub, republished
-on every hub release, so edits to it are lost.
+name**, bound to the deployed model. The brief is the report deliverable. The generated
+`<Product>.Report` is intentionally blank (DD-236) and is republished on every hub release,
+so edits to it are lost.
 
 ## 6. Harvest what they build
 
