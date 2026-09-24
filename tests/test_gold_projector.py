@@ -387,8 +387,8 @@ def test_measure_dax_referencing_unemitted_table_blocks(tmp_path: Path):
     # #619 Bug 11: a measureExpression naming a table that isn't actually emitted (e.g. a
     # stale `dim_`-prefixed name) used to render silently instead of failing closed.
     text = _gold_text("invoice").replace(
-        'kairos-ext:measureExpression "SUM([total_amount])" ;',
-        "kairos-ext:measureExpression \"SUM([total_amount]) + COUNTROWS('dim_acmeparty')\" ;",
+        'kairos-ext:measureExpression "SUM(fact_invoice[total_amount])" ;',
+        "kairos-ext:measureExpression \"SUM(fact_invoice[total_amount]) + COUNTROWS('dim_acmeparty')\" ;",
         1,
     )
     with pytest.raises(GoldContractError, match="unresolved-dax-table-reference"):
@@ -401,7 +401,7 @@ def test_approved_measure_keeps_base_column_and_emits_dax(invoice_gold):
     dax = invoice_gold["invoice/measures/invoice-measures.dax"]
     assert "total_amount as total_amount" in fact_sql
     assert "total_amount" in ddl
-    assert "[invoice.total-amount] = SUM([total_amount])" in dax
+    assert "[Total Invoice Amount] = SUM(fact_invoice[total_amount])" in dax
     assert "not data validation" in dax
     measure = next(
         item
@@ -435,7 +435,7 @@ def test_measure_lifecycle_controls_emission_and_release(
     )
     if lifecycle == "intent":
         text = text.replace(
-            '    kairos-ext:measureExpression "SUM([total_amount])" ;\n',
+            '    kairos-ext:measureExpression "SUM(fact_invoice[total_amount])" ;\n',
             "",
             1,
         )
@@ -447,7 +447,7 @@ def test_measure_lifecycle_controls_emission_and_release(
     measure = next(item for item in report["measures"] if item["id"] == "invoice.total-amount")
     assert measure["emitted"] is emitted
     dax = artifacts.get("invoice/measures/invoice-measures.dax", "")
-    assert ("[invoice.total-amount]" in dax) is emitted
+    assert ("[Total Invoice Amount]" in dax) is emitted
     assert artifacts["__release_data__"]["gold_status"]["measures"] == release_state
     assert measure["data_validated_by_projection"] is False
 
@@ -1217,3 +1217,185 @@ class TestGoldSemanticGate:
         from kairos_ontology.core.projections.dbt.gold_assert import assert_gold_semantics
 
         assert_gold_semantics({"x.SemanticModel/definition/model.tmdl": "model Model\n"})
+
+
+# ---------------------------------------------------------------------------
+# DD-238 / #978: measure dataType, display name, and multi-line DAX
+# ---------------------------------------------------------------------------
+
+_MULTI_LINE = '''"""VAR total = SUM(fact_invoice[total_amount])
+
+RETURN
+    total"""'''
+
+
+def _fact_invoice_tmdl(artifacts: dict[str, str]) -> str:
+    return next(
+        content for path, content in artifacts.items() if path.endswith("/tables/fact_invoice.tmdl")
+    )
+
+
+def _with_multi_line(tmp_path: Path) -> dict[str, str]:
+    text = _gold_text("invoice").replace(
+        'kairos-ext:measureExpression "SUM(fact_invoice[total_amount])" ;',
+        f"kairos-ext:measureExpression {_MULTI_LINE} ;",
+        1,
+    )
+    return _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
+
+
+class TestMeasureRendering:
+    def test_the_data_type_reaches_the_tmdl(self, invoice_gold):
+        tmdl = _fact_invoice_tmdl(invoice_gold)
+        header = tmdl.index("measure 'Total Invoice Amount'")
+        assert "\t\tdataType: decimal" in tmdl[header : tmdl.index("lineageTag", header)]
+
+    @pytest.mark.parametrize(
+        ("authored", "rendered"),
+        [("currency", "decimal"), ("percentage", "double"), ("datetime", "dateTime")],
+    )
+    def test_semantic_types_map_to_tmdl_types(self, tmp_path, authored, rendered):
+        text = _gold_text("invoice").replace(
+            'kairos-ext:measureDataType "decimal"', f'kairos-ext:measureDataType "{authored}"', 1
+        )
+        tmdl = _fact_invoice_tmdl(_generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text)))
+        assert f"\t\tdataType: {rendered}" in tmdl
+
+    def test_the_display_name_names_the_measure_and_the_id_keeps_the_lineage(self, invoice_gold):
+        from kairos_ontology.core.projections.dbt.gold_render import _guid
+
+        tmdl = _fact_invoice_tmdl(invoice_gold)
+        assert "\tmeasure 'Total Invoice Amount' = SUM(fact_invoice[total_amount])" in tmdl
+        assert "measure 'invoice.total-amount'" not in tmdl
+        # Seeded from the measureId, as before: a rename is an edit in Fabric, not a new object.
+        assert f"lineageTag: {_guid('fact_invoice.invoice.total-amount')}" in tmdl
+
+    def test_without_a_display_name_the_id_is_the_name(self, tmp_path):
+        text = _gold_text("invoice").replace(
+            '    kairos-ext:measureDisplayName "Total Invoice Amount" ;\n', "", 1
+        )
+        artifacts = _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
+        assert "\tmeasure 'invoice.total-amount' = " in _fact_invoice_tmdl(artifacts)
+        measure = next(
+            item for item in _report(artifacts, "invoice")["measures"] if item["id"] == "invoice.total-amount"
+        )
+        assert "name" not in measure
+
+    def test_the_report_carries_the_display_name(self, invoice_gold):
+        measure = next(
+            item for item in _report(invoice_gold, "invoice")["measures"] if item["id"] == "invoice.total-amount"
+        )
+        assert measure["name"] == "Total Invoice Amount"
+
+    def test_a_multi_line_expression_is_fenced(self, tmp_path):
+        tmdl = _fact_invoice_tmdl(_with_multi_line(tmp_path))
+        assert (
+            "\tmeasure 'Total Invoice Amount' = ```\n"
+            "\t\t\tVAR total = SUM(fact_invoice[total_amount])\n"
+            "\n"
+            "\t\t\tRETURN\n"
+            "\t\t\t    total\n"
+            "\t\t\t```\n"
+        ) in tmdl
+
+    def test_a_multi_line_expression_round_trips_through_the_parser(self, tmp_path):
+        """DD-224: harvesting the re-emitted model must show no difference."""
+        from kairos_ontology.core.gold_harvest import diff_models
+        from kairos_ontology.core.tmdl_parser import parse_model_folder
+
+        artifacts = _with_multi_line(tmp_path)
+        root = tmp_path / "model"
+        for path, content in artifacts.items():
+            if "/definition/" in path:
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+        definition = next(root.glob("*/*.SemanticModel/definition"))
+        model = parse_model_folder(definition)
+        table = next(item for item in model.tables if item.name == "fact_invoice")
+        measure = next(item for item in table.measures if item.name == "Total Invoice Amount")
+        assert measure.expression.splitlines()[0] == "VAR total = SUM(fact_invoice[total_amount])"
+        assert "```" not in measure.expression
+        assert measure.format_string == "#,##0.00"
+        assert diff_models(model, parse_model_folder(definition), product="invoice").empty
+
+    @pytest.mark.skipif(
+        __import__("shutil").which("dotnet") is None, reason="dotnet SDK not installed"
+    )
+    def test_the_rendered_measures_deserialize_in_tom(self, tmp_path):
+        from kairos_ontology.core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
+
+        results = validate_tmdl_artifacts(_with_multi_line(tmp_path))
+        assert results and all(item.status == "pass" for item in results), [
+            item.message for item in results
+        ]
+
+
+class TestMeasureNaming:
+    _DEPENDENT = """
+<https://acme.example/ontology/invoice> kairos-ext:measure acme-inv:DoubledInvoiceAmount .
+
+acme-inv:DoubledInvoiceAmount a kairos-ext:Measure ;
+    kairos-ext:measureId "invoice.doubled-amount" ;
+    kairos-ext:measureDefinition "Twice the invoice total." ;
+    kairos-ext:measureExpression "{expression}" ;
+    kairos-ext:measureDependency acme-inv:TotalInvoiceAmount ;
+    kairos-ext:measureLifecycleState "provisional" ;
+    kairos-ext:measureDataType "decimal" ;
+    kairos-ext:measureFormatString "#,##0.00" ;
+    kairos-ext:measureFolder "Finance" .
+"""
+
+    def _generate_with(self, tmp_path, extra: str):
+        return _generate(
+            "invoice", gold_path=_write_gold(tmp_path, "invoice", _gold_text("invoice") + extra)
+        )
+
+    def test_a_dependency_is_referenced_by_its_display_name(self, tmp_path):
+        artifacts = self._generate_with(
+            tmp_path, self._DEPENDENT.format(expression="[Total Invoice Amount] * 2")
+        )
+        assert "measure 'invoice.doubled-amount' = [Total Invoice Amount] * 2" in _fact_invoice_tmdl(
+            artifacts
+        )
+
+    def test_a_reference_by_id_to_a_renamed_measure_fails(self, tmp_path):
+        with pytest.raises(GoldContractError) as excinfo:
+            self._generate_with(
+                tmp_path, self._DEPENDENT.format(expression="[invoice.total-amount] * 2")
+            )
+        assert excinfo.value.code == "gold.dax-measure-reference-by-id"
+        assert "[Total Invoice Amount]" in str(excinfo.value)
+
+    # Leading and trailing whitespace never gets this far: normalization trims authored
+    # text, so a name is clean of it by construction.
+    @pytest.mark.parametrize("name", ["Has [brackets]", "Tab\\there"])
+    def test_an_invalid_display_name_fails(self, tmp_path, name):
+        text = _gold_text("invoice").replace(
+            'kairos-ext:measureDisplayName "Total Invoice Amount"',
+            f'kairos-ext:measureDisplayName "{name}"',
+            1,
+        )
+        with pytest.raises(GoldContractError) as excinfo:
+            _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
+        assert excinfo.value.code == "gold.measure-display-name-invalid"
+
+    def test_two_measures_may_not_share_a_name(self, tmp_path):
+        text = _gold_text("invoice").replace(
+            'kairos-ext:measureDisplayName "Total Line Amount"',
+            'kairos-ext:measureDisplayName "total invoice amount"',
+            1,
+        )
+        with pytest.raises(GoldContractError) as excinfo:
+            _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
+        assert excinfo.value.code == "gold.measure-display-name-collision"
+
+    def test_a_measure_may_not_shadow_a_home_table_column(self, tmp_path):
+        text = _gold_text("invoice").replace(
+            'kairos-ext:measureDisplayName "Total Invoice Amount"',
+            'kairos-ext:measureDisplayName "total_amount"',
+            1,
+        )
+        with pytest.raises(GoldContractError) as excinfo:
+            _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
+        assert excinfo.value.code == "gold.measure-display-name-collision"

@@ -169,6 +169,13 @@ class GoldMeasureSpec:
     tests: tuple[str, ...]
     evidence: tuple[str, ...]
     emitted: bool
+    #: ``kairos-ext:measureDisplayName`` (DD-238). Empty keeps ``measure_id`` as the name.
+    display_name: str = ""
+
+    @property
+    def name(self) -> str:
+        """The name the semantic model carries, and so the one DAX must reference."""
+        return self.display_name or self.measure_id
 
 
 @dataclass(frozen=True, slots=True)

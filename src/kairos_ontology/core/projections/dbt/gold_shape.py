@@ -377,6 +377,66 @@ def _column_by_property(
     return local_matches[0] if len(local_matches) == 1 else None
 
 
+#: What a measure name may not hold (DD-238). Control characters break TMDL and are
+#: flagged by BPA; brackets end a DAX `[Name]` reference early.
+_INVALID_DISPLAY_NAME = re.compile(r"[\x00-\x1f\x7f\[\]]")
+
+
+def _display_name(source) -> str:
+    display = getattr(source, "display_name", None)
+    if display is None:
+        return ""
+    value = display.value
+    if not value.strip() or value != value.strip() or _INVALID_DISPLAY_NAME.search(value):
+        _fail(
+            "gold.measure-display-name-invalid",
+            (
+                f"measureDisplayName {value!r} on {source.measure_id.value!r} must be "
+                "non-empty, carry no leading or trailing whitespace, and hold no control "
+                "characters or square brackets"
+            ),
+            rule_id="DD-238-measure",
+            resource_uri=source.resource_uri,
+        )
+    return value
+
+
+def _check_measure_names(
+    measures: tuple[GoldMeasureSpec, ...], tables: tuple[GoldTableSpec, ...]
+) -> None:
+    """A measure name is unique in the model and never shadows a home-table column."""
+    columns = {
+        table.name: {column.name.casefold() for column in table.columns} for table in tables
+    }
+    seen: dict[str, str] = {}
+    for measure in measures:
+        if not measure.emitted:
+            continue
+        key = measure.name.casefold()
+        other = seen.get(key)
+        clash = (
+            f"measure {other!r}"
+            if other is not None
+            else (
+                f"column {measure.home_table}.{measure.name}"
+                if key in columns.get(measure.home_table, set())
+                else ""
+            )
+        )
+        if clash:
+            _fail(
+                "gold.measure-display-name-collision",
+                (
+                    f"measure {measure.measure_id!r} would be named {measure.name!r} in the "
+                    f"model, which {clash} already is; a measure name is unique in a "
+                    "semantic model and may not repeat a column of its home table"
+                ),
+                rule_id="DD-238-measure",
+                resource_uri=measure.resource_uri,
+            )
+        seen[key] = measure.measure_id
+
+
 def _shape_measures(
     policy: MedallionPolicySpec,
     tables: tuple[GoldTableSpec, ...],
@@ -445,8 +505,32 @@ def _shape_measures(
         home_table = next(iter(home_tables), "")
         expression = source.expression.value if source.expression is not None else ""
         if source.lifecycle.value is not MeasureLifecycle.INTENT:
+            # DD-238: a dependency with a display name is called that in the model, so a
+            # reference by its ID would not resolve in Power BI. Named, never rewritten.
+            renamed = sorted(
+                item.measure_id
+                for item in measure_dependencies
+                if item.display_name
+                and item.display_name != item.measure_id
+                and f"[{item.measure_id}]" in expression
+            )
+            if renamed:
+                by_id = {item.measure_id: item.name for item in measure_dependencies}
+                _fail(
+                    "gold.dax-measure-reference-by-id",
+                    (
+                        f"measure {source.measure_id.value!r} references "
+                        + ", ".join(f"[{item}]" for item in renamed)
+                        + " by measureId, but the model names "
+                        + ", ".join(f"[{by_id[item]}]" for item in renamed)
+                        + " by its measureDisplayName; reference that name instead"
+                    ),
+                    rule_id="DD-238-measure",
+                    resource_uri=source.resource_uri,
+                )
             allowed = {column for _, column in column_dependencies}
             allowed.update(item.measure_id for item in measure_dependencies)
+            allowed.update(item.name for item in measure_dependencies)
             allowed.update(_local_name(item.measure_id) for item in measure_dependencies)
             missing_dax = tuple(
                 sorted(
@@ -510,6 +594,7 @@ def _shape_measures(
             tests=source.validation_tests.value,
             evidence=source.validation_evidence.value,
             emitted=source.lifecycle.value is not MeasureLifecycle.INTENT,
+            display_name=_display_name(source),
         )
         visiting.remove(resource_uri)
         shaped[resource_uri] = result
@@ -1848,6 +1933,7 @@ def _shape_dimensional_product(
                 )
             )
     ordered_measures = tuple(sorted(measures, key=lambda item: item.measure_id))
+    _check_measure_names(ordered_measures, ordered)
     bpa_ignores = _shape_bpa_ignores(
         members,
         ordered,

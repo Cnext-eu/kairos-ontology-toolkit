@@ -862,6 +862,8 @@ class MeasureFact:
     owner_role: AuthoredValuesFact | None
     tests: AuthoredValuesFact | None
     evidence: AuthoredValuesFact | None
+    #: ``kairos-ext:measureDisplayName`` (DD-238): the name the model carries.
+    display_name: AuthoredValuesFact | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -962,6 +964,8 @@ class MeasureSpec:
     owner_role: EffectiveValue[str] | None
     validation_tests: EffectiveValue[tuple[str, ...]]
     validation_evidence: EffectiveValue[tuple[str, ...]]
+    #: ``kairos-ext:measureDisplayName`` (DD-238). None keeps ``measure_id`` as the name.
+    display_name: EffectiveValue[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)

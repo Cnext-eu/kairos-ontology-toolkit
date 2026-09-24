@@ -2901,6 +2901,11 @@ def _normalize_measures(facts: tuple[MeasureFact, ...]) -> tuple[MeasureSpec, ..
                 owner_role=owner,
                 validation_tests=tests,
                 validation_evidence=evidence,
+                display_name=(
+                    _text(fact.display_name, "measure display name", "DD-238-measure")
+                    if fact.display_name is not None
+                    else None
+                ),
             )
         )
     return tuple(result)
