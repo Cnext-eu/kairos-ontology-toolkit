@@ -91,6 +91,15 @@ def _tom_payload(folder: Path) -> dict[str, Any]:
             "Power BI Desktop refuses such a model too; re-export it complete -- the "
             "definition folder with model.tmdl and every table file."
         )
+    if "ClientHostingManager" in message:
+        # Seen on Linux runners when the SDK tries to report a problem with the export:
+        # its native hosting layer fails to initialise, so the real finding is lost.
+        raise TomUnavailableError(
+            f"the TOM SDK could not run: {message}. On Linux this usually means the SDK "
+            "hit a problem in the export and could not initialise its native hosting to "
+            "report it; open the model in Power BI Desktop, or re-export it complete, "
+            "and re-run."
+        )
     raise TomUnavailableError(f"the TOM SDK could not run: {message}")
 
 

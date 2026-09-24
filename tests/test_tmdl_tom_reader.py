@@ -28,6 +28,22 @@ requires_dotnet = pytest.mark.skipif(
     shutil.which("dotnet") is None, reason="needs the .NET SDK for the TOM reader"
 )
 
+
+def _expect_rejection(call):
+    """Assert TOM refuses the export -- or skip where the SDK cannot report it.
+
+    Same precedent as test_tmdl_validate's _skip_if_sdk_unavailable: on some Linux
+    runners the SDK's native hosting fails to initialise while raising its own content
+    error, which is an environment limitation, not a reader bug.
+    """
+    try:
+        call()
+    except TmdlRejectedError as exc:
+        return exc
+    except TomUnavailableError as exc:
+        pytest.skip(f"TOM SDK could not report the rejection here: {exc}")
+    raise AssertionError("expected the TOM SDK to refuse this export")
+
 _PAYLOAD = {
     "status": "pass",
     "model": {
@@ -154,8 +170,8 @@ class TestAgainstTheRealSdk:
                 "relationship r\n\tfromColumn: Sales.Amount\n\ttoColumn: Ghost.Key\n"
             ),
         })
-        with pytest.raises(TmdlRejectedError, match="Power BI Desktop refuses"):
-            read_model_folder(folder)
+        exc = _expect_rejection(lambda: read_model_folder(folder))
+        assert "Power BI Desktop refuses" in str(exc)
 
     def test_a_lone_table_file_is_read(self, tmp_path):
         path = tmp_path / "Sales.tmdl"
@@ -177,6 +193,9 @@ class TestAgainstTheRealSdk:
             ),
         })
         partial: list[str] = []
+        _expect_rejection(
+            lambda: read_model_folder(tmp_path / "in" / "Bad.SemanticModel" / "definition")
+        )
 
         files = run_import_tmdl(tmp_path / "in", tmp_path / "out", partial)
 
