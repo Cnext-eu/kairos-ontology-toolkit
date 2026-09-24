@@ -2620,6 +2620,9 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         # declare-your-edit header.
         "hub-pr-validate/6.template",
         "dataplatform-pr-validate/4.template",
+        # Pre-#998 hub generation, before the architecture drift check moved out of
+        # `compile` into its own parallel job.
+        "hub-pr-validate/7.template",
     ),
     # Pre-#771 generation, before every `uv run` gained `--no-sync`. Also carries the
     # pre-#721 skill-context placement for full-validate.
@@ -2628,6 +2631,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         # Pre-#774, same drift-gate change as pr-validate above.
         "hub-full-validate/2.template",
         "hub-full-validate/3.template",
+        # Pre-#998, before `project` ran both architecture targets in one process.
+        "hub-full-validate/4.template",
     ),
     ".github/workflows/managed-check.yml": (
         "hub-managed-check/1.template",

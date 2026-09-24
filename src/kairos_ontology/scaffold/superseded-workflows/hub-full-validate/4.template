@@ -108,9 +108,9 @@ jobs:
           uv run --no-sync kairos-ontology compile --all --emit --confirm-emit
           # `architecture/**` comes from `project`, not from `compile --emit`, so tracking
           # it without regenerating it here would be worse than not tracking it: the files
-          # would look authoritative and never be checked (#774). One run with both
-          # targets parses every ontology once (#998).
-          uv run --no-sync kairos-ontology project --target erd --target ddd
+          # would look authoritative and never be checked (#774).
+          uv run --no-sync kairos-ontology project --target erd
+          uv run --no-sync kairos-ontology project --target ddd
           for path in \
             ontology-hub-publish/medallion/dbt \
             ontology-hub-publish/architecture \

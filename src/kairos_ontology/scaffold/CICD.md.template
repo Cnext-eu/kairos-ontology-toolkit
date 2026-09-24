@@ -28,8 +28,12 @@ domain succeeds and reports success, and the drift gate below — which runs exa
 form — then fails on a hash-only diff.
 
 The pull request must include any release-relevant generated diff required by repository policy.
-CI regenerates the same output and fails on drift. A green result proves compilation and
-structural validation; it does not replace a real downstream dbt build.
+CI regenerates the same output and fails on drift. `pr-validate.yml` runs three parallel jobs:
+`validate` (the authored inputs), `compile` (emit, and diff the dbt package and the contract
+ERDs), and `architecture` (`project --target erd --target ddd`, and diff
+`ontology-hub-publish/architecture`). The architecture diagrams are drawn from the authored
+ontologies, not from compile output, so that job does not wait for the emit. A green result
+proves compilation and structural validation; it does not replace a real downstream dbt build.
 
 ## Release
 

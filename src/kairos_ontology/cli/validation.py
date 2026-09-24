@@ -479,6 +479,13 @@ def validate_dbt_contracts_cmd(output_format):
     "<repo>/ontology-hub-publish/, and --report-format none writes no report "
     "at all, so --report-path is rejected with either.",
 )
+@click.option(
+    "--jobs",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Domains to SHACL-validate at once (default: the CPU count, at most 8; or "
+    "KAIROS_VALIDATE_JOBS). SHACL is CPU-bound, so more jobs than cores does not help.",
+)
 def validate(
     ontologies,
     shapes,
@@ -495,6 +502,7 @@ def validate(
     degraded,
     report_format,
     report_path,
+    jobs,
 ):
     """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan, DDD overlays)."""
     from ..core.hub_utils import find_hub_root, publish_root, repo_root_for
@@ -647,6 +655,7 @@ def validate(
         # matches how the drift gate and `_dangling_refs` report paths, and is what a
         # reviewer can click in a pull request (#822).
         repo_root=repo_root_for(effective_hub_root),
+        shacl_jobs=jobs,
     )
 
     # run_validation() exits non-zero on its own failures; if it fell through

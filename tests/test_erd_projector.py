@@ -572,6 +572,31 @@ class TestCliLevelProjection:
         content = mmd_files[0].read_text(encoding="utf-8")
         assert "classDiagram" in content
 
+    def test_several_targets_share_one_load_of_the_ontologies(
+        self, temp_dir, ontology_files, monkeypatch
+    ):
+        """#998: CI ran `project --target erd` and `--target ddd` separately, so every
+        domain was parsed twice. One run with both targets parses each file once."""
+        from kairos_ontology.core import ontology_loader
+
+        loads: list[str] = []
+        real = ontology_loader.load_ontology
+
+        def counting(path, *args, **kwargs):
+            loads.append(str(path))
+            return real(path, *args, **kwargs)
+
+        monkeypatch.setattr(ontology_loader, "load_ontology", counting)
+        output_dir = temp_dir / "output"
+        run_projections(
+            ontologies_path=ontology_files["dir"],
+            catalog_path=None,
+            output_path=output_dir,
+            target=("erd", "ddd"),
+        )
+        assert loads and len(loads) == len(set(loads))
+        assert sorted((output_dir / "architecture" / "erd").glob("*-erd.mmd"))
+
     def test_written_mmd_uses_lf_endings_on_every_platform(self, temp_dir, ontology_files):
         """Projection output must be byte-identical across platforms.
 

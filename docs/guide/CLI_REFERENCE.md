@@ -1222,7 +1222,7 @@ kairos-ontology project [OPTIONS]
 | `--ref-models` |  | Reference-model repository containing accelerator module profiles. |
 | `--accelerator` |  | Accelerator pack used for managed-import projection preflight. |
 | `--output` |  | Output directory for projections (default: <repo>/ontology-hub-publish). |
-| `--target` | `all` | Projection target |
+| `--target` | `('all',)` | Projection target. Repeat it to run several targets over one load of the ontologies, e.g. `--target erd --target ddd` (#998). |
 | `--platform`, `--adapter` | `fabric-warehouse` | SQL platform for dbt projection. |
 | `--namespace` |  | Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided. |
 | `--degraded` |  | Explicitly allow projection from an incomplete import closure. |
@@ -1733,6 +1733,7 @@ kairos-ontology validate [OPTIONS]
 | `--degraded` |  | Explicitly allow incomplete ontology imports for semantic validation; results are marked import_complete=false. |
 | `--report-format`, `--format` | `json` | Validation report format(s) to write. Additive: the default preserves the pre-existing JSON-only report contract at <repo>/ontology-hub-publish/validation-report.json unchanged. Pass 'none' to run validation without writing any report file at all. |
 | `--report-path` |  | Explicit report output path. Only valid with a single --report-format (json or markdown) — --report-format both always writes the default validation-report.json and validation-report.md under <repo>/ontology-hub-publish/, and --report-format none writes no report at all, so --report-path is rejected with either. |
+| `--jobs` |  | Domains to SHACL-validate at once (default: the CPU count, at most 8; or KAIROS_VALIDATE_JOBS). SHACL is CPU-bound, so more jobs than cores does not help. |
 
 
 ## validate-dbt
