@@ -60,6 +60,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.22.0rc3] — 2026-09-24
+
+Third release candidate for 5.22.0. It adds one change on top of rc2: `compile --all` stops
+re-reading unchanged inputs for every domain (#968). On a 15-domain hub, the check went
+from 91 s to 57 s with byte-identical output. Nothing else changes, so the rc2 upgrade
+notes still apply.
+
+### Performance
+- **`compile --all` no longer re-reads unchanged inputs for every domain (#968).** On a
+  15-domain hub, `compile --all --check` went from 91 s to 57 s, with byte-identical
+  output. The emit path, which runs the same analysis, benefits the same way.
+  - The disposition ledger was parsed twice per domain. `load_dispositions` is now
+    memoised per process, keyed on each ledger file's path, modification time and size,
+    so a write in the same run is still seen.
+  - The same bronze source `.ttl` files were parsed once per domain (187 times on that
+    hub). They are now parsed once per process, with the same key.
+  - The YAML reads on the compile path (bindings, contracts, dbt sources, the alignment
+    report, the conformance artifact, the Silver projector) use PyYAML's C loader when it
+    is available, as the ledger already did.
+
 ## [5.22.0rc2] — 2026-09-24
 
 Second release candidate for 5.22.0. It closes the product decisions from the September
