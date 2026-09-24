@@ -236,17 +236,44 @@ def _write_alignment(hub, *, system, table, mapped, gaps):
 class TestDispositionCascadeWarning:
     """`deferred` on a table is the widest-blast-radius, mildest-sounding choice."""
 
-    def test_deferred_names_the_columns_it_retires(self, tmp_path):
+    def test_deferred_says_its_columns_still_need_deciding(self, tmp_path):
+        """Since #881 a table-grain `deferred` does not answer for its columns (#948)."""
         _write_alignment(tmp_path, system="src", table="cargo",
                          mapped=["DESCRIPTION"], gaps=["WIDGET_A", "WIDGET_B"])
 
         lines = "\n".join(_cascade_warning(tmp_path, "src", "cargo", "deferred"))
 
         assert "2 gap column(s)" in lines
-        assert "DECIDED" in lines
+        assert "still need a decision" in lines
+        assert "DECIDED" not in lines, "the gate does not treat them as decided"
         assert "DD-169" in lines
         assert "draft-gap-decisions" in lines
-        assert "source-disposition clear" in lines
+
+    def test_clear_withdraws_what_it_says_it_does(self, tmp_path, monkeypatch):
+        """The command every 'Undo' hint names has to exist (#948)."""
+        from kairos_ontology.core.source_disposition import load_dispositions, record_disposition
+
+        hub = tmp_path
+        (hub / "model" / "ontologies").mkdir(parents=True)
+        record_disposition(hub_root=hub, system="src", table="cargo",
+                           disposition="deferred", rationale="later")
+        record_disposition(hub_root=hub, system="src", table="cargo", column="WIDGET_A",
+                           disposition="blueprint-gap", rationale="missing")
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(
+            cli, ["source-disposition", "clear", "--system", "src", "--table-grain-only"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "removed 1" in result.output
+        assert list(load_dispositions(hub)) == [("src", "cargo", "WIDGET_A")]
+
+    def test_clear_refuses_to_withdraw_everything_unfiltered(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(cli, ["source-disposition", "clear"])
+        assert result.exit_code != 0
+        assert "at least one of" in result.output
 
     def test_not_business_data_is_informational_not_a_warning(self, tmp_path):
         _write_alignment(tmp_path, system="src", table="cargo",
@@ -286,3 +313,36 @@ class TestDispositionCascadeWarning:
         assert result.exit_code == 0
         assert "DD-169" in result.output
         assert "deferred" in result.output
+
+
+class TestUpgradeAdvisory:
+    """`update` names the pre-#881 table-grain entries the gate no longer honours (#948)."""
+
+    def _hub(self, tmp_path, disposition):
+        from kairos_ontology.core.source_disposition import DISPOSITIONS_RELPATH
+
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        _write_alignment(tmp_path, system="src", table="cargo",
+                         mapped=["DESCRIPTION"], gaps=["WIDGET_A", "WIDGET_B"])
+        (tmp_path / DISPOSITIONS_RELPATH).write_text(_yaml.safe_dump({
+            "schema_version": 1,
+            "tables": [{"system": "src", "table": "cargo", "disposition": disposition}],
+        }), encoding="utf-8")
+        return tmp_path
+
+    def test_a_table_grain_deferred_is_reported_with_its_columns(self, tmp_path, capsys):
+        from kairos_ontology.cli.operations import _report_non_cascading_table_dispositions
+
+        _report_non_cascading_table_dispositions(self._hub(tmp_path, "deferred"))
+
+        out = capsys.readouterr().out
+        assert "1 table-grain disposition(s)" in out
+        assert "2 gap column(s)" in out
+        assert "draft-gap-decisions" in out
+
+    def test_a_cascading_disposition_is_not_reported(self, tmp_path, capsys):
+        from kairos_ontology.cli.operations import _report_non_cascading_table_dispositions
+
+        _report_non_cascading_table_dispositions(self._hub(tmp_path, "not-business-data"))
+
+        assert capsys.readouterr().out == ""

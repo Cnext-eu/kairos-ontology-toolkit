@@ -60,7 +60,12 @@ from .ai_provider import (
     resolve_reasoning_effort,
 )
 from .anchor_tables import load_excluded_tables
-from .source_disposition import DISPOSITIONS, load_dispositions, record_disposition
+from .source_disposition import (
+    DISPOSITIONS,
+    column_decision,
+    load_dispositions,
+    record_disposition,
+)
 from .tracing import call_metadata, flush_tracing, new_session_id
 
 logger = logging.getLogger(__name__)
@@ -701,8 +706,6 @@ def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[st
         Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
     )
     already = load_dispositions(Path(hub_root))
-    decided_keys = {(k[0], k[1], k[2]) for k in already}
-    table_level = {(k[0], k[1]) for k in already if not k[2]}
     conflicts = find_disposition_conflicts(Path(hub_root), report=report)
     conflicted = {(c.system, c.table, c.column) for c in conflicts}
 
@@ -716,7 +719,10 @@ def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[st
             if not disposition:
                 continue
             key = (column.system, column.table, column.column)
-            if key in decided_keys or (column.system, column.table) in table_level:
+            # The gate's own rule (#948): a table-grain `deferred` or `bound` does not
+            # decide the column, so it must not stop the rule from deciding it either.
+            # Writing a column-grain entry never overwrites the table-grain one.
+            if column_decision(already, *key):
                 skipped += 1
                 continue
             if key in conflicted:
@@ -774,23 +780,17 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
         if (column.system, column.table) in excluded_tables
     )
     already = load_dispositions(Path(hub_root))
-    decided_columns = {(k[0], k[1], k[2]) for k in already}
-    table_level = {(k[0], k[1]) for k in already if not k[2]}
 
-    groups = [
-        g
-        for g in group_gaps_by_column(report)
-        if any(
-            (o.system, o.table, o.column) not in decided_columns
-            and (o.system, o.table) not in table_level
-            for o in g.occurrences
-        )
-    ]
+    # Only occurrences the DD-169 gate still counts undecided reach the sheet, decided by
+    # the gate's own rule (#948): a table-grain `deferred` or `bound` no longer hides
+    # its columns here while the gate blocks on them.
     # Split each name's occurrences by domain: a disposition is domain-scoped, so
     # `OrderNo` in booking and `OrderNo` in financial are two decisions, not one.
     per_domain: dict[tuple[str, str], GapGroup] = {}
-    for g in groups:
+    for g in group_gaps_by_column(report):
         for occurrence in g.occurrences:
+            if column_decision(already, occurrence.system, occurrence.table, occurrence.column):
+                continue
             key = (occurrence.domain, g.column)
             per_domain.setdefault(key, GapGroup(column=g.column)).occurrences.append(occurrence)
 
@@ -1308,11 +1308,19 @@ def apply_decision_sheet(
     report = build_alignment_report(
         Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
     )
+    already = load_dispositions(Path(hub_root))
     applied = 0
+    skipped = 0
     for group in group_gaps_by_column(report):
         for occurrence in group.occurrences:
             decision = filled.get((occurrence.domain, group.column))
             if not decision:
+                continue
+            # The sheet lists only what the gate counts undecided (#948), so applying it
+            # writes only those: an occurrence already decided, per column or by a
+            # cascading table-grain entry, keeps the decision it has.
+            if column_decision(already, occurrence.system, occurrence.table, occurrence.column):
+                skipped += 1
                 continue
             applied += 1
             if dry_run:
@@ -1341,4 +1349,5 @@ def apply_decision_sheet(
         "names_applied": len(filled),
         "families_applied": families_applied,
         "columns_written": applied,
+        "skipped_already_decided": skipped,
     }
