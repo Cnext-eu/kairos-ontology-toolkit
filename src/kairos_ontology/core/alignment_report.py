@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import yaml_io
 from . import analysis_paths
 from ._cache import compute_entry_hash
 from ._provenance import ai_attribution_note
@@ -322,7 +323,6 @@ def source_sample_presence(hub_root: Path) -> dict[tuple[str, str, str], bool]:
     Read from ``integration/sources/<system>/<table>.yaml``, which is where the evidence
     actually lives; the alignment files do not carry it for unmapped columns.
     """
-    import yaml
 
     presence: dict[tuple[str, str, str], bool] = {}
     sources = Path(hub_root) / "integration" / "sources"
@@ -335,7 +335,7 @@ def source_sample_presence(hub_root: Path) -> dict[tuple[str, str, str], bool]:
             if path.name.endswith(".samples.yaml") or path.name == "_manifest.yaml":
                 continue
             try:
-                document = yaml.safe_load(path.read_text(encoding="utf-8"))
+                document = yaml_io.safe_load(path.read_text(encoding="utf-8"))
             except Exception:  # defensive: a broken source file must not skew the report
                 continue
             if not isinstance(document, dict):
@@ -678,7 +678,6 @@ def _build_alignment_report_uncached(
     analysis_dir: Path, *, hub_root: Path | None = None
 ) -> AlignmentReport:
     """Build the report from scratch. See :func:`build_alignment_report`."""
-    import yaml
 
     report = AlignmentReport()
     directory = Path(analysis_dir)
@@ -703,7 +702,7 @@ def _build_alignment_report_uncached(
 
     for path in files:
         try:
-            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            document = yaml_io.safe_load(path.read_text(encoding="utf-8"))
         except Exception:  # defensive: one broken file must not sink the report
             report.unreadable.append(path.name)
             report.notices.append(f"Could not read {path.name}; skipped.")

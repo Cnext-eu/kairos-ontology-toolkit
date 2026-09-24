@@ -24,6 +24,7 @@ import yaml
 from jsonschema import Draft7Validator
 from jsonschema.exceptions import best_match
 
+from .. import yaml_io
 from .result import CompileDiagnostic, CompileError, SourceLocation
 
 MAX_EXPRESSION_DEPTH = 64
@@ -608,7 +609,7 @@ def load_entity_binding(text: str, *, path: str = "<binding>") -> EntityBinding:
     diagnostics: list[CompileDiagnostic] = []
     _collect_duplicate_key_diagnostics(root, path, diagnostics)
 
-    data = yaml.safe_load(text)
+    data = yaml_io.safe_load(text)
     if not isinstance(data, dict):
         diagnostics.append(
             CompileDiagnostic(

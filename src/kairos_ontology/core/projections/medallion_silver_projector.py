@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from .. import yaml_io
 from ..adapters import FABRIC_WAREHOUSE
 
 import hashlib
@@ -15,7 +16,6 @@ import subprocess
 from pathlib import Path
 from time import perf_counter
 
-import yaml
 
 from ..observability.events import (
     PROJECTION_STEP_COMPLETED,
@@ -319,7 +319,7 @@ def _drop_resolved_externals(body: str, emitted: set[str]) -> str:
 
 
 def _schema_columns(content: str, model_name: str) -> tuple[str, ...] | None:
-    loaded = yaml.safe_load(content)
+    loaded = yaml_io.safe_load(content)
     if not isinstance(loaded, dict):
         return None
     models = loaded.get("models", [])

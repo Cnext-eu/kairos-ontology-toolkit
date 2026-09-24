@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from .. import yaml_io
 from ..dbt_contracts import SUPPORTED_ADAPTERS, canonical_adapters
 from ..projections.dbt.policy_normalize import _source_type
 from .adapter import ResolvedColumn, ResolvedRelation
@@ -256,7 +257,7 @@ def _resolve_authored_path(
 
 def _load_contract(binding: EntityBinding, path: Path) -> dict[str, Any]:
     try:
-        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document = yaml_io.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise _failure(
             binding,
