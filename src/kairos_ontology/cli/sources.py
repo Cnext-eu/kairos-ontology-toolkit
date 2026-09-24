@@ -3829,6 +3829,15 @@ def source_disposition_clear_cmd(
     default=False,
     help="Only include terms flagged company_specific in the extractions.",
 )
+@escape_option(
+    "discovery.glossary-not-emptied",
+    "--allow-empty",
+    is_flag=True,
+    default=False,
+    help="Write even when the build yields no concepts and the output already holds some. "
+    "Without it the command refuses, because the usual cause is that extraction has not "
+    "run yet and the result would erase an authored glossary (#906).",
+)
 def build_glossary_cmd(
     extraction_dir,
     output_path,
@@ -3836,6 +3845,7 @@ def build_glossary_cmd(
     company_name,
     glossary_namespace,
     company_specific_only,
+    allow_empty,
 ):
     """Build the SKOS company glossary TTL from confirmed extractions (DD-062).
 
@@ -3854,7 +3864,12 @@ def build_glossary_cmd(
       kairos-ontology build-glossary --company-specific-only
       kairos-ontology build-glossary --company-domain acme.com --output glossary.ttl
     """
-    from ..core.glossary_builder import build_glossary, derive_glossary_namespace, read_company_info
+    from ..core.glossary_builder import (
+        GlossaryOverwriteRefused,
+        build_glossary,
+        derive_glossary_namespace,
+        read_company_info,
+    )
     from ..core.hub_utils import find_hub_root
 
     cwd = Path.cwd()
@@ -3910,19 +3925,31 @@ def build_glossary_cmd(
         )
         raise SystemExit(1)
 
-    result = build_glossary(
-        extraction_dir=ext_path,
-        output_path=out_path,
-        glossary_namespace=glossary_namespace,
-        scheme_label=scheme_label,
-        scheme_description=scheme_description,
-        company_specific_only=company_specific_only,
-    )
+    try:
+        result = build_glossary(
+            extraction_dir=ext_path,
+            output_path=out_path,
+            glossary_namespace=glossary_namespace,
+            scheme_label=scheme_label,
+            scheme_description=scheme_description,
+            company_specific_only=company_specific_only,
+            allow_empty=allow_empty,
+        )
+    except GlossaryOverwriteRefused as exc:
+        click.echo(f"   ✗ {exc}", err=True)
+        raise SystemExit(1) from exc
 
     click.echo(
         f"   ✓ Wrote {len(result.concepts)} concept(s) from "
         f"{len(result.sources)} extraction file(s)."
     )
+    if result.kept_authored:
+        # #906: saying so is the point -- a rebuild used to replace these silently.
+        click.echo(
+            f"   ✓ Kept {result.kept_authored} hand-authored concept(s) from the previous "
+            f"glossary ({result.authored_overrides} of them in place of a generated one "
+            "with the same IRI)."
+        )
     if result.excluded_sources:
         # C4/#417/#416b: `status: skipped` extraction files are excluded — the
         # document was never actually read, so its `extracted_terms` (if any)

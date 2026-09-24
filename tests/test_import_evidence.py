@@ -217,3 +217,42 @@ class TestDocumentsStagedElsewhere:
         custom.mkdir(parents=True)
 
         assert _documents_staged_elsewhere(custom) == []
+
+
+class TestValidateReportsItBeforeAnyOntologyExists:
+    """#903: the gate sat inside `if ontology_files:`, so the one hub state it was written
+    for -- sources imported, nothing modelled yet -- never saw it. The unit was right; the
+    wiring was never exercised, because every fixture hub already had ontologies."""
+
+    def test_validate_on_an_ontology_free_hub_fails_on_staged_evidence(self, tmp_path, capsys):
+        import json
+
+        import pytest
+
+        from kairos_ontology.core.validator import run_validation
+
+        hub = _hub(tmp_path)
+        (hub / "model" / "ontologies").mkdir(parents=True)
+        stray = tmp_path / ".import" / "Input"
+        stray.mkdir()
+        (stray / "domain-definitions.pdf").write_text("x", encoding="utf-8")
+        report = tmp_path / "report.json"
+
+        with pytest.raises(SystemExit) as exit_info:
+            run_validation(
+                ontologies_path=hub / "model" / "ontologies",
+                shapes_path=hub / "model" / "shapes",
+                catalog_path=hub / "catalog-v001.xml",
+                do_syntax=True,
+                do_shacl=False,
+                do_consistency=False,
+                report_path=report,
+                repo_root=tmp_path,
+            )
+
+        assert exit_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "Staged business evidence" in out
+        assert "domain-definitions.pdf" in out
+        findings = json.loads(report.read_text(encoding="utf-8"))["integrity"]["import_evidence"]
+        assert findings["findings"], "the audit result must reach the report too"

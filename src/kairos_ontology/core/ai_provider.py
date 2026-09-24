@@ -796,20 +796,29 @@ def create_chat_completion(
         param = _unsupported_request_param(str(exc))
         if not param or param not in request_kwargs:
             raise
-        _UNSUPPORTED_PARAMS_BY_MODEL.setdefault(model, set()).add(param)
+        rejected = _UNSUPPORTED_PARAMS_BY_MODEL.setdefault(model, set())
+        first_discovery = param not in rejected
+        rejected.add(param)
+        # Said once, visibly (#911). The provider's own 400 can reach the terminal
+        # through the client or tracing wrapper, and without this line a handled
+        # rejection reads as a failure. Parallel calls that were already in flight when
+        # the first one learnt this repeat the same discovery; those stay at debug.
+        announce = logger.warning if first_discovery else logger.debug
         if param in fallbacks:
-            logger.info(
-                "Model %s rejected request parameter '%s'; retrying with the weaker "
-                "fallback value (for the rest of this run).",
+            announce(
+                "ℹ %s rejects request parameter '%s'; handled -- retrying with the weaker "
+                "fallback value, and using it for the rest of this run. Any 'Error code: "
+                "400' naming it above is this, not a failure.",
                 model,
                 param,
             )
             retry_kwargs = dict(request_kwargs)
             retry_kwargs[param] = fallbacks[param]
         else:
-            logger.info(
-                "Model %s rejected request parameter '%s'; retrying once without it "
-                "(and omitting it for the rest of this run).",
+            announce(
+                "ℹ %s rejects request parameter '%s'; handled -- retrying without it, "
+                "and omitting it for the rest of this run. Any 'Error code: 400' naming it "
+                "above is this, not a failure.",
                 model,
                 param,
             )

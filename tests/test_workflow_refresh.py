@@ -182,7 +182,7 @@ _LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
     "github-workflows/full-validate.yml":
         "7c623689179e2e27d2c6a8cfc031719d7e910802899590de37014ae46ccbc56b",
     "github-workflows/release-projections.yml":
-        "110256da4cafdc252cc50b1569717819fa9ec864f583bca9bfd773fd4f3076fc",
+        "6562b12c0d2022d935f7e09676cec674bd63320aefef9a1afa04ceabd916b0dc",
     "github-workflows/assign-copilot.yml":
         "06e75b76b56fe7d8444c2e0d1555b3e23c752791f3f42338c41b36b23ed63938",
     "github-workflows/copilot-setup-steps.yml":

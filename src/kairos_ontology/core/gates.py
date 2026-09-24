@@ -175,12 +175,31 @@ GATES: tuple[Gate, ...] = (
         commands=("anchor-tables", "propose-alignment"),
         escape="--without-discovery",
         escape_modes=_HUMAN_ONLY,
-        requires=("businessdiscovery/glossary/*.ttl",),
+        requires=("businessdiscovery/*.ttl",),
         escape_rationale=(
             "A hub genuinely early in its life has no glossary yet, and the operator "
             "may want source-shaped output to look at. An agent delivering a hub has "
             "no such excuse -- the glossary is the client's own words, and it is what "
             "the run is supposed to be for."
+        ),
+    ),
+    Gate(
+        id="discovery.glossary-not-emptied",
+        rule_id="DD-234",
+        summary=(
+            "build-glossary never replaces a glossary that holds concepts with one that "
+            "holds none."
+        ),
+        commands=("build-glossary",),
+        escape="--allow-empty",
+        escape_modes=_HUMAN_ONLY,
+        requires=("businessdiscovery/_extractions/*.extraction.yaml",),
+        on_missing_evidence="fail",
+        escape_rationale=(
+            "Emptying a glossary on purpose is a legitimate human act -- starting "
+            "discovery over, say. An agent that meets this has run the serializer before "
+            "the extraction step, and the fix is to run extraction, not to overwrite the "
+            "client's own vocabulary (#906)."
         ),
     ),
     Gate(

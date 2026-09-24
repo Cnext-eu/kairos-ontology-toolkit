@@ -2619,10 +2619,12 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "hub-managed-check/2.template",
     ),
     # Pre-#771/#773 generation, before `--no-sync`, the missing `--locked`, and the
-    # GH_HOST / --prerelease fixes that make a GHES release possible at all.
+    # GH_HOST / --prerelease fixes that make a GHES release possible at all. Generation 3
+    # predates #864, whose prerelease pattern missed a bare `rc` and PEP 440 `b1` tags.
     ".github/workflows/release-projections.yml": (
         "hub-release-projections/1.template",
         "hub-release-projections/2.template",
+        "hub-release-projections/3.template",
     ),
 }
 

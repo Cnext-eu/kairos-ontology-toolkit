@@ -33,7 +33,7 @@ from rdflib import DCTERMS, RDFS, SKOS, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF
 
 from .discovery_extraction import EXTRACTION_SUFFIX, load_extraction
-from ._provenance import prepend_provenance
+from ._provenance import prepend_provenance, strip_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,21 @@ class GlossaryBuildResult:
     sources: list[str] = field(default_factory=list)
     skipped_terms: int = 0
     excluded_sources: list[str] = field(default_factory=list)
+    #: Hand-authored concepts carried over from the file being replaced (#906).
+    kept_authored: int = 0
+    #: Of those, how many share an IRI with a generated concept and won over it.
+    authored_overrides: int = 0
+
+
+#: Marks a concept a human wrote, so every later rebuild keeps it (#906). Carried-over
+#: concepts get it the first time, and a rebuild keeps any concept that has it -- the
+#: file's own header says build-glossary wrote it by then, so the header alone would
+#: forget them on the second run.
+AUTHORED_PROVENANCE = "authored by hand; kept by build-glossary"
+
+
+class GlossaryOverwriteRefused(Exception):
+    """Writing would replace a glossary that holds concepts with one that holds none."""
 
 
 def to_pascal_case(text: str) -> str:
@@ -336,6 +351,34 @@ def write_glossary_graph(graph: Graph, output_path: Path) -> Path:
     return output_path
 
 
+def _authored_concepts(existing: Graph, *, whole_file_authored: bool) -> list[URIRef]:
+    """Concepts in *existing* a human wrote: every one, or those carrying the mark."""
+    concepts = [c for c in existing.subjects(RDF.type, SKOS.Concept) if isinstance(c, URIRef)]
+    if whole_file_authored:
+        return sorted(concepts)
+    mark = Literal(AUTHORED_PROVENANCE)
+    return sorted(c for c in concepts if (c, DCTERMS.provenance, mark) in existing)
+
+
+def _read_existing_glossary(output_path: Path) -> tuple[Graph, bool] | None:
+    """``(graph, whole_file_authored)`` for the file about to be replaced, or ``None``.
+
+    A file without the ``build-glossary`` provenance header was written by a person:
+    every concept in it is theirs. A file with the header holds generated concepts, plus
+    any a previous rebuild carried over and marked.
+    """
+    if not output_path.is_file():
+        return None
+    from .ontology_loader import SemanticProfile, load_ontology
+
+    text = output_path.read_text(encoding="utf-8")
+    header = text[: len(text) - len(strip_provenance(text))]
+    # Through the canonical loader (DD-103): a glossary has no imports, so the asserted
+    # graph is exactly the file's own triples. Read-only -- the result may be cached.
+    graph = load_ontology(output_path, profile=SemanticProfile.ASSERTED).graph
+    return graph, "build-glossary" not in header
+
+
 def build_glossary(
     *,
     extraction_dir: Path,
@@ -344,23 +387,66 @@ def build_glossary(
     scheme_label: str,
     scheme_description: str | None = None,
     company_specific_only: bool = False,
+    allow_empty: bool = False,
 ) -> GlossaryBuildResult:
     """End-to-end build: read extractions, aggregate concepts, write the TTL.
+
+    Never destroys a glossary a person wrote (#906):
+
+    * zero concepts over a file that has some raises :class:`GlossaryOverwriteRefused`,
+      unless *allow_empty* -- the usual cause is that extraction has not run yet, and a
+      green check over an emptied glossary is how 52 hand-written terms were lost;
+    * a concept a person wrote that the build does not regenerate is carried over and
+      marked (:data:`AUTHORED_PROVENANCE`), and one that shares an IRI with a generated
+      concept wins over it, because it is the client's own wording.
 
     Returns a :class:`GlossaryBuildResult` describing what was written.
     """
     terms, sources, excluded_sources = collect_terms(extraction_dir)
     concepts, skipped = aggregate_concepts(terms, company_specific_only=company_specific_only)
+    existing = _read_existing_glossary(output_path)
+    if existing is not None and not concepts and not allow_empty:
+        held = sum(1 for _ in existing[0].subjects(RDF.type, SKOS.Concept))
+        if held:
+            reason = (
+                f"{len(sources)} extraction file(s) produced no concept"
+                if sources
+                else "no extraction files were found"
+            )
+            raise GlossaryOverwriteRefused(
+                f"{reason}, and {output_path} already holds {held} concept(s). Writing "
+                "now would replace it with an empty glossary. Run the extraction step "
+                "first (kairos-design-discovery), or pass --allow-empty to overwrite it "
+                "deliberately."
+            )
     graph = build_glossary_graph(
         concepts,
         glossary_namespace=glossary_namespace,
         scheme_label=scheme_label,
         scheme_description=scheme_description,
     )
+    kept = overrides = 0
+    if existing is not None:
+        old_graph, whole_file_authored = existing
+        generated = set(graph.subjects(RDF.type, SKOS.Concept))
+        mark = Literal(AUTHORED_PROVENANCE)
+        for concept in _authored_concepts(old_graph, whole_file_authored=whole_file_authored):
+            if concept in generated:
+                overrides += 1
+                for triple in list(graph.triples((concept, None, None))):
+                    graph.remove(triple)
+            for _s, predicate, obj in old_graph.triples((concept, None, None)):
+                if predicate == SKOS.inScheme:
+                    obj = URIRef(glossary_namespace)
+                graph.add((concept, predicate, obj))
+            graph.add((concept, DCTERMS.provenance, mark))
+            kept += 1
     write_glossary_graph(graph, output_path)
     return GlossaryBuildResult(
         concepts=concepts,
         sources=sources,
         skipped_terms=skipped,
         excluded_sources=excluded_sources,
+        kept_authored=kept,
+        authored_overrides=overrides,
     )

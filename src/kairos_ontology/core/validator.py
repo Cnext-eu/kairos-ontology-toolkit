@@ -1924,6 +1924,47 @@ def run_validation(
     # file at a time, which is precisely why cross-domain concept duplication survived
     # a full 21-domain autopilot run and surfaced only as a dbt duplicate-model build
     # failure two stages later. This pass reads the hub as a whole.
+    # Staged business evidence nothing consumed (DD-233). This is a hard stop on
+    # purpose: source schemas the pipeline can re-read at will, but the client's own
+    # documents and their Power BI models are the two inputs only a human can supply,
+    # and a hub modelled without them is modelled from column names. Silence here
+    # reads identically whether the client sent nothing or sent thirty documents to a
+    # directory no command looks in.
+    #
+    # Deliberately outside the `if ontology_files:` block (#903): it reads `.import/` and
+    # nothing else, and a hub with no domain ontology yet is exactly the one that most
+    # needs telling -- the gate exists to stop modelling from column names alone.
+    from .import_evidence import audit_import_evidence
+
+    hub_dir = ontologies_path.parent.parent
+    evidence_report = audit_import_evidence(hub_dir.parent, hub_dir)
+    results["integrity"]["import_evidence"] = evidence_report.to_dict()
+    if evidence_report.findings:
+        print("📥 Staged business evidence")
+        print("-" * 50)
+        if degraded:
+            results["integrity"]["warnings"].extend(
+                item.to_dict() for item in evidence_report.findings
+            )
+            print(
+                f"  ⚠ degraded mode accepted {len(evidence_report.findings)} "
+                "unused evidence item(s)"
+            )
+        else:
+            results["integrity"]["failed"] += len(evidence_report.findings)
+            results["integrity"]["errors"].extend(
+                item.to_dict() for item in evidence_report.findings
+            )
+            shown = evidence_report.findings[:10]
+            for item in shown:
+                print(f"  ✗ [{item.kind}] {item.path}: {item.detail}")
+            remaining = len(evidence_report.findings) - len(shown)
+            if remaining:
+                print(f"    … and {remaining} more")
+            for remediation in dict.fromkeys(i.remediation for i in shown):
+                print(f"    ↪ {remediation}")
+        print()
+
     if ontology_files:
         from .ontology_integrity import audit_ontology_integrity
 
@@ -1991,43 +2032,6 @@ def run_validation(
             + ", ".join(f"{name}: {value:.0%}" for name, value in sorted(scores.items()))
         )
         print()
-
-        # Staged business evidence nothing consumed (DD-233). This is a hard stop on
-        # purpose: source schemas the pipeline can re-read at will, but the client's own
-        # documents and their Power BI models are the two inputs only a human can supply,
-        # and a hub modelled without them is modelled from column names. Silence here
-        # reads identically whether the client sent nothing or sent thirty documents to a
-        # directory no command looks in.
-        from .import_evidence import audit_import_evidence
-
-        hub_dir = ontologies_path.parent.parent
-        evidence_report = audit_import_evidence(hub_dir.parent, hub_dir)
-        results["integrity"]["import_evidence"] = evidence_report.to_dict()
-        if evidence_report.findings:
-            print("📥 Staged business evidence")
-            print("-" * 50)
-            if degraded:
-                results["integrity"]["warnings"].extend(
-                    item.to_dict() for item in evidence_report.findings
-                )
-                print(
-                    f"  ⚠ degraded mode accepted {len(evidence_report.findings)} "
-                    "unused evidence item(s)"
-                )
-            else:
-                results["integrity"]["failed"] += len(evidence_report.findings)
-                results["integrity"]["errors"].extend(
-                    item.to_dict() for item in evidence_report.findings
-                )
-                shown = evidence_report.findings[:10]
-                for item in shown:
-                    print(f"  ✗ [{item.kind}] {item.path}: {item.detail}")
-                remaining = len(evidence_report.findings) - len(shown)
-                if remaining:
-                    print(f"    … and {remaining} more")
-                for remediation in dict.fromkeys(i.remediation for i in shown):
-                    print(f"    ↪ {remediation}")
-            print()
 
         # Source-table disposition (DD-164). The blueprint deliberately
         # scopes which domains exist, so homeless source tables are expected — what is

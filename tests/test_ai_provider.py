@@ -644,6 +644,25 @@ class TestCreateChatCompletion:
         assert "temperature" not in second_call_kwargs
         assert second_call_kwargs["response_format"] == {"type": "json_object"}
 
+    def test_a_handled_rejection_is_announced_as_handled(self, caplog):
+        """#911: the only visible trace of a working retry was the provider's bare 400."""
+        import logging
+
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        client = self._client(
+            side_effect=[RuntimeError("Unsupported value: 'temperature' does not support 0.1"), "ok"]
+        )
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.ai_provider"):
+            create_chat_completion(
+                client, model="m", messages=[{"role": "user", "content": "hi"}], temperature=0.1
+            )
+
+        announced = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(announced) == 1
+        assert "handled" in announced[0] and "'temperature'" in announced[0]
+        assert "not a failure" in announced[0]
+
     def test_unrelated_error_propagates_unchanged(self):
         from kairos_ontology.core.ai_provider import create_chat_completion
 

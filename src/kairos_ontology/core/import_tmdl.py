@@ -241,7 +241,11 @@ def generate_engineering_pack(
         lines.append(f"Source: {source_label}")
     lines.append("")
     if crosscheck_note:
+        # The note is newline-joined Markdown ending in a blank line; splitlines() drops
+        # that trailing empty element, which ran the note into the next heading (#905).
         lines.extend(crosscheck_note.splitlines())
+        if lines[-1] != "":
+            lines.append("")
 
     # Global inventory
     lines.extend(
