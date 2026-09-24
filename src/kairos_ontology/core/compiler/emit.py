@@ -351,8 +351,11 @@ def _write_stage(
     previously_owned: Mapping[str, str],
     manifest_name: str,
     replace_unowned_paths: Collection[str],
+    retained: Collection[str] = (),
 ) -> None:
     for relative in sorted(previously_owned, key=lambda item: (-item.count("/"), item)):
+        if relative in retained:
+            continue
         _remove_owned_file(stage, relative)
     previously_owned_keys = {_collision_key(path) for path in previously_owned}
     planned_keys = {_collision_key(artifact.path) for artifact in plan.artifacts}
@@ -376,6 +379,35 @@ def _write_stage(
         with destination.open("xb") as stream:
             stream.write(artifact.content)
     manifest_path.write_bytes(plan.manifest)
+
+
+def _still_owned_elsewhere(
+    target: Path,
+    manifest_name: str,
+    stale: Collection[str],
+    replace_unowned_paths: Collection[str],
+) -> frozenset[str]:
+    """Stale shared paths another manifest in *target* still lists (#860).
+
+    A path in ``replace_unowned_paths`` is written by several emits into one directory --
+    a shared Gold domain's provenance sidecar is listed in every consuming product's
+    manifest. When one product stops writing it, its stale sweep must not delete a file a
+    sibling manifest still owns; the file simply leaves this manifest. Only shared paths
+    are considered, so an ordinary stale file is removed exactly as before. A sibling
+    manifest that cannot be read is skipped: it is that emit's problem to report.
+    """
+    candidates = {path for path in stale if path in set(replace_unowned_paths)}
+    if not candidates or not target.is_dir():
+        return frozenset()
+    kept: set[str] = set()
+    for sibling in sorted(target.glob(".kairos-compile-manifest*.json")):
+        if sibling.name == manifest_name:
+            continue
+        try:
+            kept |= candidates & set(_parse_manifest(target, sibling.name))
+        except ManifestError:
+            continue
+    return frozenset(kept)
 
 
 def _validate_stage(stage: Path, plan: EmissionPlan, manifest_name: str) -> None:
@@ -666,6 +698,7 @@ def emit_artifacts(
             replace_unowned_paths,
         )
         stale = tuple(sorted(set(previously_owned) - set(plan.paths)))
+        retained = _still_owned_elsewhere(target, manifest_name, stale, replace_unowned_paths)
         logger.debug(
             "emit plan: target=%s artifacts=%d previously_owned=%d stale=%d",
             target.name,
@@ -686,6 +719,7 @@ def emit_artifacts(
                 previously_owned,
                 manifest_name,
                 replace_unowned_paths,
+                retained,
             )
             _validate_stage(stage, plan, manifest_name)
             backup = _commit_stage(stage, target)
@@ -702,11 +736,11 @@ def emit_artifacts(
             "emit commit: target=%s written=%d removed=%d",
             target.name,
             len(plan.paths),
-            len(stale),
+            len(stale) - len(retained),
         )
         return EmissionResult(
             target_dir=target,
             manifest_path=target / manifest_name,
             written=plan.paths,
-            removed=stale,
+            removed=tuple(path for path in stale if path not in retained),
         )

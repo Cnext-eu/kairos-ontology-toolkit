@@ -287,6 +287,21 @@ def _dbt_calendar_sql(calendar: GoldCalendarSpec, adapter: str) -> str:
             # already dispatches it (DATENAME on T-SQL, DATE_FORMAT on Spark).
             '    {{ kairos_month_name("date_day") }} as month_name,',
             f"    {_part('day')} as day_of_month,",
+            # ISO 8601 weeks, the only convention a profile may declare (#833). Spark's
+            # weekofyear is ISO; T-SQL's plain `week` part is not, so it needs iso_week.
+            (
+                "    weekofyear(date_day) as week_number,"
+                if databricks
+                else "    datepart(iso_week, date_day) as week_number,"
+            ),
+            (
+                "    cast(date_trunc('WEEK', date_day) as date) as week_start_date,"
+                if databricks
+                # 1900-01-01 was a Monday; the double modulo keeps earlier dates positive
+                # and, unlike `datepart(weekday, ...)`, does not depend on @@DATEFIRST.
+                else "    cast(dateadd(day, -(((datediff(day, cast('19000101' as date), "
+                "date_day) % 7) + 7) % 7), date_day) as date) as week_start_date,"
+            ),
             f"    {calendar.fiscal_year_start_month} as fiscal_year_start_month,",
             f"    {_quoted(calendar.week_pattern)} as week_pattern,",
             f"    {_quoted(calendar.locale)} as calendar_locale,",
@@ -557,6 +572,8 @@ def _ddl(
                 "    month_number INT NOT NULL,",
                 f"    month_name {text_type} NOT NULL,",
                 "    day_of_month INT NOT NULL,",
+                "    week_number INT NOT NULL,",
+                "    week_start_date DATE NOT NULL,",
                 "    fiscal_year_start_month INT NOT NULL,",
                 f"    week_pattern {text_type} NOT NULL,",
                 f"    calendar_locale {text_type} NOT NULL,",
@@ -1359,6 +1376,11 @@ def gold_product_report(
                     }
                     for role in spec.calendar.roles
                 ],
+                **(
+                    {"contributing_profiles": list(spec.calendar.contributing_profiles)}
+                    if spec.calendar.contributing_profiles
+                    else {}
+                ),
             }
             if spec.calendar is not None
             else None

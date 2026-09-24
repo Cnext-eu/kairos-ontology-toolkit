@@ -698,3 +698,49 @@ class TestHardlinkedStaging:
 
         assert untouched.read_bytes() == b"x"
         assert untouched.stat().st_ino == before
+
+
+def test_stale_shared_path_another_manifest_lists_is_kept(tmp_path: Path):
+    """#860: one product dropping a shared domain must not delete the sibling's sidecar."""
+    target = tmp_path / "gold"
+    shared = "metadata/party-gold.provenance.json"
+    for product in ("a", "b"):
+        emit_artifacts(
+            {f"models/{product}.sql": "select 1", shared: "{}\n"},
+            target,
+            manifest_name=f".kairos-compile-manifest.gold-{product}.json",
+            replace_unowned_paths=(shared,),
+        )
+
+    result = emit_artifacts(
+        {"models/a.sql": "select 1"},
+        target,
+        manifest_name=".kairos-compile-manifest.gold-a.json",
+        replace_unowned_paths=(shared,),
+    )
+
+    assert (target / shared).read_text(encoding="utf-8") == "{}\n"
+    assert shared not in result.removed
+    a_manifest = (target / ".kairos-compile-manifest.gold-a.json").read_text(encoding="utf-8")
+    assert shared not in a_manifest
+
+
+def test_stale_shared_path_no_other_manifest_lists_is_removed(tmp_path: Path):
+    target = tmp_path / "gold"
+    shared = "metadata/party-gold.provenance.json"
+    emit_artifacts(
+        {"models/a.sql": "select 1", shared: "{}\n"},
+        target,
+        manifest_name=".kairos-compile-manifest.gold-a.json",
+        replace_unowned_paths=(shared,),
+    )
+
+    result = emit_artifacts(
+        {"models/a.sql": "select 1"},
+        target,
+        manifest_name=".kairos-compile-manifest.gold-a.json",
+        replace_unowned_paths=(shared,),
+    )
+
+    assert not (target / shared).exists()
+    assert shared in result.removed

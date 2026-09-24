@@ -401,3 +401,78 @@ class TestProductShadowingADomain:
         )
         product = resolve_gold_product(hub, "party", hub_domains=("billing", "party"))
         assert product.domains == ("party", "billing")
+
+
+class TestIdenticalCalendarsAreOne:
+    """#859: DD-228's shared domain and a fact domain may both declare the same calendar."""
+
+    @staticmethod
+    def _calendar(uri: str, *, roles=(), week="iso-8601", start="2020-01-01"):
+        from kairos_ontology.core.projections.dbt.policy_specs import (
+            CalendarProfileSpec,
+            EffectiveValue,
+            PolicyProvenance,
+            PolicySource,
+        )
+
+        source = next(iter(PolicySource))
+
+        def ev(value):
+            return EffectiveValue(value, PolicyProvenance(source=source, rule_id="t"))
+
+        return CalendarProfileSpec(
+            resource_uri=uri, start_date=ev(start), end_date=ev("2030-12-31"),
+            fiscal_year_start_month=ev(1), week_pattern=ev(week), locale=ev("en-GB"),
+            holiday_source=ev(""), time_zone=ev("UTC"), period_closure=ev(""),
+            role_playing_dates=ev(tuple(roles)), approval_status=ev("approved"),
+        )
+
+    @staticmethod
+    def _member(name, calendar):
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Gold:
+            calendar: object
+
+        @dataclass(frozen=True)
+        class Policy:
+            gold: Gold
+
+        return SimpleNamespace(ontology_name=name, policy=Policy(gold=Gold(calendar=calendar)))
+
+    def test_identical_profiles_merge_their_roles(self):
+        from kairos_ontology.core.projections.dbt.gold_shape import _product_calendar
+
+        members = (
+            self._member("billing", self._calendar("urn:billing", roles=("Invoice=f.date",))),
+            self._member("party", self._calendar("urn:party", roles=("Signup=d.date",))),
+        )
+
+        policy, contributors = _product_calendar(members)
+
+        assert policy.gold.calendar.resource_uri == "urn:billing"
+        assert policy.gold.calendar.role_playing_dates.value == ("Invoice=f.date", "Signup=d.date")
+        assert contributors == ("urn:party",)
+
+    def test_a_real_difference_is_still_a_conflict_that_names_it(self):
+        from kairos_ontology.core.projections.dbt.gold_shape import _product_calendar
+
+        members = (
+            self._member("billing", self._calendar("urn:billing")),
+            self._member("party", self._calendar("urn:party", week="iso-8601-sunday")),
+        )
+
+        with pytest.raises(GoldContractError) as excinfo:
+            _product_calendar(members)
+        assert excinfo.value.code == "gold.product-calendar-conflict"
+        assert "week_pattern" in str(excinfo.value)
+
+    def test_one_declaring_domain_is_unchanged(self):
+        from kairos_ontology.core.projections.dbt.gold_shape import _product_calendar
+
+        cal = self._calendar("urn:party")
+        policy, contributors = _product_calendar(
+            (self._member("billing", None), self._member("party", cal))
+        )
+        assert policy.gold.calendar is cal and contributors == ()

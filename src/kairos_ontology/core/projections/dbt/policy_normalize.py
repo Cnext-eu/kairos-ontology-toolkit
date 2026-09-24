@@ -16,6 +16,7 @@ from enum import Enum
 from typing import TypeVar
 
 from ..uri_utils import camel_to_snake
+from .calendar_columns import ISO_WEEK_PATTERNS
 from .diagnostics import (
     Diagnostic,
     DiagnosticCollector,
@@ -2958,6 +2959,18 @@ def _normalize_calendar(fact: CalendarFact) -> CalendarProfileSpec:
             rule_id="DD-113-calendar",
             resource_uri=fact.resource_uri,
         )
+    week_pattern = _text(fact.week_pattern, "calendar week pattern", "DD-113-calendar")
+    if week_pattern.value not in ISO_WEEK_PATTERNS:
+        raise PolicyNormalizationError(
+            "calendar.unsupported-week-pattern",
+            (
+                f"weekPattern {week_pattern.value!r} is not a week convention the generated "
+                f"calendar implements; use one of {', '.join(sorted(ISO_WEEK_PATTERNS))} "
+                "(ISO 8601: Monday start, week 1 holds the first Thursday)"
+            ),
+            rule_id="DD-113-calendar",
+            resource_uri=fact.resource_uri,
+        )
     return CalendarProfileSpec(
         resource_uri=fact.resource_uri,
         start_date=start,
@@ -2967,11 +2980,7 @@ def _normalize_calendar(fact: CalendarFact) -> CalendarProfileSpec:
             fact.fiscal_year_start_month,
             "DD-113-calendar",
         ),
-        week_pattern=_text(
-            fact.week_pattern,
-            "calendar week pattern",
-            "DD-113-calendar",
-        ),
+        week_pattern=week_pattern,
         locale=_text(fact.locale, "calendar locale", "DD-113-calendar"),
         holiday_source=_text(
             fact.holiday_source,
