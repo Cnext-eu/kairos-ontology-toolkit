@@ -55,20 +55,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The connection-override step below runs `kairos-ontology` from this repo's
-      # locked environment, exactly as pr-validate.yml does. Without these two steps it
-      # failed with `uv: command not found` before anything was published (#983).
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
-        with:
-          # Same pin as pr-validate.yml: an unpinned version queries github.com's
-          # "latest release" API, which 404s from a GitHub Enterprise Server host.
-          version: "0.12.5"
-          enable-cache: true
-
-      - name: Install toolkit
-        run: uv sync --locked
-
       # §12 item 9: deploy only after the target environment's dbt build succeeded.
       # No dbt-build workflow ships from this template (it is scaffolded/maintained
       # separately); this only verifies the run the operator names actually succeeded.
@@ -159,7 +145,7 @@ jobs:
         env:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
         run: |
-          uv run --no-sync kairos-ontology apply-gold-connection \
+          uv run kairos-ontology apply-gold-connection \
             --package-dir semantic-model \
             --environment "$TARGET_ENVIRONMENT"
 
