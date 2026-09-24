@@ -148,6 +148,8 @@ class GapProposal:
     #: Where an imported Power BI model uses this column name (#942). Evidence for the
     #: reviewer: a column a report is built on is not one to defer on a hunch.
     bi_demand: list[str] = field(default_factory=list)
+    #: DD-179 role tokens this name belongs to across its tables (#938).
+    role_groups: list[str] = field(default_factory=list)
 
     def to_entry(self) -> dict[str, Any]:
         return {
@@ -163,8 +165,23 @@ class GapProposal:
             **({"suggested_properties": self.suggested_properties}
                if self.suggested_properties else {}),
             **({"bi_demand": self.bi_demand} if self.bi_demand else {}),
+            **(
+                {"role_groups": self.role_groups, "governing_pattern": ROLE_PATTERN}
+                if self.role_groups
+                else {}
+            ),
         }
 
+
+#: The normative pattern for a table carrying several parties in several roles (#938).
+ROLE_PATTERN = "blueprints/patterns/qualified-role-assignment"
+
+_ROLE_NOTE = (
+    "Member of the '{roles}' role group: columns that are one kind of entity in a "
+    "role. {pattern} is normative for this shape -- model the party once and link it "
+    "through the module's role-assignment class, rather than deciding each flattened "
+    "attribute on its own."
+)
 
 #: Dispositions a rule may not draft for a column a BI model uses (#942): both take the
 #: column out of Silver, one for now and one for good, on no evidence about its use.
@@ -183,6 +200,15 @@ def propose_for_group(
     reasoning, so the reviewer sees both.
     """
     proposal = _rule_proposal(group, domain)
+    roles = sorted({o.role_group for o in group.occurrences if o.role_group})
+    if roles:
+        # #938: name the governing pattern at the point of decision.
+        proposal.role_groups = roles
+        proposal.reasoning = (
+            _ROLE_NOTE.format(roles="/".join(roles), pattern=ROLE_PATTERN)
+            + " "
+            + proposal.reasoning
+        )
     if not bi_demand:
         return proposal
     proposal.bi_demand = list(bi_demand)
@@ -375,6 +401,16 @@ def group_into_families(
                 **(
                     {"bi_demand_members": sorted(m.column for m in coherent if m.bi_demand)}
                     if any(m.bi_demand for m in coherent)
+                    else {}
+                ),
+                # #938: a family that is a role group is one party in a role, and a
+                # normative pattern says how to model it.
+                **(
+                    {
+                        "role_groups": sorted({r for m in coherent for r in m.role_groups}),
+                        "governing_pattern": ROLE_PATTERN,
+                    }
+                    if any(m.role_groups for m in coherent)
                     else {}
                 ),
             }
