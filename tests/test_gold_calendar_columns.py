@@ -260,3 +260,98 @@ class TestWeekNumber:
             f"{CALENDAR_TABLE}.week_number", f"{CALENDAR_TABLE}.week_start_date"
         )
         assert check_coverage((insight,), spec)[0].missing_dimensions == ()
+
+
+def _column_blocks(tmdl: str) -> dict[str, list[str]]:
+    """Column name -> its property lines, from a rendered `dim_date` table."""
+    blocks: dict[str, list[str]] = {}
+    current = None
+    for line in tmdl.splitlines():
+        if line.startswith("\tcolumn "):
+            current = line.removeprefix("\tcolumn ").strip()
+            blocks[current] = []
+        elif line.startswith("\t\t") and current is not None:
+            blocks[current].append(line.strip())
+        elif line.strip():
+            # Any other object at table level (a description, the partition) ends it.
+            current = None
+    return blocks
+
+
+def _rendered_date_table() -> str:
+    from kairos_ontology.core.projections.dbt.gold_render import _date_tmdl
+
+    physical = SimpleNamespace(
+        semantic_mode="directLake", adapter="databricks", catalog="", schema_name=""
+    )
+    return _date_tmdl(_calendar(), physical, None)
+
+
+class TestBestPracticeByDesign:
+    """DD-238 / #979: dim_date renders the way `_table_tmdl` renders every other table."""
+
+    def test_every_calendar_column_is_never_summarized(self):
+        blocks = _column_blocks(_rendered_date_table())
+        assert set(blocks) == CALENDAR_COLUMN_NAMES
+        for name, properties in blocks.items():
+            assert "summarizeBy: none" in properties, name
+
+    def test_every_calendar_column_has_a_stable_distinct_lineage_tag(self):
+        from kairos_ontology.core.projections.dbt.gold_render import _guid
+
+        blocks = _column_blocks(_rendered_date_table())
+        tags = {
+            name: next(item for item in properties if item.startswith("lineageTag: "))
+            for name, properties in blocks.items()
+        }
+        assert len(set(tags.values())) == len(tags)
+        assert tags["month_number"] == f"lineageTag: {_guid('dim_date.month_number')}"
+        assert _rendered_date_table() == _rendered_date_table()
+
+    def test_month_name_sorts_by_month_number(self):
+        blocks = _column_blocks(_rendered_date_table())
+        assert "sortByColumn: month_number" in blocks["month_name"]
+        sorted_columns = [name for name, props in blocks.items() if any("sortByColumn" in p for p in props)]
+        assert sorted_columns == ["month_name"]
+
+    def test_the_key_is_the_datetime_column_the_relationships_join(self):
+        from kairos_ontology.core.projections.dbt.gold_shape import CALENDAR_COLUMN
+
+        blocks = _column_blocks(_rendered_date_table())
+        keyed = [name for name, properties in blocks.items() if "isKey" in properties]
+        assert keyed == ["full_date"] == [CALENDAR_COLUMN]
+        assert "dataType: DateTime" in blocks["full_date"]
+        assert "dataCategory: Time" in _rendered_date_table()
+
+    def test_every_role_relationship_targets_the_key(self):
+        from kairos_ontology.core.projections.dbt.gold_shape import _calendar_relationships
+        from kairos_ontology.core.projections.dbt.gold_specs import GoldCalendarRoleSpec
+        from dataclasses import replace
+
+        calendar = replace(
+            _calendar(),
+            roles=(
+                GoldCalendarRoleSpec("Ordered", "fact_order", "ordered_date"),
+                GoldCalendarRoleSpec("Shipped", "fact_order", "shipped_date"),
+            ),
+        )
+        keyed = next(item.name for item in CALENDAR_COLUMNS if item.marks_date_table)
+        assert {item.target_column for item in _calendar_relationships(calendar)} == {keyed}
+
+    def test_the_warehouse_key_is_unchanged(self):
+        """Only the semantic model moves: the DDL, ERD and dbt tests still key on date_key."""
+        assert [item.name for item in CALENDAR_COLUMNS if item.is_key] == ["date_key"]
+
+    @pytest.mark.skipif(
+        __import__("shutil").which("dotnet") is None, reason="dotnet SDK not installed"
+    )
+    def test_a_calendar_bearing_model_deserializes_in_tom(self):
+        import tests.test_gold_projector as harness
+        from kairos_ontology.core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
+
+        artifacts = harness._generate("invoice")
+        assert any(path.endswith("/tables/dim_date.tmdl") for path in artifacts)
+        results = validate_tmdl_artifacts(artifacts)
+        assert results and all(item.status == "pass" for item in results), [
+            item.message for item in results
+        ]

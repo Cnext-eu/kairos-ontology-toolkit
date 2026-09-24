@@ -1098,9 +1098,18 @@ def _date_tmdl(
         lines.append(f"\t/// {column.description}")
         lines.append(f"\tcolumn {column.name}")
         lines.append(f"\t\tdataType: {_CALENDAR_TMDL_TYPES[column.kind]}")
-        if column.is_key:
+        # DD-238: the key is the DateTime column the role relationships join, which is
+        # what makes this a date table. On `date_key` (Int64) it was not one.
+        if column.marks_date_table:
             lines.append("\t\tisKey")
+        # Seeded like every other table's columns, so a calendar column is the same
+        # object across emits rather than a new one each time.
+        lines.append(f"\t\tlineageTag: {_guid(f'dim_date.{column.name}')}")
         lines.append(f"\t\tsourceColumn: {column.name}")
+        if column.sort_by:
+            lines.append(f"\t\tsortByColumn: {column.sort_by}")
+        # Year and month numbers are attributes, not quantities: summed, they are noise.
+        lines.append("\t\tsummarizeBy: none")
         lines.extend(
             ignore_annotation(
                 ignores.get(("column", f"dim_date.{column.name}"), ()), indent="\t\t"
