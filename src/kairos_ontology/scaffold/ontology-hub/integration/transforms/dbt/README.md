@@ -15,9 +15,20 @@ seeds/<name>.csv
 seeds/<name>.yml                          # optional column docs
 ```
 
-Name single-source intermediate models `int_<source>__<entity>` and multi-source
-survivorship models `int_merged__<entity>`. Atomic per-source `stg_<source>__<entity>`
-models may feed the final contracted `int_*` model referenced by `source.dbtModel`.
+Models follow three layers, and each layer does one thing:
+
+```text
+stg_<source>__<entity>   1:1 clean and cast of one source table. No joins.
+int_<source>__<entity>   that source's joins, filters, rankings and code mapping.
+int_merged__<entity>     only combines int_<source>__ models (union / survivorship).
+                         Never calls source().
+```
+
+A single-source entity stops at `int_<source>__<entity>`; the final contracted `int_*`
+model is the one `source.dbtModel` references. Keeping a source's rules in its own
+`int_<source>__` model means they live in one place, and adding a source never means
+editing every merge model. `validate-dbt-contracts` warns when an `int_merged__` model
+calls `source()` or a `stg_` model joins.
 
 The model properties YAML is the physical output contract. Include every output column and
 type plus the minimal `meta.kairos` target, grain, physical key, and adapter metadata. Use
