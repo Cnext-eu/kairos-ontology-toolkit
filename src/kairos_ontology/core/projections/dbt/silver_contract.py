@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Any
 
 from .policy_specs import CanonicalTypeKind, CanonicalTypeSpec
-from .specs import SilverModelSpec
+from .specs import OMIT_WHEN_DEFAULT, SilverModelSpec
 
 
 def canonical_type_label(value: CanonicalTypeSpec) -> str:
@@ -23,10 +23,21 @@ def canonical_type_label(value: CanonicalTypeSpec) -> str:
     return value.kind.value
 
 
+def _omitted(value: object, field) -> bool:
+    """An ``optional_field`` still holding its default: absent from hashes and JSON."""
+    return (
+        bool(field.metadata.get(OMIT_WHEN_DEFAULT)) and getattr(value, field.name) == field.default
+    )
+
+
 def canonical_data(value: object) -> Any:
     """Convert a deeply immutable typed contract to deterministic JSON data."""
     if is_dataclass(value):
-        return {field.name: canonical_data(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: canonical_data(getattr(value, field.name))
+            for field in fields(value)
+            if not _omitted(value, field)
+        }
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, tuple):
@@ -99,6 +110,8 @@ def silver_parity_fields(model: SilverModelSpec) -> tuple[tuple[str, str], ...]:
                 append(field.name, ())
             for index, item in enumerate(value):
                 for item_field in fields(item):
+                    if _omitted(item, item_field):
+                        continue
                     append(
                         f"{field.name}.{index}.{item_field.name}",
                         getattr(item, item_field.name),

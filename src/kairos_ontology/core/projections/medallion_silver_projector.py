@@ -37,7 +37,13 @@ from .dbt.specs import (
     SilverModelSpec,
     SilverPhysicalPlan,
 )
-from .shared import mermaid_frontmatter, mermaid_provenance_comment, strip_mermaid_header
+from .shared import (
+    ER_EDGE_PATTERN,
+    er_edge,
+    mermaid_frontmatter,
+    mermaid_provenance_comment,
+    strip_mermaid_header,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +229,8 @@ def _render_erd(plan: SilverPhysicalPlan) -> str:
         (f"    %% Silver ERD: {plan.domain_name}; adapter={plan.adapter}/{plan.adapter_version}"),
         "    %% Relationships come only from emitted SilverForeignKeySpec values. A referenced",
         "    %% model outside this domain is drawn as a stub and its edge labelled [external].",
+        "    %% Parent end: || when the foreign key is NOT NULL (missingParent: error), |o when",
+        "    %% it is nullable. Child end: o| for a one-to-one binding, o{ otherwise (DD-241).",
         "",
     ]
     for model in plan.models:
@@ -265,6 +273,12 @@ def _render_erd(plan: SilverPhysicalPlan) -> str:
     for referenced_model in external:
         lines.extend((f"    {referenced_model.upper()} {{", _EXTERNAL_STUB_ATTRIBUTE, "    }", ""))
     for model, constraint in foreign_keys:
+        nullable = {column.name: column.nullable for column in model.columns}
+        edge = er_edge(
+            parent_required=bool(constraint.columns)
+            and not any(nullable.get(name, True) for name in constraint.columns),
+            one_to_one=constraint.relationship_cardinality == "one-to-one",
+        )
         temporal = constraint.temporal_mode or "none"
         annotation = f"temporal={temporal}"
         if constraint.as_of_column:
@@ -273,7 +287,7 @@ def _render_erd(plan: SilverPhysicalPlan) -> str:
         if constraint.referenced_model not in emitted:
             label += " [external]"
         lines.append(
-            f"    {constraint.referenced_model.upper()} ||--o{{ "
+            f"    {constraint.referenced_model.upper()} {edge} "
             f'{model.model_name.upper()} : "{label}"'
         )
     return "\n".join(lines).rstrip() + "\n"
@@ -307,7 +321,7 @@ def _drop_resolved_externals(body: str, emitted: set[str]) -> str:
                 index += 1
             continue
         if (
-            "||--o{" in stripped
+            re.search(rf" {ER_EDGE_PATTERN} ", stripped)
             and stripped.endswith('[external]"')
             and stripped.split(" ", 1)[0] in emitted
         ):
@@ -600,6 +614,11 @@ def generate_master_erd(
             if not isinstance(model, dict):
                 continue
             source = str(model.get("model_name", ""))
+            nullable = {
+                str(column.get("name", "")): bool(column.get("nullable", True))
+                for column in model.get("columns", ())
+                if isinstance(column, dict)
+            }
             for constraint in model.get("constraints", ()):
                 if not isinstance(constraint, dict) or constraint.get("kind") != "foreign-key":
                     continue
@@ -611,8 +630,16 @@ def generate_master_erd(
                 annotation = f"temporal={temporal}"
                 if as_of:
                     annotation += f";as-of={as_of}"
+                # Same token as the domain ERD draws for the same edge, from the same two
+                # facts: the dedup below is an exact-string match (DD-241).
+                columns = [str(name) for name in constraint.get("columns", ())]
+                edge = er_edge(
+                    parent_required=bool(columns)
+                    and not any(nullable.get(name, True) for name in columns),
+                    one_to_one=constraint.get("relationship_cardinality") == "one-to-one",
+                )
                 relationships.add(
-                    f'    {target.upper()} ||--o{{ {source.upper()} : "'
+                    f'    {target.upper()} {edge} {source.upper()} : "'
                     f'{constraint.get("property_uri", "")} [{annotation}]"'
                 )
     emitted_upper = {name.upper() for name in emitted}

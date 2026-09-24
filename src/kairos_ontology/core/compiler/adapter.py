@@ -223,6 +223,13 @@ class ResolutionContext:
     #: ancestors) the import closure marks ``owl:deprecated true`` (#938). Graph-free for
     #: the same reason as the two maps above.
     deprecated_classes: dict[str, str] = field(default_factory=dict)
+    #: ``(class URI, object-property URI) -> (target min, source max)``: the OWL bounds of
+    #: every relationship a binding in scope names (DD-241). The target min says whether
+    #: OWL requires a parent; the source max whether a parent has at most one child.
+    #: Graph-free for the same reason as the maps above.
+    relationship_bounds: dict[tuple[str, str], tuple[int | None, int | None]] = field(
+        default_factory=dict
+    )
 
     def relation(self, ref: str) -> ResolvedRelation | None:
         """Return the resolved relation for an author ``source.relation`` token."""

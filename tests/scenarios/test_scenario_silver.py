@@ -82,11 +82,15 @@ def test_erd_draws_cross_domain_targets_as_external_stubs(invoice_dbt_artifacts)
     assert erd.startswith("---\nconfig:\n  layout: elk\n---\nerDiagram\n")
     assert "temporal=" in erd
     external_parents: set[str] = set()
+    import re
+
+    from kairos_ontology.core.projections.shared import ER_EDGE_PATTERN
+
     for line in erd.splitlines():
-        if "||--o{" not in line:
+        match = re.match(rf"^\s*(\S+) {ER_EDGE_PATTERN} (\S+) :", line)
+        if match is None:
             continue
-        left, remainder = line.strip().split(" ||--o{ ", 1)
-        right = remainder.split(" :", 1)[0]
+        left, right = match.group(1), match.group(2)
         assert right in emitted
         if left in emitted:
             assert "[external]" not in line

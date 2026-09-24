@@ -479,6 +479,15 @@ Rules the exemplar demonstrates:
   the canonical name does not match.
 - **Object properties with ranges:** every object property declares `rdfs:range`
   pointing at its target class.
+- **Relationship cardinality lives in OWL, and only there (DD-241).** Declare it on the
+  class that holds the property: `owl:FunctionalProperty` for at most one, an
+  `owl:Restriction` with `owl:minCardinality 1` for required, `owl:cardinality 1` for
+  exactly one, and an `owl:inverseOf` partner that is functional for one-to-one. A bound
+  that holds only for a subclass goes on that subclass. Never restate it as a SHACL
+  `sh:minCount`/`sh:maxCount` on the object property: the class diagrams, the contract
+  ERD and compile read OWL, and `validate` warns (`cardinality.shacl-duplicates-owl`,
+  `-contradicts-owl`, `-shacl-only`). The worked examples and the table of which output
+  reads which declaration are in `docs/toolkit/how-to/declare-relationship-cardinality.md`.
 - **Local subclasses:** add a local `owl:Class` subclass only when the hub
   constrains a reference-model class with an additional property or cardinality.
   If the hub merely uses the class as-is, do **not** subclass. If
@@ -494,7 +503,8 @@ Rules the exemplar demonstrates:
   `ontology-hub-publish/shapes-draft/` — outside the validated directory, with a
   DRAFT banner. These are derived and never hand-authored.
 - Hand-author **governance** constraints in `model/shapes/<domain>.shacl.ttl`:
-  closed code lists, required identifiers, role cardinality. Every constraint
+  closed code lists, required identifier literals, patterns. Not relationship
+  cardinality: that is OWL's (see above). Every constraint
   carries `sh:message` and an explicit `sh:severity`. The exemplar
   `exemplar-domain.shacl.ttl` demonstrates the pattern.
 - **Mapping stage:** EntityBinding authoring (kairos-design-mapping) does **not** author SHACL shapes — binding quality is enforced by the compiler's conformance checks, not by governance SHACL. Author all governance constraints here in domain design.

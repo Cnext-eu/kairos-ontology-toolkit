@@ -1260,6 +1260,12 @@ def _normalize_temporal(
                     "late-parent action",
                     "DD-109-temporal-fk",
                 ),
+                relationship_cardinality=(
+                    "one-to-one"
+                    if fact.relationship_cardinality is not None
+                    and "one-to-one" in fact.relationship_cardinality.values
+                    else ""
+                ),
                 participates_in_change_detection=_bool(
                     fact.change_detection,
                     "FK change-detection flag",

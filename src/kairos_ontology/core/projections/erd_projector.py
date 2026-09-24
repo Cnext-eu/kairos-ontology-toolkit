@@ -197,6 +197,54 @@ def _effective_bounds(
     return None, None
 
 
+Bounds = tuple[Optional[int], Optional[int]]
+
+
+def edge_multiplicities(
+    graph: Graph,
+    domain_cls: URIRef,
+    declared_on: URIRef,
+    prop: URIRef,
+    range_cls: URIRef,
+    inverse: Optional[URIRef] = None,
+) -> tuple[Bounds, Bounds]:
+    """Return the OWL ``((min, max), (min, max))`` of an edge's source and target ends.
+
+    The one derivation of relationship cardinality from OWL (DD-241), shared by the class
+    diagram, the DDD context diagram, the contract ERD and the compiler's cross-check
+    against the binding, so none of them can read the ontology differently.
+
+    The target end is the restriction on the class holding the property -- the domain
+    side, which is where OWL declares it -- with ``owl:FunctionalProperty`` meaning at
+    most one. The source end has two signals: inverse-functionality of *prop* (at most one
+    domain instance per range value) and, when an ``owl:inverseOf`` partner is known, the
+    partner's own restriction on the range class: that partner is declared there, so its
+    bounds are exactly the source multiplicity.
+    """
+    min_bound, max_bound = _effective_bounds(graph, domain_cls, declared_on, prop)
+    if max_bound is None and (prop, RDF.type, OWL.FunctionalProperty) in graph:
+        max_bound = 1
+    left_min: Optional[int] = None
+    left_max = 1 if (prop, RDF.type, OWL.InverseFunctionalProperty) in graph else None
+    if inverse is not None:
+        left_min, inverse_max = _effective_bounds(graph, range_cls, range_cls, inverse)
+        if inverse_max is not None:
+            left_max = inverse_max
+        elif (inverse, RDF.type, OWL.FunctionalProperty) in graph:
+            left_max = 1
+    return (left_min, left_max), (min_bound, max_bound)
+
+
+def declared_inverse(graph: Graph, prop: URIRef) -> Optional[URIRef]:
+    """The ``owl:inverseOf`` partner of *prop*, either direction; the IRI-first when several."""
+    partners = {
+        other
+        for other in (*graph.objects(prop, OWL.inverseOf), *graph.subjects(OWL.inverseOf, prop))
+        if isinstance(other, URIRef) and other != prop
+    }
+    return min(partners, key=str) if partners else None
+
+
 def _fold_inverses(graph: Graph, edges: list[Edge]) -> list[Edge]:
     """Collapse an ``owl:inverseOf`` pair drawn in both directions into one association.
 
@@ -536,23 +584,9 @@ def _render_class_diagram(working_graph: Graph, classes: list[URIRef]) -> list[s
     for domain_cls, declared_on, prop, range_cls, inherited, inverse in relationships:
         left = node_ids[domain_cls]
         right = node_ids[range_cls]
-        min_bound, max_bound = _effective_bounds(working_graph, domain_cls, declared_on, prop)
-        if max_bound is None and (prop, RDF.type, OWL.FunctionalProperty) in working_graph:
-            max_bound = 1
-        # OWL restrictions are declared on the class holding the property, i.e. the domain
-        # side, which is what `_effective_bounds` captured for the right side above. The
-        # left side has two signals: inverse-functionality of the forward property (at
-        # most one domain instance per range value) and, when an owl:inverseOf partner was
-        # folded into this edge, the partner's own restriction on the range class -- that
-        # partner is declared there, so its bounds are exactly the left multiplicity.
-        left_min: Optional[int] = None
-        left_max = 1 if (prop, RDF.type, OWL.InverseFunctionalProperty) in working_graph else None
-        if inverse is not None:
-            left_min, inverse_max = _effective_bounds(working_graph, range_cls, range_cls, inverse)
-            if inverse_max is not None:
-                left_max = inverse_max
-            elif (inverse, RDF.type, OWL.FunctionalProperty) in working_graph:
-                left_max = 1
+        (left_min, left_max), (min_bound, max_bound) = edge_multiplicities(
+            working_graph, domain_cls, declared_on, prop, range_cls, inverse
+        )
         left_mult = _multiplicity(left_min, left_max)
         right_mult = _multiplicity(min_bound, max_bound)
         label = _sanitize(extract_local_name(str(prop)))

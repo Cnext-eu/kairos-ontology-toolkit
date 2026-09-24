@@ -1420,6 +1420,9 @@ def _finalize_silver_contracts(
                     cardinality=(
                         relationship.cardinality.value.value if relationship is not None else ""
                     ),
+                    relationship_cardinality=(
+                        relationship.relationship_cardinality if relationship is not None else ""
+                    ),
                     missing_action=(
                         relationship.missing_action.value.value if relationship is not None else ""
                     ),

@@ -33,7 +33,7 @@ from .gold_specs import (
     GoldTableSpec,
 )
 from .policy_specs import CanonicalTypeKind, CanonicalTypeSpec, GoldTableRole
-from ..shared import mermaid_frontmatter, mermaid_provenance_comment
+from ..shared import er_edge, mermaid_frontmatter, mermaid_provenance_comment
 
 
 # PBIP wrapper schemas. The projector is the single, authoritative source of
@@ -643,11 +643,27 @@ def _erd(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
     # Calendar role edges live in `spec.relationships` since #792; they used to be
     # appended by a second loop over `spec.calendar.roles`, which would double-emit
     # them now. An inactive relationship is still real and stays on the diagram.
+    #
+    # Both ends come from the product (DD-241): the parent end from whether the fact's key
+    # column may be null, the child end from the relationship's own cardinality -- the
+    # same value the TMDL relationship is rendered from. A calendar role's date column is
+    # not a Gold table column, so it stays optional.
+    nullable = {
+        (table.name, column.name): column.nullable
+        for table in spec.tables
+        for column in table.columns
+    }
     for relationship in spec.relationships:
         label = relationship.role_name or relationship.name
         suffix = "" if relationship.is_active else " (inactive)"
+        edge = er_edge(
+            parent_required=not nullable.get(
+                (relationship.source_table, relationship.source_column), True
+            ),
+            one_to_one=relationship.cardinality == "one-to-one",
+        )
         lines.append(
-            f"    {relationship.target_table.upper()} ||--o{{ "
+            f"    {relationship.target_table.upper()} {edge} "
             f"{relationship.source_table.upper()} : "
             f'"{label}{suffix}"'
         )

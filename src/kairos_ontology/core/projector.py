@@ -1105,6 +1105,8 @@ def run_projections(
                     plan_only=check_only,
                     diagnostic_mode=diagnostic_mode,
                     local_graph=_own_source_graph(load_result),
+                    load_result=load_result,
+                    ontology_file=onto_info["file"],
                 )
                 if check_only:
                     continue
@@ -2013,6 +2015,8 @@ def _run_projection(
     plan_only: bool = False,
     diagnostic_mode: str = "fail_fast",
     local_graph=None,
+    load_result=None,
+    ontology_file: Optional[Path] = None,
 ) -> dict:
     """Run a specific projection type using simplified logic.
 
@@ -2079,11 +2083,20 @@ def _run_projection(
     # contract document rather than the graph or a CompilePlan: the promise is what was
     # declared, so it renders whether or not a binding fulfils it today.
     if target == "contract-erd":
-        from .projections.contract_erd_projector import generate_contract_erd_artifacts
+        from .projections.contract_erd_projector import (
+            ContractOntology,
+            generate_contract_erd_artifacts,
+        )
 
         return generate_contract_erd_artifacts(
             contracts_dir=contracts_dir,
             ontology_name=ontology_name or "domain",
+            # Relationship ends are the ontology's (DD-241); without it they go optional.
+            ontology=(
+                ContractOntology(load_result, Path(ontology_file))
+                if load_result is not None and ontology_file is not None
+                else None
+            ),
         )
 
     # Externally-registered targets (e.g. mdm-profile) — dispatched via the
