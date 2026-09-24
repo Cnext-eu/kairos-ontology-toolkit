@@ -301,5 +301,6 @@ during cleanup.
 | [DD-236](decisions/dd-236-the-insight-brief-is-the-report-deliverable-and-the-emitted-report-stays-blank.md) | The insight brief is the report deliverable and the emitted report stays blank | Accepted | 2026-09-24 |
 | [DD-237](decisions/dd-237-import-tmdl-reads-power-bi-models-with-the-tom-sdk-and-requires-dotnet.md) | import-tmdl reads Power BI models with the TOM SDK and requires dotnet | Accepted | 2026-09-24 |
 | [DD-238](decisions/dd-238-kairos-owns-a-curated-bpa-profile-and-the-semantic-model-is-best-practice-by-design.md) | Kairos owns a curated BPA profile, and the semantic model is best practice by design | Accepted | 2026-09-24 |
+| [DD-239](decisions/dd-239-a-fabric-deploy-promotes-one-archive-per-github-environment-and-frames-the-model-before.md) | A Fabric deploy promotes one archive per GitHub Environment and frames the model before it counts | Accepted | 2026-09-24 |
 
 ---

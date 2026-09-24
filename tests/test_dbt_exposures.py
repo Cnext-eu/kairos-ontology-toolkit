@@ -60,7 +60,7 @@ _DIRECT_LAKE_HUB_ROOT = Path(tempfile.mkdtemp(prefix="kairos-exposures-hub-"))
     "    environments:\n"
     "      DEV:\n"
     "        workspace_id: 11111111-1111-1111-1111-111111111111\n"
-    "        lakehouse_id: 22222222-2222-2222-2222-222222222222\n",
+    "        item_id: 22222222-2222-2222-2222-222222222222\n",
     encoding="utf-8",
 )
 

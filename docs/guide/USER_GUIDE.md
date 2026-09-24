@@ -134,7 +134,9 @@ projection on `databricks` fails closed with `gold.databricks-connection-missing
 block is absent, and with `gold.databricks-connection-invalid` when it is malformed —
 generating a semantic model that cannot reach a warehouse is not an acceptable outcome.
 Fabric Direct Lake uses the sibling `gold.direct_lake_connection` block instead, declaring a
-`workspace_id` and `lakehouse_id` per environment. It is equally required: a Direct Lake model
+`workspace_id` and `item_id` per environment. `item_id` is the Fabric Warehouse dbt writes Gold
+into: the model reads its `gold_*` Delta tables through OneLake (DD-239); `lakehouse_id` is a
+deprecated alias. It is equally required: a Direct Lake model
 binds through a named expression that embeds those GUIDs, so projection fails closed with
 `gold.direct-lake-connection-missing` when the block is absent. Both modes emit a root
 `parameter.yml` so fabric-cicd can rewrite the environment-specific values at deploy time.

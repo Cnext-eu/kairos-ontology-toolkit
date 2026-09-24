@@ -54,8 +54,9 @@ gold:
 
 The TMDL carries the `default_environment` values and the projector emits a fabric-cicd
 `parameter.yml` that rewrites them per target environment at deploy time. Gold projection
-on `databricks` fails closed while the block is missing. Fabric Direct Lake needs nothing
-here.
+on `databricks` fails closed while the block is missing. Fabric Direct Lake needs its own
+`gold.direct_lake_connection` block (a `workspace_id` and the `item_id` of the Warehouse dbt
+writes Gold into, per environment), and fails closed without it too.
 
 ## Ontology conventions
 

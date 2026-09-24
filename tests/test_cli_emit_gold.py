@@ -154,7 +154,7 @@ def test_missing_direct_lake_connection_surfaces_as_click_error(tmp_path, monkey
             line
             for line in config.read_text(encoding="utf-8").splitlines()
             if "gold" not in line and "direct_lake" not in line and "workspace_id" not in line
-            and "lakehouse_id" not in line and "environments" not in line and "DEV" not in line
+            and "item_id" not in line and "environments" not in line and "DEV" not in line
         )
         + "\n",
         encoding="utf-8",

@@ -71,7 +71,7 @@ _DIRECT_LAKE_HUB_ROOT = Path(tempfile.mkdtemp(prefix="kairos-gold-direct-lake-hu
     "    environments:\n"
     "      DEV:\n"
     "        workspace_id: 11111111-1111-1111-1111-111111111111\n"
-    "        lakehouse_id: 22222222-2222-2222-2222-222222222222\n",
+    "        item_id: 22222222-2222-2222-2222-222222222222\n",
     encoding="utf-8",
 )
 
@@ -838,7 +838,7 @@ def test_direct_lake_connection_rejects_non_guid_placeholder(tmp_path: Path):
         "    environments:\n"
         "      DEV:\n"
         "        workspace_id: WORKSPACE_ID\n"
-        "        lakehouse_id: 22222222-2222-2222-2222-222222222222\n",
+        "        item_id: 22222222-2222-2222-2222-222222222222\n",
         encoding="utf-8",
     )
     with pytest.raises(GoldContractError, match="direct-lake-connection-invalid"):

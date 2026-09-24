@@ -7,7 +7,7 @@
 # the HUB itself declares.
 #
 # This file is that seam from the other side: it lets the dataplatform point a deployment
-# at Fabric infrastructure the hub knows nothing about, so real workspace and lakehouse
+# at Fabric infrastructure the hub knows nothing about, so real workspace and item
 # GUIDs never have to be committed to the hub repo.
 #
 # How it is applied (see .github/workflows/deploy-powerbi-semantic-model.yml):
@@ -26,10 +26,13 @@
 # Copy to `gold-connections.yml` (same directory). A whole value written as
 # ${FABRIC_WORKSPACE_ID} or ${FABRIC_ITEM_ID} is resolved at deploy time from the
 # repository VARIABLE (or secret) of that name -- the deploy workflow passes exactly those
-# two into the override step, so no other ${NAME} can resolve. `lakehouse_id` is the
-# Fabric item Gold lives in: for the fabric-warehouse adapter, the Warehouse's item ID.
+# two into the override step, so no other ${NAME} can resolve. `item_id` is the Fabric
+# item Gold lives in: for the fabric-warehouse adapter, the Warehouse dbt writes Gold into
+# (`lakehouse_id` is still accepted as a deprecated alias). With the deploy job running in
+# a GitHub Environment (DD-239), each Environment supplies its own two values, so one
+# entry per environment name with the same two references is all this file needs.
 
 environments:
   PROD:
     workspace_id: "${FABRIC_WORKSPACE_ID}"
-    lakehouse_id: "${FABRIC_ITEM_ID}"
+    item_id: "${FABRIC_ITEM_ID}"

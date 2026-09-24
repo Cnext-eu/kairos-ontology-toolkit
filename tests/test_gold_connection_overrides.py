@@ -46,7 +46,7 @@ def _uncommented_gold_block() -> dict:
     text = "\n".join(block)
     # Fill the <...> guidance placeholders with real GUIDs, as the comment instructs.
     text = re.sub(r"<[^>]*workspace GUID>", _REAL_WS, text)
-    text = re.sub(r"<[^>]*lakehouse GUID>", _REAL_LH, text)
+    text = re.sub(r"<[^>]*(?:lakehouse|Warehouse) GUID>", _REAL_LH, text)
     return yaml.safe_load(text)
 
 
@@ -318,3 +318,39 @@ def test_only_the_target_environment_is_resolved():
     assert set(resolved) == {"DEV"}
     with pytest.raises(GoldConnectionOverrideError):
         parse_gold_connection_overrides(document, {}, only="PROD")
+
+
+class TestItemId:
+    """DD-239: the Fabric item Gold lives in -- for fabric-warehouse, the Warehouse."""
+
+    def test_item_id_is_the_key_and_renders_the_same_url(self):
+        from kairos_ontology.core.projections.dbt.gold_connection import _direct_lake_environment
+
+        spec = _direct_lake_environment("PROD", {"workspace_id": _REAL_WS, "item_id": _REAL_LH})
+        assert spec.item_id == _REAL_LH
+        assert spec.lakehouse_id == _REAL_LH  # deprecated read alias
+
+    def test_lakehouse_id_still_parses_with_a_deprecation_warning(self):
+        from kairos_ontology.core.projections.dbt.gold_connection import _direct_lake_environment
+
+        with pytest.warns(FutureWarning, match="rename it to 'item_id'"):
+            spec = _direct_lake_environment(
+                "PROD", {"workspace_id": _REAL_WS, "lakehouse_id": _REAL_LH}
+            )
+        assert spec.item_id == _REAL_LH
+
+    def test_both_names_at_once_are_rejected(self):
+        from kairos_ontology.core.projections.dbt.gold_connection import _direct_lake_environment
+
+        with pytest.raises(GoldContractError, match="both 'item_id'"):
+            _direct_lake_environment(
+                "PROD",
+                {"workspace_id": _REAL_WS, "item_id": _REAL_LH, "lakehouse_id": _REAL_LH},
+            )
+
+    def test_the_override_file_accepts_item_id(self):
+        document = {"environments": {"UAT": {"workspace_id": "${WS}", "item_id": "${ITEM}"}}}
+        resolved = parse_gold_connection_overrides(
+            document, {"WS": _REAL_WS, "ITEM": _REAL_LH}, only="UAT"
+        )
+        assert resolved["UAT"].item_id == _REAL_LH

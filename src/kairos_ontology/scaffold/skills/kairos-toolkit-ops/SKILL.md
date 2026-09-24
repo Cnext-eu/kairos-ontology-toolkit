@@ -35,7 +35,9 @@ before accepting changed semantics.
    so check whether it changed since `UPSTREAM_COMMIT` in `core/projections/dbt/bpa_profile.py`
    (`gh api "repos/microsoft/Analysis-Services/commits?path=BestPracticeRules/BPARules.json&per_page=1"`).
    Also check whether `semantic-link-labs` released since `SEMANTIC_LINK_LABS_PIN` in
-   `bpa_notebook.py`. If either moved:
+   `bpa_notebook.py`, and `fabric-cicd` since `FABRIC_CICD_PIN` in `deploy_pins.py` (DD-239;
+   update the version in the deploy workflow template too, and recheck the
+   `FabricWorkspace` and `publish_all_items` signatures). If either moved:
    - re-vendor `bpa_rules/BPARules.json`;
    - update the commit, date and pin;
    - verify the notebook's Semantic Link Labs calls still exist;

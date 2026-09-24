@@ -1716,7 +1716,6 @@ def init_dataplatform(name, dest, platform, org_override):
       - pyproject.toml with uv + toolkit dependency
       - .github/workflows/pr-validate.yml (dbt deps/parse/compile + binding check)
       - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd)
-      - .github/fabric/deployment-settings.json.example
       - .github/fabric/gold-connections.yml.example
       - fabric/KairosModelBpa.Notebook (advisory post-deploy Best Practice Analyzer run)
       - README.md with setup instructions
@@ -1958,17 +1957,8 @@ def init_dataplatform(name, dest, platform, org_override):
         deploy_wf_dst.write_text(wf_content, encoding="utf-8")
         click.echo("  ✓ .github/workflows/deploy-powerbi-semantic-model.yml")
 
-    deploy_cfg_src = (
-        _DATAPLATFORM_SCAFFOLD / ".github" / "fabric" / "deployment-settings.json.example.template"
-    )
-    deploy_cfg_dst = github_dir / "fabric" / "deployment-settings.json.example"
-    if deploy_cfg_src.is_file():
-        cfg_content = deploy_cfg_src.read_text(encoding="utf-8")
-        for placeholder, value in subs.items():
-            cfg_content = cfg_content.replace(placeholder, value)
-        deploy_cfg_dst.parent.mkdir(parents=True, exist_ok=True)
-        deploy_cfg_dst.write_text(cfg_content, encoding="utf-8")
-        click.echo("  ✓ .github/fabric/deployment-settings.json.example")
+    # No `deployment-settings.json.example` any more (DD-239): nothing ever read it, and it
+    # restated secrets and item types the deploy workflow and CICD.md already own.
 
     gold_conn_src = (
         _DATAPLATFORM_SCAFFOLD / ".github" / "fabric" / "gold-connections.yml.example.template"

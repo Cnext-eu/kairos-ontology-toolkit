@@ -103,7 +103,9 @@ After merge, every job checks out the same dataplatform commit:
 commit D8 -> DEV build -> approval -> UAT build -> approval -> PROD build
 ```
 
-Use GitHub Environments for credentials and approvals. Retain `manifest.json`,
+Use GitHub Environments for credentials and approvals: the Power BI deploy job runs in the
+GitHub Environment named by its `target_environment` input (DD-239), so that Environment's
+secrets, variables and required reviewers apply. Retain `manifest.json`,
 `run_results.json`, and the workflow run for each deployment. Never rebuild from current `main`
 during an existing promotion.
 
@@ -123,6 +125,36 @@ For an urgent fix when `main` has advanced:
 Never merge the old production branch wholesale into current `main`.
 
 ## Fabric and Power BI
+
+### Fabric deploy prerequisites
+
+Set these up once per target before the first deploy (DD-239):
+
+- **One GitHub Environment per target** (`DEV`, `UAT`, `PROD`, matching the environment keys
+  in the hub's `parameter.yml`; keys are case-sensitive). Each holds `FABRIC_WORKSPACE_ID`,
+  `FABRIC_ITEM_ID` (the Warehouse dbt writes Gold into) and the Azure IDs `AZURE_CLIENT_ID`
+  and `AZURE_TENANT_ID`. Add required reviewers on UAT and PROD to gate promotion.
+- **An Entra ID app (service principal) with a federated credential per Environment.** The
+  subject is `repo:<org>/<repo>:environment:<ENV>`. *Upgrading from a workflow without
+  Environments:* the subject used to be `repo:<org>/<repo>:ref:refs/heads/<branch>`, so
+  add the per-Environment credentials before the first deploy, or `azure/login` fails. No
+  Azure subscription is needed; the login step sets `allow-no-subscriptions`.
+- **Tenant settings:** "Service principals can use Fabric APIs" for that app's security group,
+  and XMLA read access for the advisory BPA run.
+- **Workspace role:** the service principal is a *Contributor* (or higher) on each target
+  workspace, and can read the Warehouse, because it owns the published model and frames it.
+- **Capacity:** the workspace runs on Fabric capacity; Direct Lake needs it.
+- **Viewer access (SSO):** the model reads OneLake with each viewer's identity, so report users
+  need read access on the Warehouse, not only on the model or report.
+- **Row-level security:** roles ship with a fail-closed `FALSE()` placeholder and no members.
+  Assign members and the entitlement filter in the service. Workspace Admins, Members and
+  Contributors bypass RLS, so test it as a Viewer.
+
+After publishing, the workflow **refreshes (frames) every Direct Lake model** and fails the
+deploy when one cannot read its tables: a wrong `FABRIC_ITEM_ID`, a missing `gold_*` table in
+that environment, or a missing Warehouse permission. Set `refresh_after_publish` to false only
+while diagnosing credentials. It never deletes items it did not publish: reports built as
+separate items live in the same workspace.
 
 dbt deployment and Fabric/Power BI artifact deployment are separate lanes. The Power BI workflow
 consumes `powerbi-semantic-model.zip` from the same hub release as the dbt package. The
@@ -164,27 +196,28 @@ definitions.
 
 Deploy-time parameterization is the exception to "read-only", and is this repo's job by design.
 A Fabric Direct Lake semantic model resolves every partition through one named expression whose
-OneLake URL embeds a specific workspace and lakehouse. The hub bakes its own default environment's
+OneLake URL embeds a specific workspace and item. The hub bakes its own default environment's
 URL into the TMDL and ships a `parameter.yml` so fabric-cicd can rewrite it per environment — but
 the hub can only enumerate environments it declares in its own `kairos.yaml`, which would force
 every Fabric workspace this platform ever deploys to into a repo that is otherwise
 infrastructure-agnostic.
 
-Instead, declare the workspace and lakehouse IDs this platform owns in
+Instead, declare the workspace and item IDs this platform owns in
 `.github/fabric/gold-connections.yml` (copy `gold-connections.yml.example`):
 
 ```yaml
 environments:
   PROD:
     workspace_id: "${FABRIC_WORKSPACE_ID}"
-    lakehouse_id: "${FABRIC_ITEM_ID}"
+    item_id: "${FABRIC_ITEM_ID}"
 ```
 
 A whole value written as `${FABRIC_WORKSPACE_ID}` or `${FABRIC_ITEM_ID}` is resolved from the
 repository variable (or secret) of that name, which the deploy workflow passes into the
 override step, so real GUIDs need never be committed. No other `${NAME}` can resolve: a
 workflow step only sees the environment it is given. For the `fabric-warehouse` adapter,
-`lakehouse_id` is the item ID of the Warehouse dbt writes Gold into. The deploy workflow applies this after the archive's SHA-256 has been
+`item_id` is the item ID of the Warehouse dbt writes Gold into (`lakehouse_id` is a deprecated
+alias). The deploy workflow applies this after the archive's SHA-256 has been
 verified, via `kairos-ontology apply-gold-connection`, which:
 
 - rewrites only `replace_value[<target_environment>]` in the extracted `parameter.yml`;

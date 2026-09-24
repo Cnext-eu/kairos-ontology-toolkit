@@ -862,7 +862,7 @@ def _onelake_url(environment: GoldDirectLakeEnvironmentSpec) -> str:
     """
     return (
         f"https://onelake.dfs.fabric.microsoft.com/{environment.workspace_id}/"
-        f"{environment.lakehouse_id}"
+        f"{environment.item_id}"
     )
 
 
@@ -1653,9 +1653,9 @@ def render_powerbi_artifacts(
             "gold.direct-lake-connection-missing",
             (
                 "Direct Lake Gold semantic models bind Power BI to a OneLake "
-                "workspace/lakehouse via a named expression, so kairos.yaml must "
+                "workspace item via a named expression, so kairos.yaml must "
                 "declare gold.direct_lake_connection with a workspace_id and "
-                "lakehouse_id per environment"
+                "item_id (the Warehouse dbt writes Gold into) per environment"
             ),
             rule_id=GOLD_DIRECT_LAKE_RULE_ID,
         )

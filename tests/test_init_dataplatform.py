@@ -441,6 +441,68 @@ class TestInitDataplatform:
         assert 'item_type_in_scope=["Notebook"]' in step
         assert "unpublish" not in step
 
+    # --- DD-239: Fabric deploy per GitHub Environment, framed after publish ----------
+
+    @staticmethod
+    def _deploy(dataplatform_output):
+        import yaml
+
+        path = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        text = path.read_text(encoding="utf-8")
+        return text, yaml.safe_load(text)
+
+    def test_the_deploy_job_runs_in_the_target_github_environment(self, dataplatform_output):
+        text, workflow = self._deploy(dataplatform_output)
+        assert workflow["jobs"]["deploy"]["environment"] == "${{ inputs.target_environment }}"
+        assert "environment:<target_environment>" in text  # the OIDC subject is documented
+
+    def test_the_override_step_receives_both_ids(self, dataplatform_output):
+        _, workflow = self._deploy(dataplatform_output)
+        step = next(
+            item
+            for item in workflow["jobs"]["deploy"]["steps"]
+            if item.get("name") == "Apply dataplatform Direct Lake connection override"
+        )
+        assert set(step["env"]) >= {"TARGET_ENVIRONMENT", "FABRIC_WORKSPACE_ID", "FABRIC_ITEM_ID"}
+
+    def test_a_direct_lake_model_is_framed_after_publish_and_blocks(self, dataplatform_output):
+        text, workflow = self._deploy(dataplatform_output)
+        names = [item.get("name", "") for item in workflow["jobs"]["deploy"]["steps"]]
+        publish = names.index("Publish semantic model and report to Fabric workspace")
+        refresh = names.index("Refresh the semantic model (Direct Lake)")
+        assert refresh == publish + 1
+        step = workflow["jobs"]["deploy"]["steps"][refresh]
+        assert step["if"] == "${{ inputs.refresh_after_publish }}"
+        assert "continue-on-error" not in step, "a model that cannot frame must fail the deploy"
+        assert '"mode: directLake"' in step["run"], "DirectQuery models are skipped"
+        assert "sys.exit(1)" in step["run"]
+        assert "refresh_after_publish:" in text
+
+    def test_fabric_cicd_is_pinned_to_the_toolkit_version(self, dataplatform_output):
+        from kairos_ontology.core.projections.dbt.deploy_pins import FABRIC_CICD_PIN
+
+        text, _ = self._deploy(dataplatform_output)
+        assert f'"fabric-cicd=={FABRIC_CICD_PIN}"' in text
+        assert "pip install fabric-cicd " not in text
+
+    def test_login_allows_a_fabric_only_service_principal(self, dataplatform_output):
+        _, workflow = self._deploy(dataplatform_output)
+        login = next(
+            item
+            for item in workflow["jobs"]["deploy"]["steps"]
+            if item.get("uses", "").startswith("azure/login@")
+        )
+        assert login["with"]["allow-no-subscriptions"] is True
+
+    def test_kairos_cli_calls_run_in_skill_context(self, dataplatform_output):
+        _, workflow = self._deploy(dataplatform_output)
+        assert workflow["env"]["KAIROS_SKILL_CONTEXT"] == "1"
+
+    def test_no_orphan_sweep_that_would_delete_the_bi_engineers_reports(self, dataplatform_output):
+        """DD-239 / DD-236: reports built as separate items live in the same workspace."""
+        text, _ = self._deploy(dataplatform_output)
+        assert "unpublish_all_orphan_items" not in text
+
     def test_pr_validate_workflow_explains_private_hub_failure_mode(self, dataplatform_output):
         """#760: a public hub is legitimate (exit 0 stays), but the message must say what a
         private-hub operator will see and do."""
@@ -451,13 +513,10 @@ class TestInitDataplatform:
         assert "dbt deps will fail with 'Repository not found'" in content
         assert "add HUB_REPO_TOKEN (Contents:read on the hub) as a repository secret" in content
 
-    def test_fabric_deploy_settings_example_created(self, dataplatform_output):
+    def test_the_unread_deploy_settings_example_is_not_scaffolded(self, dataplatform_output):
+        """DD-239: nothing read it; it only restated what the workflow and CICD.md own."""
         cfg = dataplatform_output / ".github" / "fabric" / "deployment-settings.json.example"
-        assert cfg.exists()
-        content = cfg.read_text(encoding="utf-8")
-        assert "FABRIC_WORKSPACE_ID" in content
-        assert "test-ontology-hub" in content
-        assert "v1.2.0" in content
+        assert not cfg.exists()
 
     def test_fabric_package_script_is_not_scaffolded(self, dataplatform_output):
         """DD-206 #12 item 10: the mutating packaging helper is gone from the hub
