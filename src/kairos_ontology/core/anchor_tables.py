@@ -313,6 +313,9 @@ class ClassCatalog:
     #: resolved closure — the only thing that tells ``Booking`` in a vocabulary
     #: which defines none from ``Booking`` in the one which defines 23 (#519).
     index: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: #913: class URIs the accelerator's canonical class registry names. Breaks a tie
+    #: between same-named copies the columns cannot separate.
+    canonical_uris: frozenset[str] = frozenset()
     #: module uri (no trailing #) -> owning domain ids
     owners: dict[str, list[str]] = field(default_factory=dict)
     #: class uri -> domain ids declaring a bridge TO that class
@@ -358,6 +361,9 @@ def build_class_catalog(
     owners: dict[str, list[str]] = {}
     bridged: dict[str, list[str]] = {}
     module_scope: set[str] | None = None
+    from .blueprint_artifacts import load_canonical_class_uris
+
+    canonical_uris = load_canonical_class_uris(ref_models_dir, accelerator)
     if ref_models_dir is not None and accelerator:
         domains = load_data_domains(Path(ref_models_dir), accelerator=accelerator)
         for dom_id, meta in sorted(domains.items()):
@@ -415,7 +421,13 @@ def build_class_catalog(
         )
         mark = f"owned by domain '{'/'.join(owner_ids)}'" if owner_ids else "UNOWNED"
         lines.append(f"- {name} [{mark}]: {comments.get(name, '')}")
-    return ClassCatalog(text="\n".join(lines), index=index, owners=owners, bridged_from=bridged)
+    return ClassCatalog(
+        text="\n".join(lines),
+        index=index,
+        owners=owners,
+        bridged_from=bridged,
+        canonical_uris=canonical_uris,
+    )
 
 
 def _ledger_rows(analysis_dir: Path, *, what: str, consequence: str) -> list[dict[str, Any]]:
@@ -903,6 +915,71 @@ def detect_grain_collapses(tables: list[dict[str, Any]]) -> list[dict[str, Any]]
     return sorted(findings, key=lambda f: (-len(f["tables"]), f["anchor_uri"]))
 
 
+def detect_shared_class_anchors(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tables of ONE system anchored to ONE class at different key arity (#927).
+
+    The sibling of :func:`detect_grain_collapses` for the case it deliberately skips.
+    Reference models carry abstract classes -- "an entry in some code list" -- that every
+    code list in a source legitimately anchors to. Three unrelated code lists (an
+    equipment code list, an EDI code translation, an application settings table; key
+    arity 1, 4 and 2) then share one class, the compile gate demands a conformance group
+    for them, and declaring one would union three lists at three grains. Same system is
+    the signal: conformance reconciles *different sources* of one entity, so tables from
+    one system on one class are several entities, not several sources.
+
+    Returns ``[{"anchor_uri", "anchor", "system", "tables": [{"table", "natural_key"}]}]``.
+    """
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for entry in tables:
+        uri = str(entry.get("anchor_uri") or "")
+        if uri:
+            groups.setdefault((str(entry.get("system") or ""), uri), []).append(entry)
+    findings: list[dict[str, Any]] = []
+    for (system, uri), members in sorted(groups.items()):
+        if len(members) < 2:
+            continue
+        arities = {len(member.get("natural_key") or []) for member in members}
+        if len(arities) < 2:
+            continue
+        findings.append(
+            {
+                "anchor_uri": uri,
+                "anchor": str(members[0].get("anchor") or uri.rsplit("#", 1)[-1]),
+                "system": system,
+                "tables": [
+                    {
+                        "table": str(member.get("table") or ""),
+                        "natural_key": list(member.get("natural_key") or []),
+                    }
+                    for member in sorted(members, key=lambda m: str(m.get("table") or ""))
+                ],
+            }
+        )
+    return findings
+
+
+def render_shared_class_anchors(findings: list[dict[str, Any]]) -> str:
+    """The operator-facing report for :func:`detect_shared_class_anchors`."""
+    if not findings:
+        return ""
+    lines = [
+        f"⚠ {len(findings)} class(es) carry several tables of one system at different key "
+        "arity. The class is probably abstract, and each table wants its own subclass:",
+    ]
+    for finding in findings:
+        lines.append(f"    {finding['anchor']}  ({finding['system']})")
+        for table in finding["tables"]:
+            key = ", ".join(table["natural_key"]) or "(no natural key)"
+            lines.append(f"      {table['table']}  key=[{key}]")
+        lines.append(
+            "      → declare a hub-local subclass per table (rdfs:subClassOf the shared "
+            "class) and re-anchor each with status: confirmed (DD-190), or dispose of a "
+            "table that is not business data. Do NOT declare conformance: that unions "
+            "different entities at different grains."
+        )
+    return "\n".join(lines)
+
+
 def render_grain_collapses(findings: list[dict[str, Any]]) -> str:
     """The operator-facing report for :func:`detect_grain_collapses`.
 
@@ -1243,18 +1320,57 @@ def choose_class_copy(
     """
     if not copies:
         return {}
+    return choose_class_copy_with_basis(copies, catalog, domain, columns)[0]
+
+
+def choose_class_copy_with_basis(
+    copies: list[dict[str, Any]],
+    catalog: ClassCatalog,
+    domain: str,
+    columns: list[str],
+) -> tuple[dict[str, Any], str]:
+    """:func:`choose_class_copy`, plus which rule decided it (#913).
+
+    The rules, in order: ownership picks the tier; then column/property overlap; then
+    the accelerator's canonical class registry; then richness; then same-domain
+    ownership. The registry sits after overlap on purpose: a table's own columns are
+    direct evidence about this table, and the registry is curated judgement about the
+    concept -- it settles what the columns leave open, it does not overrule them.
+    """
+    if not copies:
+        return {}, ""
+    if len(copies) == 1:
+        return copies[0], "only copy"
     owned = [c for c in copies if catalog.owners.get(c.get("module", ""))]
     tier = owned or list(copies)
-    # max() keeps the first maximal element, so an all-zero tier preserves the
-    # existing order and this stays a tie-break rather than a re-ranking.
-    return max(
-        tier,
-        key=lambda c: (
-            column_property_overlap(columns, c),
-            len(c.get("properties") or ()),
-            domain in catalog.owners.get(c.get("module", ""), []),
+
+    def canonical(c: dict[str, Any]) -> bool:
+        return str(c.get("uri") or "").rstrip("#/") in catalog.canonical_uris
+
+    rules = (
+        ("column/property overlap", lambda c: column_property_overlap(columns, c)),
+        ("canonical class registry", canonical),
+        ("property count", lambda c: len(c.get("properties") or ())),
+        (
+            "owned by this domain",
+            lambda c: domain in catalog.owners.get(c.get("module", ""), []),
         ),
     )
+    # max() keeps the first maximal element, so an all-zero tier preserves the
+    # existing order and this stays a tie-break rather than a re-ranking.
+    chosen = max(tier, key=lambda c: tuple(rule(c) for _, rule in rules))
+    basis = "catalog order"
+    remaining = list(tier)
+    for name, rule in rules:
+        best = rule(chosen)
+        winners = [c for c in remaining if rule(c) == best]
+        if len(winners) < len(remaining):
+            basis = name
+            break
+        remaining = winners
+    if len(tier) < len(copies) and basis == "catalog order":
+        basis = "blueprint ownership"
+    return chosen, basis
 
 
 def load_affinity_domains(analysis_dir: Path) -> dict[tuple[str, str], str]:
@@ -1496,7 +1612,9 @@ def run_anchor_tables(
         )
         # Among duplicate copies of the name, ownership picks the tier and
         # column/property overlap picks within it (#519).
-        chosen = choose_class_copy(catalog.index[anchor], catalog, domain, cols)
+        chosen, copy_basis = choose_class_copy_with_basis(
+            catalog.index[anchor], catalog, domain, cols
+        )
         n_properties = len(chosen.get("properties") or ())
         entry = {
             "system": system,
@@ -1585,6 +1703,9 @@ def run_anchor_tables(
             if PROPERTY_LESS_ANCHOR_FLAG not in entry["flags"]:
                 entry["flags"] = sorted({*entry["flags"], PROPERTY_LESS_ANCHOR_FLAG})
             propertyless.append(entry)
+        if len(catalog.index[anchor]) > 1:
+            # #913: say which rule picked this copy of a duplicated name.
+            entry["anchor_copy_basis"] = copy_basis
         if chosen.get("deprecated"):
             comment = chosen.get("comment") or ""
             entry["deprecated_anchor"] = (
@@ -1611,6 +1732,10 @@ def run_anchor_tables(
     collapses = detect_grain_collapses(tables)
     if collapses:
         for line in render_grain_collapses(collapses).splitlines():
+            say(line)
+    shared = detect_shared_class_anchors(tables)
+    if shared:
+        for line in render_shared_class_anchors(shared).splitlines():
             say(line)
     if dropped_rels or dropped_secondary:
         say(

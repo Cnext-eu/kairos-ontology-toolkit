@@ -340,6 +340,7 @@ _PREFILL_SCORE_FLOOR = 0.8
 def propose_reference_matches(
     model: TmdlModel,
     catalog_path: Path | None,
+    module_scope: set[str] | None = None,
 ) -> dict[str, tuple[str, float, str]]:
     """Propose a ``reference_model_match`` per TMDL table, by name (#762).
 
@@ -356,6 +357,12 @@ def propose_reference_matches(
     Only an *unambiguous* winner is proposed. Where two reference classes tie, the choice
     is the modelling judgement this pass exists to support, not to pre-empt.
 
+    *module_scope* limits the pool to the hub's activated modules (#863).
+    ``design-landscape`` resolves the proposal against those modules only, and a bare
+    name resolves there when it is unique in that scope. Proposing catalog-wide
+    suppressed exactly the most duplicated names (Shipment, Terminal, Contact) as ties,
+    even when only one copy was activated and would have resolved.
+
     Returns ``{tmdl_table_name: (reference_class_name, score, reason)}``.
     """
     if catalog_path is None or not Path(catalog_path).is_file():
@@ -363,7 +370,7 @@ def propose_reference_matches(
     try:
         from .class_anchoring import rank_candidates, read_reference_terms
 
-        pool = read_reference_terms(Path(catalog_path))
+        pool = read_reference_terms(Path(catalog_path), module_scope=module_scope or None)
     except Exception as exc:  # pragma: no cover - advisory pass, never fatal
         logger.debug("reference terms unavailable, skipping match proposals: %s", exc)
         return {}
@@ -652,6 +659,41 @@ def _hub_catalog_path() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _hub_module_scope() -> set[str] | None:
+    """The hub's activated reference modules, or None when they cannot be resolved (#863).
+
+    The same modules ``design-landscape`` resolves a ``reference_model_match`` against:
+    the accelerator's data-domain imports. Any failure means "unscoped", which is the
+    previous behaviour, never an error.
+    """
+    from .hub_utils import resolve_hub_output_dir
+
+    try:
+        _, hub_root = resolve_hub_output_dir(Path("."), cwd=Path.cwd())
+        if hub_root is None:
+            return None
+        from .analyse_sources import load_data_domains
+        from .archetype_loader import resolve_refmodels_root
+        from .reference_modules import resolve_hub_accelerator
+
+        ref_models_dir = resolve_refmodels_root(explicit=None, cwd=Path.cwd(), hub_root=hub_root)
+        accelerator = resolve_hub_accelerator(
+            explicit=None, hub_root=Path(hub_root), ref_models_dir=Path(ref_models_dir)
+        )
+        if not accelerator:
+            return None
+        domains = load_data_domains(Path(ref_models_dir), accelerator=accelerator)
+    except Exception:  # pragma: no cover - advisory pass, never fatal
+        return None
+    scope = {
+        str(uri).rstrip("#/")
+        for meta in domains.values()
+        for uri in meta.get("uris") or []
+        if str(uri).strip()
+    }
+    return scope or None
+
+
 def _write_outputs(
     model: TmdlModel,
     output_dir: Path,
@@ -690,7 +732,7 @@ def _write_outputs(
     # Concept Mapping
     mapping_path = output_dir / f"{slug}-concept-mapping.yaml"
     mapping_content = generate_concept_mapping(
-        model, propose_reference_matches(model, _hub_catalog_path())
+        model, propose_reference_matches(model, _hub_catalog_path(), _hub_module_scope())
     )
     mapping_path.write_text(mapping_content, encoding="utf-8")
     generated.append(mapping_path)

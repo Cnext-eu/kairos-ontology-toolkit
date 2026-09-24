@@ -51,6 +51,18 @@ Read only the inputs relevant to the requested domain:
    (Engineering Packs and `*-concept-mapping.yaml` worksheets). Reading the ones
    relevant to the active domain is required when they are present; they remain
    downstream demand evidence, never business authority.
+6. The accelerator's blueprint dossier, when the pack ships one:
+   `<refmodels>/accelerator-packs/<pack>/current/blueprint/`. It holds the pack's own
+   judgement, so read it before re-deriving that judgement (#913):
+   - `canonical-class-registry.yaml` names the canonical class per concept. Anchoring
+     already uses it to break a tie between same-named copies (`anchor_copy_basis` in
+     `hub.table-anchors.yaml`).
+   - `overlap-register.yaml` explains which overlapping classes are complementary
+     grains and which are one concept.
+   - `evidence/source-shapes/*.yaml` carries `stress_cases` (a leg replaced but kept
+     for audit, several house consignments in one master): check the proposed model
+     holds up against them before Gate 5.
+   Entries marked `unresolved` or `experimental` are inspiration, not authority.
 
 Keep the four evidence roles distinct:
 
