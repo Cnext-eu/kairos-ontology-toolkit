@@ -60,6 +60,172 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.22.0rc2] — 2026-09-24
+
+Second release candidate for 5.22.0. It closes the product decisions from the September
+issue review and most of the remaining design issues: TMDL is read with the TOM SDK
+(#879), document readers are shipped and `.import/drafts/` added (#907), the insight
+brief is recorded as the report deliverable (#830), Power BI demand appears on the gap
+sheet (#942), deprecated reference classes are warned about (#938), anchoring uses the
+canonical class registry (#913, #927, #863), closure staleness is detected (#865), and
+open feedback records are cross-checked (#695).
+
+**What to expect on the first run after upgrading from 5.22.0rc1.**
+
+| you will see | why |
+|---|---|
+| **`import-tmdl` fails without the .NET 8 SDK** | DD-237, #879: it now reads models with the Microsoft TOM SDK and has no fallback. Install .NET 8; the first run builds the reader once and needs NuGet access |
+| **`import-tmdl` rejects an export it used to read** | The export is not valid TMDL, and Power BI Desktop would refuse it too. Re-export it complete. In a batch, only the refused model is skipped |
+| **new warnings** for deprecated reference classes (`anchor-tables`, `compile`, `validate`) | #938: `owl:deprecated` on role subclasses is now read |
+| **`bi_demand` and `governing_pattern` on gap-sheet rows**; some rows no longer drafted as `deferred` | #942, #938: a column a Power BI model uses is left for a human |
+| **`anchor_copy_basis` in `hub.table-anchors.yaml`**, and occasionally a different copy of a duplicated class name | #913: the canonical class registry breaks ties the columns could not |
+
+### Added
+- **`analyse-sources` names the tables that open feedback records discuss (#695).**
+  After a run, every table the run assigned that an open `HUB-FB-*` record under
+  `.import/modeling/feedback/` names is listed with the domain it was just given, for
+  example `HUB-FB-…: tms.partyaddress -> party`. A re-run used to contradict a recorded
+  human review silently: on one hub it did so in five places. The records are prose, so
+  judging whether each assignment agrees is left to the reviewer. The durable override
+  remains `integration/discovery/design-rulings.yaml` (DD-192).
+- **`kairos-ontology read-document <file>` prints a staged document's text (#907).**
+  DD-233 fails `validate` until every file under `.import/businessdiscovery/` has an
+  extraction. The toolkit could not open most of them, though: on one hub 20 of 31 were
+  `.docx`/`.pptx`/`.xlsx`. `read-document` reads `.pdf`, `.docx`, `.pptx` (including
+  speaker notes), `.xlsx`, `.md`, `.txt`, `.csv`, `.xml` and `.htm`, in reading order.
+  - Headings are marked (`## Slide 3`, `## Sheet: Rates`) and tables come out as rows, so
+    an extraction can cite where a term came from.
+  - It says which pages or slides have no text and need reading visually.
+  - Legacy `.doc`/`.ppt`/`.xls` get a clear "save as .docx/.pptx/.xlsx" message.
+  - The Office readers are in a new `documents` extra: `uv sync --extra documents`. PDF
+    needs nothing extra.
+- **`.import/drafts/` for staged files that should not be extracted (#907).** Every file
+  under `.import/businessdiscovery/` counts as a discovery document and needs an
+  extraction. Put an outdated deck or a working copy in `drafts/` instead: nothing reads
+  it, and `validate` does not report it. `init` creates the folder, and `update` adds it
+  to existing hubs.
+- **`owl:deprecated` in the reference models is now read, and reported where a hub builds
+  on it (#938).** The reference models mark the role subclasses a normative pattern
+  forbids (`Consignee`, `Carrier`, `NotifyParty`, … — 14 in one party module)
+  `owl:deprecated true`, and name the replacement in the class comment. Until now the
+  only protection was a hardcoded list of seven URIs, so a hub could anchor, subclass or
+  bind to one of these classes and see no warning anywhere. Three warnings, all quoting
+  the class's own comment:
+  - `anchor-tables`: a `deprecated_anchor` note and a `deprecated-anchor` flag on the
+    table.
+  - `compile`: `binding.target-class-deprecated` when a binding targets a deprecated
+    class or a subclass of one.
+  - `validate`: `integrity.deprecated-reference-class` when a hub class subclasses, or a
+    property's domain or range names, a deprecated class.
+
+  Each points at `blueprints/patterns/qualified-role-assignment`: build on the durable
+  identity class and assign the role instead. None of the three blocks.
+
+### Changed
+- **One definition of "business document" (#907).** The DD-233 "staged where nothing
+  reads it" check now uses the same format list as the discovery readers, so `.xml` and
+  `.htm` files staged outside a known folder are reported. They were processed by
+  discovery but invisible to the gate. Loose `.txt`/`.csv` files stay unreported, as
+  DD-233 intends.
+- **Anchoring reads the accelerator's canonical class registry (#913).** When two
+  reference classes share a name (`bsp/commercial#TransportLeg`,
+  `mmt/consignment#TransportLeg`) and the table's columns do not separate them,
+  `anchor-tables` now prefers the copy the pack's
+  `current/blueprint/canonical-class-registry.yaml` names as canonical. On one hub the
+  wrong copy was chosen, and 33 extension properties were then authored onto it.
+  - A table's own columns still take precedence over the registry: they are direct
+    evidence about this table.
+  - For a duplicated name, the anchor file now records `anchor_copy_basis`, the rule that
+    picked the copy.
+  - The design skills now say to read the blueprint dossier (canonical registry, overlap
+    register, source-shape stress cases) before re-deriving its judgement.
+  - A pack without a dossier behaves exactly as before.
+- **An abstract class shared by unrelated tables is named as such (#927).** Several code
+  lists in one source can legitimately anchor to an abstract "code list element" class.
+  The compile gate then demanded a conformance group, which would union unrelated lists
+  at different grains. Now:
+  - `anchor-tables` reports tables of one system on one class with different key arity,
+    and suggests a hub-local subclass per table.
+  - When the bindings' keys differ in arity, `conformance.group-required` says the same
+    instead of pointing only at conformance.
+- **`import-tmdl` proposes `reference_model_match` against the hub's activated modules
+  (#863),** the same scope `design-landscape` resolves in. Names duplicated elsewhere in
+  the catalog (Shipment, Terminal, Contact) are no longer withheld as ties when only one
+  copy is activated. `design-landscape` also accepts `module:Class` in the worksheet
+  (`consignment:TransportLeg`), so a genuine tie can be settled by the modeller.
+- **Role groups reach the gap-decision sheet, with the governing pattern named (#938).**
+  A table carrying three party roles as flattened columns (consignee, shipper, notify:
+  name, street, city, zip, …) was ruled one column name at a time. On one hub 78 such
+  columns ended up `deferred`, and no command mentioned that
+  `blueprints/patterns/qualified-role-assignment` is normative for exactly that shape.
+  - `propose-alignment` already detected the role groups for its prompt. It now keeps
+    them: the alignment file records `role_groups` per table, and each unmapped member
+    carries its `role_group`.
+  - On the sheet, such a name or family carries `role_groups` and
+    `governing_pattern: blueprints/patterns/qualified-role-assignment`, and its reasoning
+    says to model the party once and link it through the module's role-assignment class,
+    rather than deciding each attribute on its own.
+  - Tables without role groups produce exactly the same files as before.
+- **The gap-decision sheet shows which columns an imported Power BI model uses (#942).**
+  The DD-169 gate decides which source columns reach Silver, but it never read the BI
+  models `import-tmdl` had already recorded. On one hub a sailing date the headline
+  weekly report is grained on was auto-deferred like any other timestamp, and the report
+  became unbuildable, with no diagnostic anywhere. Now a column whose name a concept
+  mapping uses (as a model column, a relationship key, or a column a measure's DAX
+  reads) is handled as follows:
+  - it carries `bi_demand` on its decision row, naming the model, table and use;
+  - it is never drafted as `deferred` or `not-business-data` by a name rule. The rule's
+    reading stays in the reasoning, so both are visible;
+  - `--accept-proposals` leaves it for a human, counted as `held-for-bi-demand`;
+  - `--auto` withholds it from `not-business-data`, through the existing conflict
+    mechanism;
+  - the AI suggestion prompts are told a report depends on it.
+
+  Matching is by name, ignoring case and separators. It is evidence for a reviewer,
+  never a decision.
+
+### Changed (BREAKING for BI import)
+- **`import-tmdl` reads Power BI models with the Microsoft TOM SDK, and needs the .NET 8
+  SDK (DD-237, #879).** It used to read TMDL with a hand-rolled parser that got flat
+  layouts (#874), fenced DAX (#875) and partial exports (#807) wrong. It now uses the
+  engine Power BI Desktop and Fabric use. The engineering pack and concept mapping keep
+  their shape.
+  - **No .NET SDK:** `import-tmdl` fails with the install instruction. There is no
+    fallback reader.
+  - **An export the SDK refuses** is one Desktop would refuse too, so it is an error,
+    not a thin reading. In a batch, a refused model is skipped with a warning and counted
+    as partial: `--fail-on-partial` still decides the exit code, and the command fails
+    only when every model is refused.
+  - **Declared but missing tables** (`ref table` pointers to tables the export lacks)
+    are still named, as before.
+  - **The first run builds the bundled reader once**, which needs NuGet access.
+  - **The parser-vs-SDK cross-check from #901 is removed:** with one reader there is
+    nothing to compare. `harvest-gold` still reads the toolkit's own generated TMDL with
+    the old parser.
+
+### Fixed
+- **Alignment staleness now covers the resolved import closure, not only the activated
+  module list (#865).** `design-landscape` reported an alignment as stale only when the
+  blueprint added or removed an activated module. Two changes slipped past it: a
+  reference-models upgrade that adds an `owl:imports` inside a module, and new classes in
+  a module already imported. Both change the class inventory the alignment was built
+  from, and both left the file silently stale.
+  - `propose-alignment` now also records `resolved_closure_sha256`, a fingerprint of the
+    canonical loader's closure hashes for the inventory it aligned against.
+  - `design-landscape` recomputes it when the catalog is available, and reports a
+    mismatch as "stale against the domain's resolved import closure".
+  - An alignment written before this release has no fingerprint, and a check without a
+    catalog has nothing to compare, so neither is reported as stale.
+
+### Decisions
+- **The insight brief is the report deliverable; the emitted report stays blank (DD-236,
+  #830).** `emit-gold` writes a `.Report` with one empty page, only so the project opens in
+  Desktop. That is now a decision rather than an unfinished feature. The toolkit will not
+  generate pages or visuals, and will not vendor Power BI's visual-container schemas.
+  `<product>-insight-brief.md` is what a BI engineer, or Fabric Copilot, builds the report
+  from. Build the report as a separate Fabric item bound to the deployed model. The
+  `emit-gold` help, the `kairos-design-gold` skill and the Gold how-to now say so.
+
 ## [5.22.0rc1] — 2026-09-24
 
 Release candidate for 5.22.0. It includes the 5.21.1rc1 fix (#948) plus the rest of the
