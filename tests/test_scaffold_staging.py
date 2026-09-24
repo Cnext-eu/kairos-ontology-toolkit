@@ -124,7 +124,7 @@ def test_stage_sql_reuses_render_staging_sql_source_macro(tmp_path):
     assert "'crm' as source_system" in sql
 
 
-def test_merged_sql_has_sentinels_and_refs_every_stage(tmp_path):
+def test_merged_sql_has_sentinels_and_refs_every_source_model(tmp_path):
     hub = _hub(tmp_path)
 
     result = run_scaffold_staging(
@@ -132,8 +132,10 @@ def test_merged_sql_has_sentinels_and_refs_every_stage(tmp_path):
     )
 
     sql = result.merged_sql_path.read_text(encoding="utf-8")
-    assert "ref('stg_crm__party')" in sql
-    assert "ref('stg_erp__party')" in sql
+    # #949: the merge model combines int_<source>__ models, never the stages or sources.
+    assert "ref('int_crm__party')" in sql
+    assert "ref('int_erp__party')" in sql
+    assert "stg_" not in sql and "source(" not in sql
     assert "<CONFIRM_NATURAL_KEY_COLUMN>" in sql
     assert "<CONFIRM_PRIORITY_COLUMN>" in sql
     assert "kairos_survivor(" in sql
@@ -190,7 +192,7 @@ def test_single_source_scaffolds_trivial_passthrough_merged_model(tmp_path):
     assert result.merged_sql_written and result.merged_yaml_written
 
     sql = result.merged_sql_path.read_text(encoding="utf-8")
-    assert sql.strip().endswith("select * from {{ ref('stg_crm__party') }}")
+    assert sql.strip().endswith("select * from {{ ref('int_crm__party') }}")
     assert "kairos_survivor(" not in sql
     assert "<CONFIRM_NATURAL_KEY_COLUMN>" not in sql
     assert "<CONFIRM_PRIORITY_COLUMN>" not in sql
@@ -351,3 +353,35 @@ def test_cli_include_pii_flag(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "customer_email" in result.output
     assert "NOTE: privacy: --include-pii kept" in result.output
+
+
+def test_each_source_gets_its_own_intermediate_model(tmp_path):
+    """#949: stg_ cleans one table; int_<source>__ holds that source's rules."""
+    hub = _hub(tmp_path)
+
+    result = run_scaffold_staging(
+        hub, entity="party", domain="party", sources=(("crm", "customers"), ("erp", "parties"))
+    )
+
+    assert [s.intermediate_name for s in result.stages] == ["int_crm__party", "int_erp__party"]
+    crm = result.stages[0]
+    assert crm.intermediate_sql_written and crm.intermediate_yaml_written
+    sql = crm.intermediate_sql_path.read_text(encoding="utf-8")
+    assert sql.strip().endswith("select * from {{ ref('stg_crm__party') }}")
+    assert "joins to its other" in sql
+    yml = crm.intermediate_yaml_path.read_text(encoding="utf-8")
+    assert "name: int_crm__party" in yml and "enforced: true" in yml
+
+
+def test_the_scaffold_passes_the_layering_lint(tmp_path):
+    """What scaffold-staging writes must not trip the rule it exists to model."""
+    from kairos_ontology.core.dbt_contract_lint import run_dbt_contract_lint
+
+    hub = _hub(tmp_path)
+    run_scaffold_staging(
+        hub, entity="party", domain="party", sources=(("crm", "customers"), ("erp", "parties"))
+    )
+
+    codes = {f.code for f in run_dbt_contract_lint(hub).findings}
+    assert "dbt-contract.merge-model-reads-source" not in codes
+    assert "dbt-contract.staging-model-joins" not in codes
