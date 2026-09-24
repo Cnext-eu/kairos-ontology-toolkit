@@ -85,12 +85,50 @@ def _result(returncode: int = 0, stdout: str = "", stderr: str = ""):
 def test_fabric_offline_profile_fails_connection_fast() -> None:
     output = _offline_profile("fabric-warehouse")["outputs"]["offline"]
 
-    # dbt-fabric dispatches case-insensitively against a closed set that does not
-    # include "ServicePrincipal"; the accepted spelling is the AD-qualified one (#705).
-    assert output["authentication"] == "ActiveDirectoryServicePrincipal"
+    # A pre-supplied token (#825): a service-principal profile makes dbt-fabric emit
+    # `Authority Id`, which mssql-python (dbt-fabric >= 1.10.1) rejects at parse, and
+    # "sql" is not an accepted authentication value at all. Verified against dbt-fabric
+    # 1.10.0 and 1.10.1: both reach the connect attempt and fail there.
+    assert output["authentication"] == "ActiveDirectoryAccessToken"
+    assert output["access_token"]
+    assert not {"tenant_id", "client_id", "client_secret"} & set(output)
     assert output["retries"] == 0
     assert output["login_timeout"] == 1
     assert output["query_timeout"] == 1
+
+
+def test_databricks_offline_profile_fails_connection_fast() -> None:
+    """#922: the connector retried name resolution 30 times, so compile never finished."""
+    output = _offline_profile("databricks")["outputs"]["offline"]
+
+    assert output["host"] == "offline.invalid", "the adapter adds the scheme itself"
+    assert output["connect_retries"] == 0
+    assert output["connection_parameters"]["_retry_stop_after_attempts_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # dbt-fabric 1.10.1 (mssql-python) with the offline profile.
+        "Database Error\n  Driver Error: Client unable to establish connection; DDBC Error: "
+        "[Microsoft]Named Pipes Provider: Could not open a connection to SQL Server [53].",
+        # dbt-databricks with the fail-fast offline profile.
+        "HTTPSConnectionPool(host='offline.invalid', port=443): Max retries exceeded with url: "
+        "/sql/1.0/warehouses/offline (Caused by NameResolutionError(\"HTTPSConnection(host="
+        "'offline.invalid', port=443): Failed to resolve 'offline.invalid' ([Errno 11001] "
+        "getaddrinfo failed)\"))",
+    ],
+)
+def test_the_offline_profiles_connect_failures_read_as_environment_blocked(message) -> None:
+    from kairos_ontology.core.dbt_validation import _is_environment_blocked
+
+    assert _is_environment_blocked(message)
+
+
+def test_a_real_sql_error_is_not_environment_blocked() -> None:
+    from kairos_ontology.core.dbt_validation import _is_environment_blocked
+
+    assert not _is_environment_blocked("Compilation Error in model m: 'foo' is undefined")
 
 
 def test_validate_dbt_project_runs_required_sequence(tmp_path: Path) -> None:
