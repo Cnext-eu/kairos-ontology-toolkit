@@ -799,6 +799,16 @@ def compile_cmd(
     identical for every domain — so a release loop of N separate invocations paid that
     cost N times. One invocation pays it once and still compiles each domain
     independently, emitting each domain's artifacts atomically on its own.
+
+    For a domain with a Gold profile, ``--check`` also judges the product against the
+    Kairos Best Practice Analyzer profile (DD-238, ``docs/guide/BPA_PROFILE.md``).
+    Blocking: ``gold.dax-column-unqualified``, ``gold.dax-measure-qualified``,
+    ``gold.dax-measure-reference-by-id``, ``gold.measure-display-name-invalid``,
+    ``gold.measure-display-name-collision``, ``gold.unknown-relationship-cross-filter``
+    and the ``kairos-ext:bpaIgnoreRule`` checks (``gold.bpa-ignore-malformed``,
+    ``gold.bpa-unknown-rule``, ``gold.bpa-ignore-wrong-scope``,
+    ``gold.bpa-ignore-unused``). Warnings, which never block:
+    ``gold.description-missing``, ``gold.float-column``, ``gold.dax-division-operator``.
     """
     if emit_mode and (check_mode or explain_mode):
         raise click.UsageError("--emit cannot be combined with --check or --explain")

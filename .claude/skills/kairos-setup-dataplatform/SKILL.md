@@ -33,7 +33,12 @@ deployment configuration, and runtime tests.
 5. Consume the compiler-emitted dbt package at an immutable Git revision or artifact version.
 6. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` against the target adapter.
 7. Validate generated Power BI assets in the selected Fabric/Power BI deployment toolchain when
-   Gold output is consumed.
+   Gold output is consumed. The scaffold includes `fabric/KairosModelBpa.Notebook`, which the
+   deploy workflow runs after publishing as an advisory Best Practice Analyzer check (DD-238).
+   To keep its findings, create a lakehouse and set the `FABRIC_BPA_LAKEHOUSE_ID` and
+   `FABRIC_BPA_LAKEHOUSE_NAME` repository variables. Without them findings are only printed in
+   the notebook run. The step never blocks a deploy; see `CICD.md` for the per-target
+   differences.
 
 Source schema extraction may feed reviewed source TTL in the hub. Complex upstream logic must be an
 ordinary contracted dbt SQL/YAML model and referenced directly by an EntityBinding. The

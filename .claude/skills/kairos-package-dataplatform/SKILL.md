@@ -39,6 +39,14 @@ Treat the ontology hub as the producer and the dataplatform as the runtime consu
   generated `<Product>.Report`, which every hub release republishes. Model edits made in
   Desktop or Fabric return to the hub through `kairos-ontology harvest-gold`, never into this
   repository.
+- After publishing, the deploy workflow runs the advisory Best Practice Analyzer notebook
+  (`fabric/KairosModelBpa.Notebook`, DD-238). It is read-only over the model and never blocks
+  a deploy. On Fabric (Direct Lake) it also checks guardrails and fallback to DirectQuery. On a
+  Databricks (DirectQuery) model it needs Premium, PPU or Fabric capacity for XMLA read access;
+  in a Pro workspace it skips, and the check is the manual one in `CICD.md`. It classifies each
+  finding against the Kairos profile. Anything left to review goes back to the hub as
+  authoring (a measure, a `goldHideColumn`, a `bpaIgnoreRule` with its reason), never into the
+  deployed model.
 - The dataplatform-side TMDL sanitizer is gone. The hub emits `///` doc comments deliberately:
   they carry the ontology's descriptions into Desktop's field list. Do not reintroduce a
   script that strips them.

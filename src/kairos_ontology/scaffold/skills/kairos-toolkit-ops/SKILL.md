@@ -31,6 +31,20 @@ before accepting changed semantics.
    just GA (CI only enforces the entry for GA tags; write one anyway so the
    changelog doesn't read as stale). Run `uv lock` if needed.
 3. Run the full relevant tests plus `uv build`.
+   **Refresh the BPA snapshot by hand** (DD-238). Microsoft's `BPARules.json` has no releases,
+   so check whether it changed since `UPSTREAM_COMMIT` in `core/projections/dbt/bpa_profile.py`
+   (`gh api "repos/microsoft/Analysis-Services/commits?path=BestPracticeRules/BPARules.json&per_page=1"`).
+   Also check whether `semantic-link-labs` released since `SEMANTIC_LINK_LABS_PIN` in
+   `bpa_notebook.py`. If either moved:
+   - re-vendor `bpa_rules/BPARules.json`;
+   - update the commit, date and pin;
+   - verify the notebook's Semantic Link Labs calls still exist;
+   - triage every rule `tests/test_bpa_profile.py` reports, and bump `PROFILE_VERSION`
+     if any disposition changed;
+   - run `python scripts/generate_bpa_profile.py`.
+
+   A changed notebook template is a changed dataplatform file. Record its outgoing bytes as a
+   superseded generation before updating its digest in `tests/test_workflow_refresh.py`.
 4. Commit with DCO sign-off, open the PR, merge to `main`.
 5. Tagging is automatic: `release.yml` detects the `__version__` change on the push
    to `main`, tags the merged commit itself, and builds + publishes — no manual

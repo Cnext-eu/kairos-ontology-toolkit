@@ -137,6 +137,55 @@ business semantics.
   environment. Fabric Direct Lake needs `gold.direct_lake_connection` instead
   (`workspace_id` + `lakehouse_id` per environment); it is required, not optional.
 
+## Best practice by design (DD-238)
+
+The model is judged against Microsoft's Best Practice Analyzer rules through the Kairos
+profile, which gives every rule one disposition per target. The full table is
+`docs/toolkit/BPA_PROFILE.md` in a hub, generated from the toolkit's profile. **This skill advises; the compiler enforces** (DD-163). Ask
+the questions below while designing, so `compile --check` has nothing to say.
+
+For each measure, confirm:
+
+- **A display name** (`kairos-ext:measureDisplayName`): what report users read in the field
+  list. `measureId` stays the stable key. Other measures reference it by this name.
+- **A description** (`measureDefinition`, mandatory) and **a format string**
+  (`measureFormatString`, mandatory past `intent`).
+- **Qualified column references**: `SUM(fact_sale[amount])`, never `SUM([amount])`.
+  Reference measures unqualified by their display name, `[Total Sales]`. Prefer `DIVIDE()` to
+  `/` wherever the denominator can be zero.
+
+For each many-to-many bridge, decide **which way filters flow**. By default the bridge's edge
+to its fact-side endpoint filters both ways, so a slicer on the far dimension reaches the
+fact. When neither endpoint, or both, is on the fact side, the product report lists the bridge
+under `undecided_bridge_filters` and it stays single-direction. Decide it with
+`kairos-ext:goldRelationshipCrossFilter "bridge_x.a_sk -> dim_a.a_sk = both"`.
+
+Per target:
+
+- **Fabric (Direct Lake).** No calculated columns or tables; the emitter writes none, so model
+  the value in Silver. A Delta source must be a table, not a SQL view: a view silently falls
+  back to DirectQuery. Row counts are bounded by the capacity's Direct Lake guardrails.
+  Fallback and guardrails are checked after deploy.
+- **Databricks (DirectQuery).** The Time Intelligence calculation group costs a warehouse
+  round trip per query, so weigh it against query volume. `relyOnReferentialIntegrity` is
+  deliberately not emitted: Silver leaves an unmatched foreign key null, and the inner join it
+  enables would drop those rows. The post-deploy check needs Premium, PPU or Fabric capacity.
+
+What happens when a rule is broken:
+
+| Where | Checks |
+|---|---|
+| `compile --check`, blocking | `gold.dax-column-unqualified`, `gold.dax-measure-qualified`, `gold.dax-measure-reference-by-id`, `gold.measure-display-name-invalid`, `gold.measure-display-name-collision` |
+| `compile --check`, warning | `gold.description-missing`, `gold.float-column`, `gold.dax-division-operator` |
+| `emit-gold`, blocking | date table marked, `month_name` sorted, numbers not summarized, active relationship types agree, every column sourced, every measure formatted |
+| After deploy, advisory | the dataplatform's BPA notebook: cardinality, referential integrity, Direct Lake guardrails and fallback, and the remaining authored-DAX rules |
+
+When a rule genuinely does not hold for one object, record it rather than working around it:
+`kairos-ext:bpaIgnoreRule "DAX_COLUMNS_FULLY_QUALIFIED on measure sales.margin: <reason>"` on
+the `owl:Ontology` resource. The reason is mandatory. An exception that excuses nothing fails
+`compile --check`, so it cannot outlive its reason. Findings from the post-deploy run come back
+here as authoring, never as edits to the deployed model (DD-206, DD-224).
+
 Run `kairos-ontology compile <domain> --check --format json` before Gold generation. Gold consumes
 the returned CompilePlan view through the registered projector; it never calls a legacy Silver/dbt
 projection path. Review generated dbt/DDL, TMDL, DAX, relationships, and security scaffolding, then

@@ -62,6 +62,9 @@ def package_powerbi_release_cmd(
     result the same way ``emit-gold`` does, and zips the ``*.SemanticModel``/``*.Report``
     folders of every such domain into one archive with a recorded SHA-256.
 
+    Rendering runs the same Best Practice Analyzer assertions as ``emit-gold`` (DD-238),
+    so no archive is built for a model that breaks one; see ``emit-gold`` for the codes.
+
     A hub with no Gold-configured domain produces no archive: this command reports
     that and exits successfully rather than emitting a dangling, empty artifact.
 
