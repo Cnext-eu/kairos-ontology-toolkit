@@ -33,7 +33,11 @@ deployment configuration, and runtime tests.
 5. Consume the compiler-emitted dbt package at an immutable Git revision or artifact version.
 6. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` against the target adapter.
 7. Validate generated Power BI assets in the selected Fabric/Power BI deployment toolchain when
-   Gold output is consumed. The scaffold includes `fabric/KairosModelBpa.Notebook`, which the
+   Gold output is consumed. Before the first Power BI deploy, walk the user through
+   `CICD.md` "Fabric deploy prerequisites": one GitHub Environment per target holding
+   `FABRIC_WORKSPACE_ID` and `FABRIC_ITEM_ID` (the Warehouse dbt writes Gold into), a
+   federated credential per Environment, the service-principal tenant setting and workspace
+   role (DD-239). The scaffold includes `fabric/KairosModelBpa.Notebook`, which the
    deploy workflow runs after publishing as an advisory Best Practice Analyzer check (DD-238).
    To keep its findings, create a lakehouse and set the `FABRIC_BPA_LAKEHOUSE_ID` and
    `FABRIC_BPA_LAKEHOUSE_NAME` repository variables. Without them findings are only printed in

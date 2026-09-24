@@ -39,12 +39,6 @@ on:
           deployed model (DD-238). Never blocks the deploy; see CICD.md.
         type: boolean
         default: true
-      refresh_after_publish:
-        description: >-
-          Refresh (frame) a Direct Lake model after publishing, and fail the deploy if it
-          cannot read its tables (DD-239). Turn off only while diagnosing credentials.
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -54,18 +48,10 @@ permissions:
 env:
   HUB_ORG: "{ORG}"
   HUB_REPO: "{HUB_REPO}"
-  KAIROS_SKILL_CONTEXT: "1"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # DD-239: one GitHub Environment per target. Its secrets and variables
-    # (FABRIC_WORKSPACE_ID, FABRIC_ITEM_ID, the Azure IDs) are what this run uses, and its
-    # protection rules (required reviewers) gate the deploy. Repository-level secrets are
-    # still visible inside an Environment, so a repo that has not split them keeps working.
-    # The Azure federated credential subject becomes
-    # `repo:<org>/<repo>:environment:<target_environment>` -- add one per Environment.
-    environment: ${{ inputs.target_environment }}
 
     steps:
       - uses: actions/checkout@v4
@@ -198,16 +184,11 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          # A service principal used only for Fabric usually has no Azure subscription.
-          allow-no-subscriptions: true
 
-      # Pinned by the toolkit (DD-239) and bumped only with a toolkit release, like the
-      # semantic-link-labs pin: an unpinned install let a fabric-cicd release change how
-      # every deploy behaves overnight.
       - name: Install fabric-cicd
         run: |
           pip install --upgrade pip
-          pip install "fabric-cicd==1.3.0" azure-identity
+          pip install fabric-cicd azure-identity
 
       # `environment` selects one value per `find_replace` entry of the `parameter.yml`
       # that fabric-cicd reads from the root of `repository_directory`. The hub ships that
@@ -245,94 +226,6 @@ jobs:
 
           publish_all_items(target_workspace)
           print(f"Published SemanticModel and Report items from: {model_dir}")
-          PY
-
-      # DD-239: frame every Direct Lake model just published, and fail the deploy if it
-      # cannot. A freshly published Direct Lake model has not read its Delta tables yet, so
-      # a wrong FABRIC_ITEM_ID, a missing Gold table or a missing permission would
-      # otherwise surface only when a report user opens it. This is the step that turns
-      # all three into a red deploy. A DirectQuery (Databricks) model holds no data and is
-      # skipped. Framing reads the tables as the model owner -- the deploying service
-      # principal -- so it needs read access on the Warehouse (see CICD.md).
-      - name: Refresh the semantic model (Direct Lake)
-        if: ${{ inputs.refresh_after_publish }}
-        env:
-          FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import sys
-          import time
-          import urllib.request
-          from pathlib import Path
-
-          from azure.identity import AzureCliCredential
-
-          models = []
-          for platform in sorted(Path("semantic-model").rglob("*.SemanticModel/.platform")):
-              definition = platform.parent / "definition"
-              if any(
-                  "mode: directLake" in path.read_text(encoding="utf-8")
-                  for path in definition.rglob("*.tmdl")
-              ):
-                  metadata = json.loads(platform.read_text(encoding="utf-8"))["metadata"]
-                  models.append(metadata["displayName"])
-          if not models:
-              print("No Direct Lake semantic model in this release; nothing to frame.")
-              sys.exit(0)
-
-          workspace_id = os.environ["FABRIC_WORKSPACE_ID"]
-          credential = AzureCliCredential()
-
-
-          def call(method, url, scope, body=None):
-              token = credential.get_token(scope).token
-              request = urllib.request.Request(
-                  url,
-                  method=method,
-                  data=None if body is None else json.dumps(body).encode("utf-8"),
-                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
-              )
-              with urllib.request.urlopen(request) as response:
-                  payload = response.read()
-                  return json.loads(payload) if payload else None
-
-
-          FABRIC = "https://api.fabric.microsoft.com/.default"
-          POWERBI = "https://analysis.windows.net/powerbi/api/.default"
-          items = call(
-              "GET",
-              "https://api.fabric.microsoft.com/v1/workspaces/" + workspace_id
-              + "/items?type=SemanticModel",
-              FABRIC,
-          )["value"]
-          failed = []
-          for name in models:
-              model_id = next(item["id"] for item in items if item["displayName"] == name)
-              base = (
-                  "https://api.powerbi.com/v1.0/myorg/groups/" + workspace_id
-                  + "/datasets/" + model_id + "/refreshes"
-              )
-              call("POST", base, POWERBI, {"type": "full", "notifyOption": "NoNotification"})
-              status, detail = "Unknown", ""
-              for _ in range(90):
-                  time.sleep(20)
-                  latest = call("GET", base + "?$top=1", POWERBI)["value"][0]
-                  status = latest.get("status", "Unknown")
-                  detail = latest.get("serviceExceptionJson", "")
-                  if status in ("Completed", "Failed", "Disabled", "Cancelled"):
-                      break
-              print("Refresh of", name, "finished with status:", status)
-              if status != "Completed":
-                  failed.append(name)
-                  print("::error::" + name + " could not be framed (" + status + "): " + detail)
-          if failed:
-              print("::error::The model is published but cannot read its tables. Check "
-                    "FABRIC_ITEM_ID (the Warehouse dbt writes Gold into), that the target "
-                    "environment's dbt build created the gold_* tables, and that the "
-                    "service principal can read the Warehouse. See CICD.md.")
-              sys.exit(1)
           PY
 
       # DD-238 / #982: advisory Best Practice Analyzer run against the model just

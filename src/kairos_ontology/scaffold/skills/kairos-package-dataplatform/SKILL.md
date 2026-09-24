@@ -39,6 +39,10 @@ Treat the ontology hub as the producer and the dataplatform as the runtime consu
   generated `<Product>.Report`, which every hub release republishes. Model edits made in
   Desktop or Fabric return to the hub through `kairos-ontology harvest-gold`, never into this
   repository.
+- The deploy job runs in the GitHub Environment named by `target_environment` and refreshes
+  (frames) every Direct Lake model after publishing; a model that cannot read its tables
+  fails the deploy (DD-239). Check `FABRIC_ITEM_ID` points at the Warehouse dbt writes Gold
+  into before suspecting the hub.
 - After publishing, the deploy workflow runs the advisory Best Practice Analyzer notebook
   (`fabric/KairosModelBpa.Notebook`, DD-238). It is read-only over the model and never blocks
   a deploy. On Fabric (Direct Lake) it also checks guardrails and fallback to DirectQuery. On a

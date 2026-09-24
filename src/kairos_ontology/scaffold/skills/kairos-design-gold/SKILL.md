@@ -135,7 +135,8 @@ business semantics.
   (`server_hostname`, `http_path` per environment) in `kairos.yaml`. Projection fails closed
   without it; the emitted fabric-cicd `parameter.yml` rewrites those two values per deployment
   environment. Fabric Direct Lake needs `gold.direct_lake_connection` instead
-  (`workspace_id` + `lakehouse_id` per environment); it is required, not optional.
+  (`workspace_id` + `item_id` per environment, where `item_id` is the Fabric Warehouse dbt
+  writes Gold into); it is required, not optional.
 
 ## Best practice by design (DD-238)
 

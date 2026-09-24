@@ -38,6 +38,7 @@ never partially applied.
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -196,7 +197,11 @@ def load_gold_databricks_connection(
 GOLD_DIRECT_LAKE_RULE_ID = "DD-113-direct-lake-connection"
 
 _DIRECT_LAKE_KEY = "direct_lake_connection"
-_DIRECT_LAKE_ENVIRONMENT_FIELDS = ("workspace_id", "lakehouse_id")
+_DIRECT_LAKE_ENVIRONMENT_FIELDS = ("workspace_id", "item_id")
+#: The pre-DD-239 name for ``item_id``, still accepted. dbt's Direct Lake adapter
+#: (`fabric-warehouse`) writes Gold into a Fabric *Warehouse*, so "lakehouse" sent authors
+#: looking for an item that does not hold the tables.
+_DIRECT_LAKE_ITEM_ALIAS = "lakehouse_id"
 _DIRECT_LAKE_CONFIG_PATH = f"{_GOLD_KEY}.{_DIRECT_LAKE_KEY}"
 #: A Fabric workspace/lakehouse ID is a GUID; anything else is an unresolved
 #: placeholder (the exact failure mode #619 Bugs 4/6 report).
@@ -208,11 +213,21 @@ _PLACEHOLDER_GUID = "00000000-0000-0000-0000-000000000000"
 
 @dataclass(frozen=True, slots=True)
 class GoldDirectLakeEnvironmentSpec:
-    """One environment's OneLake workspace/lakehouse coordinates."""
+    """One environment's OneLake coordinates: a workspace and the Fabric item in it.
+
+    ``item_id`` is the item Gold lives in (DD-239). For the `fabric-warehouse` adapter --
+    the only one that emits Direct Lake -- that is the Warehouse dbt writes the `gold_*`
+    schemas into, whose Delta tables OneLake serves at `<item>/Tables/<schema>/<table>`.
+    """
 
     name: str
     workspace_id: str
-    lakehouse_id: str
+    item_id: str
+
+    @property
+    def lakehouse_id(self) -> str:
+        """Deprecated name for ``item_id``."""
+        return self.item_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,10 +257,10 @@ gold:
     environments:
       dev:
         workspace_id: <workspace GUID>
-        lakehouse_id: <lakehouse GUID>
+        item_id: <GUID of the Warehouse dbt writes Gold into>
       prod:
         workspace_id: <workspace GUID>
-        lakehouse_id: <lakehouse GUID>
+        item_id: <GUID of the Warehouse dbt writes Gold into>
 
 'environments' is a mapping keyed by environment name, not a list of '- name:' entries."""
 
@@ -263,7 +278,7 @@ def _direct_lake_guid(environment: str, field: str, raw: object) -> str:
     if not isinstance(raw, str) or not _GUID.match(raw.strip()):
         raise _direct_lake_invalid(
             f"environment {environment!r} needs a GUID {field!r} "
-            "(author the resolved workspace/lakehouse ID, not a template placeholder)"
+            "(author the resolved workspace/item ID, not a template placeholder)"
         )
     value = raw.strip()
     if value.lower() == _PLACEHOLDER_GUID:
@@ -285,13 +300,28 @@ def _direct_lake_environment(name: object, raw: object) -> GoldDirectLakeEnviron
     environment = name.strip()
     if not isinstance(raw, dict):
         raise _direct_lake_invalid(f"environment {environment!r} must be a mapping")
-    unknown = sorted(set(map(str, raw)) - set(_DIRECT_LAKE_ENVIRONMENT_FIELDS))
+    accepted = {*_DIRECT_LAKE_ENVIRONMENT_FIELDS, _DIRECT_LAKE_ITEM_ALIAS}
+    unknown = sorted(set(map(str, raw)) - accepted)
     if unknown:
         raise _direct_lake_invalid(f"environment {environment!r} has unknown key(s) {unknown}")
+    if "item_id" in raw and _DIRECT_LAKE_ITEM_ALIAS in raw:
+        raise _direct_lake_invalid(
+            f"environment {environment!r} sets both 'item_id' and its deprecated alias "
+            f"{_DIRECT_LAKE_ITEM_ALIAS!r}; keep 'item_id'"
+        )
+    field = "item_id"
+    if _DIRECT_LAKE_ITEM_ALIAS in raw:
+        field = _DIRECT_LAKE_ITEM_ALIAS
+        warnings.warn(
+            f"{_DIRECT_LAKE_ITEM_ALIAS!r} is deprecated; rename it to 'item_id' -- the Fabric "
+            "item Gold lives in, which for fabric-warehouse is the Warehouse (DD-239)",
+            FutureWarning,
+            stacklevel=2,
+        )
     return GoldDirectLakeEnvironmentSpec(
         name=environment,
         workspace_id=_direct_lake_guid(environment, "workspace_id", raw.get("workspace_id")),
-        lakehouse_id=_direct_lake_guid(environment, "lakehouse_id", raw.get("lakehouse_id")),
+        item_id=_direct_lake_guid(environment, field, raw.get(field)),
     )
 
 
@@ -695,8 +725,9 @@ def parse_gold_connection_overrides(
         if only is not None and str(name) != only:
             continue
         expanded = {
-            field: _resolve_env_refs(str(raw.get(field, "")), environ)
-            for field in _DIRECT_LAKE_ENVIRONMENT_FIELDS
+            field: _resolve_env_refs(str(raw[field]), environ)
+            for field in (*_DIRECT_LAKE_ENVIRONMENT_FIELDS, _DIRECT_LAKE_ITEM_ALIAS)
+            if field in raw
         }
         try:
             resolved[str(name)] = _direct_lake_environment(str(name), expanded)
@@ -748,7 +779,7 @@ def apply_gold_connection_override(
         raise GoldConnectionOverrideError("parameter.yml has no 'find_replace' entries")
 
     new_url = (
-        f"https://onelake.dfs.fabric.microsoft.com/{override.workspace_id}/{override.lakehouse_id}"
+        f"https://onelake.dfs.fabric.microsoft.com/{override.workspace_id}/{override.item_id}"
     )
     previous = ""
     rewritten = 0
