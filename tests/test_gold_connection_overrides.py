@@ -178,11 +178,11 @@ def test_override_rejects_the_wrong_list_shape():
 
 
 def test_cli_is_a_clean_no_op_without_config_or_matching_environment(tmp_path, monkeypatch):
-    """Existing repos with no override file must be entirely unaffected."""
+    """Existing repos with no override file are unaffected for a declared environment."""
     monkeypatch.chdir(tmp_path)
     package = tmp_path / "semantic-model"
     package.mkdir()
-    original = _parameter_yaml({"DEV": _DEFAULT_URL})
+    original = _parameter_yaml({"DEV": _DEFAULT_URL, "PROD": _DEFAULT_URL})
     (package / "parameter.yml").write_text(original, encoding="utf-8")
 
     runner = CliRunner()
@@ -191,7 +191,7 @@ def test_cli_is_a_clean_no_op_without_config_or_matching_environment(tmp_path, m
         ["apply-gold-connection", "--package-dir", "semantic-model", "--environment", "DEV"],
     )
     assert result.exit_code == 0, result.output
-    assert "using the hub's own Direct Lake connection" in result.output
+    assert "using the hub's own connection" in result.output
     assert (package / "parameter.yml").read_text(encoding="utf-8") == original
 
     config = tmp_path / "overrides.yml"
@@ -214,6 +214,65 @@ def test_cli_is_a_clean_no_op_without_config_or_matching_environment(tmp_path, m
     assert result.exit_code == 0, result.output
     assert "declares no 'PROD' environment" in result.output
     assert (package / "parameter.yml").read_text(encoding="utf-8") == original
+
+
+def test_cli_fails_closed_on_an_environment_parameter_yml_does_not_declare(tmp_path, monkeypatch):
+    """#993: fabric-cicd skips an undeclared environment and deploys the default one."""
+    monkeypatch.chdir(tmp_path)
+    package = tmp_path / "semantic-model"
+    package.mkdir()
+    (package / "parameter.yml").write_text(_parameter_yaml({"DEV": _DEFAULT_URL}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        ["apply-gold-connection", "--package-dir", "semantic-model", "--environment", "dev"],
+    )
+    assert result.exit_code != 0
+    assert "does not declare the 'dev' environment" in result.output
+    assert "['DEV']" in result.output
+
+
+def test_cli_fails_closed_without_parameter_yml(tmp_path, monkeypatch):
+    """#993: an archive without it deployed the default workspace to every environment."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "semantic-model").mkdir()
+    result = CliRunner().invoke(
+        cli,
+        ["apply-gold-connection", "--package-dir", "semantic-model", "--environment", "DEV"],
+    )
+    assert result.exit_code != 0
+    assert "re-release the hub" in result.output
+
+
+def test_an_override_can_add_an_environment_the_hub_never_declared(tmp_path, monkeypatch):
+    """The dataplatform's own environment, resolved from the deploy environment, passes."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", _REAL_WS)
+    monkeypatch.setenv("FABRIC_ITEM_ID", _REAL_LH)
+    package = tmp_path / "semantic-model"
+    package.mkdir()
+    (package / "parameter.yml").write_text(_parameter_yaml({"DEV": _DEFAULT_URL}), encoding="utf-8")
+    config = tmp_path / "overrides.yml"
+    config.write_text(
+        "environments:\n  UAT:\n"
+        '    workspace_id: "${FABRIC_WORKSPACE_ID}"\n'
+        '    lakehouse_id: "${FABRIC_ITEM_ID}"\n',
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "apply-gold-connection",
+            "--package-dir",
+            "semantic-model",
+            "--environment",
+            "UAT",
+            "--config",
+            str(config),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert f"{_REAL_WS}/{_REAL_LH}" in (package / "parameter.yml").read_text(encoding="utf-8")
 
 
 def test_cli_applies_override_and_logs_before_after(tmp_path, monkeypatch):
@@ -245,3 +304,17 @@ def test_cli_applies_override_and_logs_before_after(tmp_path, monkeypatch):
         "https://onelake.dfs.fabric.microsoft.com/"
         "55555555-5555-5555-5555-555555555555/66666666-6666-6666-6666-666666666666"
     )
+
+
+def test_only_the_target_environment_is_resolved():
+    """#993: a DEV deploy must not fail on PROD's unset ${VAR}."""
+    document = {
+        "environments": {
+            "DEV": {"workspace_id": _REAL_WS, "lakehouse_id": _REAL_LH},
+            "PROD": {"workspace_id": "${UNSET_WS}", "lakehouse_id": "${UNSET_ITEM}"},
+        }
+    }
+    resolved = parse_gold_connection_overrides(document, {}, only="DEV")
+    assert set(resolved) == {"DEV"}
+    with pytest.raises(GoldConnectionOverrideError):
+        parse_gold_connection_overrides(document, {}, only="PROD")

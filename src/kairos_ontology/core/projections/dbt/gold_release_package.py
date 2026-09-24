@@ -24,9 +24,15 @@ from dataclasses import dataclass
 from io import BytesIO
 
 #: Path segments that mark a folder as a deployable Fabric item. Everything else
-#: ``render_powerbi_artifacts`` returns (DDL, ERD, DAX, dbt, the Kairos product report,
-#: fabric-cicd `parameter.yml`) is hub-internal and never shipped to Fabric.
+#: ``render_powerbi_artifacts`` returns (DDL, ERD, DAX, dbt, the Kairos product report)
+#: is hub-internal and never shipped to Fabric -- except `parameter.yml`, below.
 _ITEM_SUFFIXES = (".SemanticModel", ".Report")
+
+#: fabric-cicd's deploy-time parameterisation. It ships at the archive root (#993):
+#: fabric-cicd reads it from the root of its `repository_directory`, which is the
+#: extracted archive, and the dataplatform's `apply-gold-connection` rewrites it there.
+#: Left out, every environment silently deployed the hub's default workspace and item.
+PARAMETER_MEMBER = "parameter.yml"
 
 #: Fixed archive-member timestamp so re-packaging identical artifacts produces a
 #: byte-identical zip (zipfile otherwise stamps "now", which would make the SHA-256
@@ -52,10 +58,9 @@ def is_deployable_item_path(path: str) -> bool:
 def filter_deployable_artifacts(artifacts: dict[str, str]) -> dict[str, str]:
     """Keep only the ``*.SemanticModel``/``*.Report`` subtree of one domain's artifacts.
 
-    Drops the DDL, ERD, DAX, dbt models, the Kairos product-report JSON, and
-    fabric-cicd's ``parameter.yml`` -- none of those are Fabric package files, and
-    ``parameter.yml`` in particular is deploy-time *tooling*, applied by fabric-cicd
-    from the dataplatform's ``repository_directory`` root, not archive content.
+    Drops the DDL, ERD, DAX, dbt models and the Kairos product-report JSON. The root
+    ``parameter.yml`` is not an item file either; `build_powerbi_release_archive` adds it
+    separately, once, at the archive root.
     """
     return {path: content for path, content in artifacts.items() if is_deployable_item_path(path)}
 
@@ -78,6 +83,7 @@ def build_powerbi_release_archive(
     """
     combined: dict[str, str] = {}
     contributing_domains: list[str] = []
+    parameters: dict[str, str] = {}
     for domain in sorted(domain_artifacts):
         deployable = filter_deployable_artifacts(domain_artifacts[domain])
         if not deployable:
@@ -97,6 +103,8 @@ def build_powerbi_release_archive(
                 f"missing: {', '.join(missing)}"
             )
         contributing_domains.append(domain)
+        if PARAMETER_MEMBER in domain_artifacts[domain]:
+            parameters[domain] = domain_artifacts[domain][PARAMETER_MEMBER]
         overlap = combined.keys() & deployable.keys()
         if overlap:
             raise ValueError(
@@ -107,6 +115,17 @@ def build_powerbi_release_archive(
 
     if not combined:
         return None
+    # One hub-wide file: every product renders it from the same `kairos.yaml` connection
+    # block, so two different renderings mean something upstream diverged, and shipping
+    # either one would promote some products to the wrong place.
+    if len(set(parameters.values())) > 1:
+        raise ValueError(
+            "products render different parameter.yml content "
+            f"({', '.join(sorted(parameters))}); one release archive carries one "
+            "deploy-time parameterisation"
+        )
+    if parameters:
+        combined[PARAMETER_MEMBER] = next(iter(parameters.values()))
 
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:

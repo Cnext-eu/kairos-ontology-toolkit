@@ -190,7 +190,7 @@ _LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
     "dataplatform/.github/workflows/pr-validate.yml.template":
         "a8512836f7412d6a2d2d954bbe5ee9d63cff1d48103cc911bdce6a6b4e33d211",
     "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template":
-        "7957c7c1e155b403371d05c14b25e0aaf54151eabad5a9f33f4f2ee66be965b1",
+        "572ec5f9e98aa0b56f3cb020d371e7165d904e9d1b688cb77eeed3922af93968",
     "dataplatform/fabric/KairosModelBpa.Notebook/notebook-content.py.template":
         "b87826037e1b8748b27327eeeced0ba73ff95f02e010691d8bff19604d2cb7f7",
     "dataplatform/fabric/KairosModelBpa.Notebook/.platform.template":

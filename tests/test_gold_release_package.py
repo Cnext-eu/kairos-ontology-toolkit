@@ -70,7 +70,9 @@ def test_archive_contains_both_item_folders_with_a_verifiable_sha256():
         assert any(".Report/" in name for name in names)
         assert not any("gold-ddl" in name for name in names)
         assert not any("gold-product" in name for name in names)
-        assert not any(name == "parameter.yml" for name in names)
+        # #993: fabric-cicd reads it from the root of the extracted archive.
+        assert "parameter.yml" in names
+        assert zf.read("parameter.yml").decode("utf-8") == "find_replace: []\n"
 
 
 def test_archive_is_deterministic_across_rebuilds():
@@ -126,3 +128,31 @@ def test_domain_missing_report_or_semantic_model_fails_closed():
 
     with pytest.raises(ValueError, match="Report"):
         build_powerbi_release_archive({"invoice": artifacts})
+
+
+def test_one_hub_wide_parameter_file_ships_once_at_the_root():
+    """#993: without it every environment deployed the hub's default workspace."""
+    archive = build_powerbi_release_archive(
+        {"invoice": _artifacts("invoice", "Invoice"), "party": _artifacts("party", "Party")}
+    )
+    assert archive is not None
+    with zipfile.ZipFile(BytesIO(archive.zip_bytes)) as zf:
+        assert [name for name in zf.namelist() if name.endswith("parameter.yml")] == [
+            "parameter.yml"
+        ]
+
+
+def test_products_disagreeing_on_parameterisation_fail_closed():
+    party = _artifacts("party", "Party")
+    party["parameter.yml"] = "find_replace: [something-else]\n"
+    with pytest.raises(ValueError, match="different parameter.yml"):
+        build_powerbi_release_archive({"invoice": _artifacts("invoice", "Invoice"), "party": party})
+
+
+def test_a_domain_without_items_contributes_no_parameter_file():
+    """Only a packaged product's parameterisation counts; a stray one cannot conflict."""
+    stray = {"other/other-gold-ddl.sql": "x", "parameter.yml": "find_replace: [stale]\n"}
+    archive = build_powerbi_release_archive(
+        {"invoice": _artifacts("invoice", "Invoice"), "other": stray}
+    )
+    assert archive is not None

@@ -160,19 +160,10 @@ jobs:
       # own target instead. It rewrites only `replace_value[<target_environment>]` in
       # the already-extracted, already-verified `parameter.yml`, leaves `find_value`
       # exactly as the hub emitted it, and logs before/after so the change is auditable
-      # in the run log. No config file, or no matching environment => the hub's values
-      # stand. It fails closed when the archive carries no `parameter.yml`, or when
-      # `parameter.yml` does not declare target_environment: fabric-cicd would otherwise
-      # skip the rewrite and deploy the hub's default workspace (#993).
-      #
-      # `${FABRIC_WORKSPACE_ID}` / `${FABRIC_ITEM_ID}` in gold-connections.yml resolve
-      # from these two, which is the only way a `${VAR}` there can resolve at all: a step
-      # sees only the environment it is given (#993).
+      # in the run log. No config file, or no matching environment => clean no-op.
       - name: Apply dataplatform Direct Lake connection override
         env:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
-          FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
-          FABRIC_ITEM_ID: ${{ vars.FABRIC_ITEM_ID || secrets.FABRIC_ITEM_ID }}
         run: |
           uv run --no-sync kairos-ontology apply-gold-connection \
             --package-dir semantic-model \
@@ -191,12 +182,12 @@ jobs:
           pip install fabric-cicd azure-identity
 
       # `environment` selects one value per `find_replace` entry of the `parameter.yml`
-      # that fabric-cicd reads from the root of `repository_directory`. The hub ships that
-      # file at the root of the release package (#993), generated from
-      # `gold.direct_lake_connection` or `gold.databricks_connection` in `kairos.yaml`;
-      # `target_environment` must be one of the environment keys declared there -- or
-      # supplied by the override step above via `.github/fabric/gold-connections.yml` --
-      # and the override step refuses to continue when it is not.
+      # that fabric-cicd reads from the root of `repository_directory`. For a Databricks
+      # (directQuery) model the hub ships that file inside the release package, generated
+      # from `gold.databricks_connection` in `kairos.yaml`; `target_environment` must be
+      # one of the environment keys declared there -- or supplied by the override step
+      # above via `.github/fabric/gold-connections.yml` -- or the rewrite is skipped and
+      # the model keeps the default environment's warehouse.
       #
       # §8 dataplatform responsibility item 6: both Fabric item types the hub ships
       # (SemanticModel and Report) are deployed together.

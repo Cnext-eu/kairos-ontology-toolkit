@@ -176,12 +176,15 @@ Instead, declare the workspace and lakehouse IDs this platform owns in
 ```yaml
 environments:
   PROD:
-    workspace_id: "${FABRIC_PROD_WORKSPACE_ID}"
-    lakehouse_id: "${FABRIC_PROD_LAKEHOUSE_ID}"
+    workspace_id: "${FABRIC_WORKSPACE_ID}"
+    lakehouse_id: "${FABRIC_ITEM_ID}"
 ```
 
-A whole value written as `${VAR}` is resolved from the deploy environment, so real GUIDs need
-never be committed. The deploy workflow applies this after the archive's SHA-256 has been
+A whole value written as `${FABRIC_WORKSPACE_ID}` or `${FABRIC_ITEM_ID}` is resolved from the
+repository variable (or secret) of that name, which the deploy workflow passes into the
+override step, so real GUIDs need never be committed. No other `${NAME}` can resolve: a
+workflow step only sees the environment it is given. For the `fabric-warehouse` adapter,
+`lakehouse_id` is the item ID of the Warehouse dbt writes Gold into. The deploy workflow applies this after the archive's SHA-256 has been
 verified, via `kairos-ontology apply-gold-connection`, which:
 
 - rewrites only `replace_value[<target_environment>]` in the extracted `parameter.yml`;
@@ -190,8 +193,11 @@ verified, via `kairos-ontology apply-gold-connection`, which:
   match and leave the model pointed at the hub's default workspace;
 - never touches the `.zip`, its checksum, or any TMDL/PBIP file;
 - logs the before/after URL into the run log;
-- is a clean no-op when the file is absent or declares no matching environment, in which case
-  the hub's own values stand.
+- keeps the hub's own values when the file is absent or declares no matching environment;
+- **fails the deploy** when the archive carries no `parameter.yml` (a release packaged before
+  the toolkit shipped it: re-release the hub), or when `parameter.yml` does not declare the
+  target environment. Keys are case-sensitive. Before this, both cases silently deployed the
+  hub's default workspace to every environment.
 
 ### Advisory Best Practice Analyzer run
 

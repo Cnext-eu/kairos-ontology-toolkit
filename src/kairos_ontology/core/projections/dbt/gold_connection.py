@@ -658,8 +658,14 @@ def _resolve_env_refs(value: str, environ: Mapping[str, str]) -> str:
 def parse_gold_connection_overrides(
     document: object,
     environ: Mapping[str, str],
+    *,
+    only: str | None = None,
 ) -> dict[str, GoldDirectLakeEnvironmentSpec]:
     """Read the dataplatform-owned ``gold-connections.yml`` into typed environments.
+
+    *only* resolves and validates just that environment (#993). A deploy runs against one
+    target and is given only that target's variables, so resolving every environment made
+    a DEV deploy fail on PROD's unset ``${VAR}``. The others are still shape-checked.
 
     Deliberately validated with the same GUID rules the hub applies to its own
     ``kairos.yaml``, including the all-zero placeholder rejection: an override that ships
@@ -686,6 +692,8 @@ def parse_gold_connection_overrides(
             raise GoldConnectionOverrideError(
                 f"{GOLD_CONNECTION_OVERRIDE_PATH}: environment {name!r} must be a mapping"
             )
+        if only is not None and str(name) != only:
+            continue
         expanded = {
             field: _resolve_env_refs(str(raw.get(field, "")), environ)
             for field in _DIRECT_LAKE_ENVIRONMENT_FIELDS
@@ -695,6 +703,27 @@ def parse_gold_connection_overrides(
         except GoldContractError as exc:
             raise GoldConnectionOverrideError(f"{GOLD_CONNECTION_OVERRIDE_PATH}: {exc}") from exc
     return resolved
+
+
+def declared_parameter_environments(parameter_yaml: str) -> frozenset[str]:
+    """Return the environments every ``find_replace`` entry of *parameter_yaml* declares.
+
+    fabric-cicd applies one ``replace_value[environment]`` per entry and silently skips an
+    entry that does not declare the environment, so an environment is only fully
+    parameterised when *every* entry names it -- hence the intersection (#993).
+    """
+    document = yaml.safe_load(parameter_yaml)
+    entries = document.get("find_replace") if isinstance(document, dict) else None
+    if not isinstance(entries, list) or not entries:
+        raise GoldConnectionOverrideError("parameter.yml has no 'find_replace' entries")
+    declared: frozenset[str] | None = None
+    for entry in entries:
+        replace_value = entry.get("replace_value") if isinstance(entry, dict) else None
+        keys = frozenset(str(key) for key in replace_value) if isinstance(
+            replace_value, dict
+        ) else frozenset()
+        declared = keys if declared is None else declared & keys
+    return declared or frozenset()
 
 
 def apply_gold_connection_override(
