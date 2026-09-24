@@ -1256,7 +1256,7 @@ class TestWriteAnalysisOutput:
         output_file = write_analysis_output(analysis, tmp_path)
 
         assert output_file.exists()
-        assert output_file.name == "testapp-affinity.yaml"
+        assert output_file.name == "src-testapp.affinity.yaml"
 
         import yaml
 
@@ -1286,7 +1286,7 @@ class TestWriteAnalysisOutput:
         matrix_file = write_affinity_matrix(analyses, tmp_path)
 
         assert matrix_file.exists()
-        assert matrix_file.name == "affinity-matrix.yaml"
+        assert matrix_file.name == "hub.affinity-matrix.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -1657,7 +1657,7 @@ class TestDomainsOutputFilter:
         assert seen and all(count == 2 for count in seen)
 
         # Output keeps only the party table; the commercial one is dropped.
-        affinity = _yaml.safe_load((out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8"))
+        affinity = _yaml.safe_load((out_dir / "src-testapp.affinity.yaml").read_text(encoding="utf-8"))
         tables = {t["table"]: t["domain"] for t in affinity["tables"]}
         assert tables == {"tblClient": "party"}
 
@@ -1685,7 +1685,7 @@ class TestDomainsOutputFilter:
             max_workers=1,
             cost_warning=False,
         )
-        affinity = _yaml.safe_load((out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8"))
+        affinity = _yaml.safe_load((out_dir / "src-testapp.affinity.yaml").read_text(encoding="utf-8"))
         assert affinity["tables"] == []
         assert affinity["schema_version"] == 2
 
@@ -1711,7 +1711,7 @@ class TestDomainsOutputFilter:
             max_workers=1,
             cost_warning=False,
         )
-        affinity = _yaml.safe_load((out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8"))
+        affinity = _yaml.safe_load((out_dir / "src-testapp.affinity.yaml").read_text(encoding="utf-8"))
         tables = {t["table"]: t["domain"] for t in affinity["tables"]}
         assert tables == {"tblClient": "party", "tblContract": "commercial"}
 
@@ -1759,8 +1759,8 @@ testapp:tblExtra_Code a kairos-bronze:SourceColumn ;
         )
 
         assert len(calls) == 3
-        reports = sorted(out_dir.glob("*-affinity.yaml"))
-        assert [path.name for path in reports] == ["testapp-affinity.yaml"]
+        reports = sorted(out_dir.glob("src-*.affinity.yaml"))
+        assert [path.name for path in reports] == ["src-testapp.affinity.yaml"]
         affinity = _yaml.safe_load(reports[0].read_text(encoding="utf-8"))
         assert affinity["system"] == "testapp"
         assert {table["table"] for table in affinity["tables"]} == {
@@ -1822,7 +1822,7 @@ class TestReliabilityTotalFailure:
                 cost_warning=False,
             )
         # No affinity file was written.
-        assert not (out_dir / "testapp-affinity.yaml").exists()
+        assert not (out_dir / "src-testapp.affinity.yaml").exists()
 
     def test_total_failure_preserves_preexisting_yaml(self, tmp_path, monkeypatch):
         ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
@@ -1841,7 +1841,7 @@ class TestReliabilityTotalFailure:
             "    rationale: pre-existing\n"
             "    indicative_columns: []\n"
         )
-        affinity_path = out_dir / "testapp-affinity.yaml"
+        affinity_path = out_dir / "src-testapp.affinity.yaml"
         affinity_path.write_text(preexisting, encoding="utf-8")
         monkeypatch.setattr(
             "kairos_ontology.core.analyse_sources._get_openai_client",
@@ -1991,7 +1991,7 @@ class TestReliabilityByteIdentity:
             cost_warning=False,
         )
         affinity = _yaml.safe_load(
-            (out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8")
+            (out_dir / "src-testapp.affinity.yaml").read_text(encoding="utf-8")
         )
         for table in affinity["tables"]:
             assert "generation_outcome" not in table
@@ -2050,7 +2050,7 @@ class TestReliabilityPartialFailure:
             cost_warning=False,
         )
         affinity = _yaml.safe_load(
-            (out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8")
+            (out_dir / "src-testapp.affinity.yaml").read_text(encoding="utf-8")
         )
         tables = {t["table"]: t for t in affinity["tables"]}
         # tblClient succeeded.

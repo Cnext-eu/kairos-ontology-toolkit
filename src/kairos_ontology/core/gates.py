@@ -240,7 +240,7 @@ GATES: tuple[Gate, ...] = (
         commands=("propose-alignment",),
         escape="--without-anchors",
         escape_modes=_HUMAN_ONLY,
-        requires=("integration/sources/_analysis/table-anchors.yaml",),
+        requires=("integration/sources/_analysis/hub.table-anchors.yaml",),
         escape_rationale=(
             "Reproducing pre-DD-185 behaviour to compare against. Its own help "
             "explains why the result is worse; an autonomous run should not be "
@@ -271,7 +271,7 @@ GATES: tuple[Gate, ...] = (
             "unreadable, that is uninformed, not clean."
         ),
         commands=("compile",),
-        requires=("integration/sources/_analysis/*-alignment.yaml",),
+        requires=("integration/sources/_analysis/dom-*.alignment.yaml",),
         escape_rationale="",
     ),
     Gate(
@@ -282,7 +282,7 @@ GATES: tuple[Gate, ...] = (
             "compile: none of its columns can map well."
         ),
         commands=("compile",),
-        requires=("integration/sources/_analysis/*-alignment.yaml",),
+        requires=("integration/sources/_analysis/dom-*.alignment.yaml",),
     ),
     Gate(
         id="alignment.gap-column-undecided",
@@ -293,7 +293,7 @@ GATES: tuple[Gate, ...] = (
         ),
         commands=("compile",),
         requires=(
-            "integration/sources/_analysis/*-alignment.yaml",
+            "integration/sources/_analysis/dom-*.alignment.yaml",
             "integration/sources/_analysis/table-dispositions.yaml",
         ),
     ),

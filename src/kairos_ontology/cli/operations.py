@@ -297,6 +297,60 @@ def _migrate_dataplatform_custom_models(repo_root: Path, check: bool) -> None:
     )
 
 
+def _migrate_analysis_file_names(repo_root: Path, check: bool) -> None:
+    """Rename ``_analysis/`` files to the ``src-``/``dom-``/``hub.`` convention.
+
+    The old names did not say what a file was keyed by: ``tms-affinity.yaml`` is about a
+    source system, ``booking-alignment.yaml`` about an ontology domain. Readers accept
+    both names for one minor release, so this is not needed for correctness, but it is
+    what lets the fallback be removed without stranding a hub.
+
+    Same contract as :func:`_migrate_dataplatform_custom_models`: a silent no-op once
+    migrated, report-only under ``--check``, ``git mv`` with a plain-move fallback, and a
+    pair where both names exist is reported and left alone rather than guessed at.
+    """
+    from ..core import analysis_paths
+    from ..core.hub_utils import find_hub_root
+
+    hub_root = find_hub_root(repo_root, require_model=False)
+    if hub_root is None:
+        return
+    directory = analysis_paths.analysis_dir(hub_root)
+    renames = analysis_paths.legacy_renames(directory)
+    conflicts = analysis_paths.legacy_conflicts(directory)
+    for old, new in conflicts:
+        print(
+            f"⚠  Both {old.name} and {new.name} exist in {directory.name}/. The newer "
+            f"convention wins when reading; delete {old.name} once you have checked it "
+            "holds nothing the other lacks. Nothing was moved automatically."
+        )
+    if not renames:
+        return
+    if check:
+        print(
+            f"ℹ  {len(renames)} _analysis/ file(s) use pre-5.22 names and will be renamed "
+            "to the src-/dom-/hub. convention on the next `update` run without --check:"
+        )
+        for old, new in renames:
+            print(f"   {old.name} -> {new.name}")
+        return
+    for old, new in renames:
+        git_result = subprocess.run(
+            ["git", "mv", old.name, new.name],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+        )
+        if git_result.returncode != 0:
+            shutil.move(str(old), str(new))
+    print(
+        f"📦 Renamed {len(renames)} _analysis/ file(s) to the src-<system> / "
+        "dom-<domain> / hub. convention, so each name says what it is about:"
+    )
+    for old, new in renames:
+        print(f"   {old.name} -> {new.name}")
+
+
 def _report_non_cascading_table_dispositions(repo_root: Path) -> None:
     """Say which table-grain dispositions no longer answer for their columns (#948).
 
@@ -885,10 +939,12 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
     git_hygiene_created = [] if check else _create_missing_git_hygiene(repo_root)
     git_hygiene_gaps = _git_hygiene_gaps(repo_root)
 
-    # --- Table-grain dispositions the #881 gate no longer honours (#948) -----
-    # Advisory only: printed before the report so `--check` shows it too, and never
-    # flips the exit code -- it is about authored decisions, not managed-file drift.
+    # --- Hub-side _analysis/ housekeeping (DD-235, #948) --------------------
+    # Printed before the report so `--check` shows it too, and never flips the exit
+    # code: renames are a layout migration and the disposition note is about authored
+    # decisions, neither is managed-file drift.
     if not is_dataplatform:
+        _migrate_analysis_file_names(repo_root, check)
         _report_non_cascading_table_dispositions(repo_root)
 
     # --- Report -------------------------------------------------------------

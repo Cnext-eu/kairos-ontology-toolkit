@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import analysis_paths
 from .hub_config import configured_adapter, load_hub_config
 
 import yaml
@@ -109,9 +110,9 @@ def _glossary_stale_artifacts(root: Path) -> tuple[str, ...]:
     analysis = root / "integration" / "sources" / "_analysis"
     if not analysis.is_dir():
         return ()
-    candidates = list(analysis.glob("*-alignment.yaml"))
-    anchors = analysis / "table-anchors.yaml"
-    if anchors.is_file():
+    candidates = analysis_paths.iter_keyed_paths(analysis, analysis_paths.ALIGNMENT)
+    anchors = analysis_paths.find_hub(analysis, analysis_paths.TABLE_ANCHORS)
+    if anchors is not None:
         candidates.append(anchors)
     stale: list[str] = []
     for path in sorted(candidates):

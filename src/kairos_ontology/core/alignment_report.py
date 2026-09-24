@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import analysis_paths
 from ._cache import compute_entry_hash
 from ._provenance import ai_attribution_note
 from .ai_provider import ROLE_ALIGNMENT
@@ -621,7 +622,7 @@ def _report_inputs_fingerprint(analysis_dir: Path, hub_root: Path | None) -> str
     Deliberately excludes the reference-model corpus: it ships in a pinned, immutable
     wheel, and a report is never rebuilt after an ontology edit within one process.
     """
-    paths: list[Path] = sorted(Path(analysis_dir).glob("*-alignment.yaml"))
+    paths: list[Path] = analysis_paths.iter_keyed_paths(Path(analysis_dir), analysis_paths.ALIGNMENT)
     if hub_root is not None:
         sources = Path(hub_root) / "integration" / "sources"
         if sources.is_dir():
@@ -637,7 +638,7 @@ def _report_inputs_fingerprint(analysis_dir: Path, hub_root: Path | None) -> str
 
 
 def build_alignment_report(analysis_dir: Path, *, hub_root: Path | None = None) -> AlignmentReport:
-    """Aggregate every ``*-alignment.yaml`` into one cross-domain coverage picture.
+    """Aggregate every ``dom-*.alignment.yaml`` into one cross-domain coverage picture.
 
     *hub_root* enables the ``no-sample-evidence`` bucket by consulting the source
     vocabularies. Without it every unmapped column defaults to the gap bucket, which
@@ -689,7 +690,7 @@ def _build_alignment_report_uncached(
     reference_classes = _reference_class_modules(hub_root) if hub_root is not None else {}
     imports_by_domain = domain_imports(hub_root) if hub_root is not None else {}
 
-    files = sorted(directory.glob("*-alignment.yaml"))
+    files = analysis_paths.iter_keyed_paths(directory, analysis_paths.ALIGNMENT)
     if not files:
         report.notices.append(
             f"No alignment files in {directory}. Run 'kairos-ontology propose-alignment' first."
@@ -706,7 +707,9 @@ def _build_alignment_report_uncached(
         if not isinstance(document, dict):
             continue
 
-        coverage = DomainCoverage(domain=str(document.get("domain") or path.stem))
+        coverage = DomainCoverage(
+            domain=str(document.get("domain") or analysis_paths.key_of(path, analysis_paths.ALIGNMENT))
+        )
         for table in document.get("tables") or ():
             if not isinstance(table, dict):
                 continue
@@ -1164,7 +1167,7 @@ def alignment_evidence_gaps(hub_root: Path) -> list[EvidenceGap]:
     only the readability of the input::
 
         healthy                      661 undecided columns
-        one *-alignment.yaml broken  405  -- 256 silently gone
+        one dom-*.alignment.yaml broken  405  -- 256 silently gone
         _analysis/ deleted             0  -- the gate passes clean
 
     The cheapest way past the strongest gate in the toolkit was to not generate its
@@ -1172,7 +1175,7 @@ def alignment_evidence_gaps(hub_root: Path) -> list[EvidenceGap]:
     rows become an error instead of a pass.
 
     Scoped to hubs that have imported sources (see :func:`sources_imported`), and
-    reported hub-wide rather than per domain. A domain with no ``*-alignment.yaml`` of
+    reported hub-wide rather than per domain. A domain with no ``dom-*.alignment.yaml`` of
     its own is *not* reported: a domain may legitimately have no source tables behind
     it, and a gate that stops such a compile would be wrong in a way the operator
     cannot fix. The three rows above are what was measured, and they are what this
@@ -1213,7 +1216,7 @@ def alignment_evidence_gaps(hub_root: Path) -> list[EvidenceGap]:
             EvidenceGap(
                 kind="no-alignment-files",
                 detail=(
-                    "integration/sources/_analysis/ holds no *-alignment.yaml, so no "
+                    "integration/sources/_analysis/ holds no dom-*.alignment.yaml, so no "
                     "column can be judged"
                 ),
                 remediation="kairos-ontology propose-alignment",

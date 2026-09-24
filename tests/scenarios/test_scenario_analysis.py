@@ -204,7 +204,7 @@ class TestAnalyseSourcesScenario:
 
         # Should produce one file per source + affinity matrix
         assert len(output_files) >= 2  # at least 1 source + matrix
-        assert (tmp_path / "_analysis" / "affinity-matrix.yaml").exists()
+        assert (tmp_path / "_analysis" / "hub.affinity-matrix.yaml").exists()
 
 
 # ---------------------------------------------------------------------------

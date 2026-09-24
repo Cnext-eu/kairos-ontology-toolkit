@@ -45,6 +45,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from . import analysis_paths
 from .archetype_loader import Archetype
 
 SCHEMA_VERSION = 1
@@ -119,11 +120,11 @@ def archetype_concept_uris(archetype: Archetype) -> tuple[str, ...]:
     return tuple(concept.uri for concept in archetype.core_concepts)
 
 
-def _read_analysis_documents(analysis_dir: Path, suffix: str) -> Iterable[tuple[Path, dict]]:
+def _read_analysis_documents(analysis_dir: Path, kind: str) -> Iterable[tuple[Path, dict]]:
     if not analysis_dir.is_dir():
         return []
     documents = []
-    for path in sorted(analysis_dir.glob(f"*{suffix}")):
+    for path in analysis_paths.iter_keyed_paths(analysis_dir, kind):
         try:
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, yaml.YAMLError):
@@ -141,7 +142,7 @@ def _alignment_evidence(
     known, by_name = _concept_index(concept_uris)
     hits: dict[str, set[str]] = {}
     gaps: list[str] = []
-    for path, document in _read_analysis_documents(analysis_dir, "-alignment.yaml"):
+    for path, document in _read_analysis_documents(analysis_dir, analysis_paths.ALIGNMENT):
         for table in document.get("tables") or ():
             if not isinstance(table, dict):
                 continue
@@ -185,7 +186,7 @@ def _affinity_evidence(
     """
 
     tables_by_domain: dict[str, set[str]] = {}
-    for _, document in _read_analysis_documents(analysis_dir, "-affinity.yaml"):
+    for _, document in _read_analysis_documents(analysis_dir, analysis_paths.AFFINITY):
         if document.get("schema_version") != 2:
             continue
         system = str(document.get("system") or "").strip()

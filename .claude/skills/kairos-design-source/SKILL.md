@@ -101,7 +101,7 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     as a hand-edit** (DD-192). `integration/discovery/design-rulings.yaml` is the durable,
     transferable seam: `anchor-tables` renders the applicable rulings into its prompt as
     accumulated human authority that *outranks* the model's own reading, and records
-    `rulings_applied` in `table-anchors.yaml` for provenance.
+    `rulings_applied` in `hub.table-anchors.yaml` for provenance.
 
     ```yaml
     # integration/discovery/design-rulings.yaml
@@ -134,7 +134,7 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     family represents and flag families whose members do not belong together — it fills
     the reasoning, never the decision.
 
-    Then open `integration/sources/_analysis/gap-decisions.yaml`, set `decision` on each
+    Then open `integration/sources/_analysis/hub.gap-decisions.yaml`, set `decision` on each
     family or single name to one of `bound | registered-extension | deferred |
     not-business-data | blueprint-gap`, and apply:
 

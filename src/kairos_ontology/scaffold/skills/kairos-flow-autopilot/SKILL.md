@@ -108,7 +108,7 @@ model.
 Two things to know:
 
 - **Escapes are recorded in the artifact, not only the terminal.**  A
-  `*-alignment.yaml` or `table-anchors.yaml` produced under an escape carries an
+  `dom-*.alignment.yaml` or `hub.table-anchors.yaml` produced under an escape carries an
   `enforcement:` block naming the mode and the flags.  A reviewer six months later can
   see what was skipped, which is the same argument the AI-provenance header makes for
   authorship.

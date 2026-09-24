@@ -652,7 +652,7 @@ def run_generate_bindings(
     anchors = load_table_anchors(analysis)
     if not anchors:
         raise FileNotFoundError(
-            f"no table-anchors.yaml under {analysis} — run `kairos-ontology "
+            f"no hub.table-anchors.yaml under {analysis} — run `kairos-ontology "
             "anchor-tables` first; the design sheet is generation's input."
         )
 

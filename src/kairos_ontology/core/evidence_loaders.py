@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 from rdflib import Graph, URIRef
+from . import analysis_paths
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ def load_affinity_by_domain(analysis_dir: Path) -> dict[str, list[dict[str, Any]
     by_domain: dict[str, list[dict[str, Any]]] = {}
     if not analysis_dir or not analysis_dir.is_dir():
         return by_domain
-    for affinity_file in sorted(analysis_dir.glob("*-affinity.yaml")):
+    for affinity_file in analysis_paths.iter_keyed_paths(analysis_dir, analysis_paths.AFFINITY):
         try:
             data = yaml.safe_load(affinity_file.read_text(encoding="utf-8"))
         except Exception as exc:  # pragma: no cover - defensive
@@ -137,7 +138,7 @@ def load_affinity_by_domain(analysis_dir: Path) -> dict[str, list[dict[str, Any]
             continue
         if not isinstance(data, dict) or data.get("schema_version") != 2:
             continue
-        system = data.get("system", affinity_file.stem.replace("-affinity", ""))
+        system = data.get("system", analysis_paths.key_of(affinity_file, analysis_paths.AFFINITY))
         for table in data.get("tables", []) or []:
             domain = str(table.get("domain", "") or "")
             if domain:

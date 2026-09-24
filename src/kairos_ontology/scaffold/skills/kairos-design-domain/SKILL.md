@@ -155,7 +155,7 @@ Never reveal or persist raw names, emails, addresses, identifiers, free text, or
 other sensitive values. Treat an unredacted sample as blocking and route it back
 through the source privacy/redaction workflow.
 
-**`example_values` in `*-alignment.yaml` is not pre-redacted by default
+**`example_values` in `dom-*.alignment.yaml` is not pre-redacted by default
 (issue #562, DD-205).** It used to always mask PII-shaped values; that
 masking is now itself gated by `KAIROS_ALIGNMENT_SEND_RAW_SAMPLES` (default
 on), so a fresh alignment run's `example_values` can carry real names,
@@ -174,14 +174,14 @@ Every proposed class/property must cite one or more of:
 General domain knowledge may appear only as a clearly labeled low-confidence
 suggestion and cannot enter the accepted patch without confirmation.
 
-**Read the decisions, not only the drafts.** `*-alignment.yaml` holds a drafted
+**Read the decisions, not only the drafts.** `dom-*.alignment.yaml` holds a drafted
 `proposed_local_property` for every column the reference model had no home for — but it
 holds them for *every* such column, including the ones a reviewer has since ruled out.
 Which were accepted lives elsewhere:
 
 | file | what it tells you |
 |---|---|
-| `integration/sources/_analysis/gap-decisions.yaml` | the review sheet: one entry per column name, with the proposed disposition and the reasoning |
+| `integration/sources/_analysis/hub.gap-decisions.yaml` | the review sheet: one entry per column name, with the proposed disposition and the reasoning |
 | `integration/sources/_analysis/table-dispositions.yaml` | the committed ledger: `registered-extension` marks a column whose hub-local property was accepted, with its `proposed_property` |
 
 Design against the ledger. A column dispositioned `deferred`, `not-business-data` or

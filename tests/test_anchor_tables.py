@@ -198,7 +198,7 @@ class TestAlignmentConsumption:
         assert sig.parameters["anchor_confidence"].default is None
 
     def test_artifact_filename_is_stable(self):
-        assert ANCHORS_FILENAME == "table-anchors.yaml"
+        assert ANCHORS_FILENAME == "hub.table-anchors.yaml"
 
 
 class TestExcludedColumns:

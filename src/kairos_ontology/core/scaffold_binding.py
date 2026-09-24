@@ -35,6 +35,7 @@ supplies the real answer -- no new compiler enforcement is needed.
 
 from __future__ import annotations
 
+from . import analysis_paths
 from .adapters import FABRIC_WAREHOUSE
 
 import re
@@ -220,8 +221,8 @@ def infer_domain(analysis_dir: Path | None, system: str, table: str) -> str | No
     """
     if analysis_dir is None or not analysis_dir.is_dir():
         return None
-    affinity_path = analysis_dir / f"{system}-affinity.yaml"
-    if not affinity_path.is_file():
+    affinity_path = analysis_paths.find_keyed(analysis_dir, analysis_paths.AFFINITY, system)
+    if affinity_path is None:
         return None
     try:
         data = yaml.safe_load(affinity_path.read_text(encoding="utf-8"))
