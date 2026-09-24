@@ -353,6 +353,72 @@ def _dialect_findings(scan, hub_root: Path) -> list[DbtContractFinding]:
     return findings
 
 
+#: A SQL ``join`` keyword, matched on comment-stripped text (#949).
+_JOIN_KEYWORD = re.compile(r"\bjoin\b", re.IGNORECASE)
+
+
+def _layering_findings(transforms_dir: Path, hub_root: Path) -> list[DbtContractFinding]:
+    """The three-layer rule, as warnings, over every hand-authored model's SQL (#949).
+
+    ``stg_<source>__*`` cleans and casts one source table and joins nothing;
+    ``int_<source>__*`` holds that source's joins, filters, rankings and code mapping;
+    ``int_merged__*`` only combines ``int_<source>__*`` models and never calls
+    ``source()``. On one hub 21 of 26 merge models read raw tables and applied one
+    source's rules beside the union, so a source's interpretation was spread across every
+    merge model and adding a source meant editing all of them.
+
+    Warnings so an existing hub can migrate model by model; the rule is judged from the
+    SQL text, with Jinja and SQL comments stripped, using the compiler's own ``source()``
+    extractor so the two can never disagree about what a model reads.
+    """
+    from .compiler.dbt_source import extract_sources, strip_jinja_comments, strip_sql_comments
+
+    models_dir = transforms_dir / "models"
+    findings: list[DbtContractFinding] = []
+    for path in sorted(models_dir.rglob("*.sql")):
+        name = path.stem
+        if not (name.startswith("int_merged__") or name.startswith("stg_")):
+            continue
+        try:
+            sql = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if name.startswith("int_merged__"):
+            sources = extract_sources(sql)
+            if sources.pairs or sources.unparsed:
+                read = ", ".join(f"{a}.{b}" for a, b in sorted(sources.pairs)) or "unresolved"
+                findings.append(
+                    DbtContractFinding(
+                        code="dbt-contract.merge-model-reads-source",
+                        severity=SEVERITY_WARNING,
+                        message=(
+                            f"merge model {name!r} calls source() ({read}). An int_merged__ "
+                            "model only combines int_<source>__ models; move each source's "
+                            "joins, filters and rules into its own int_<source>__ model and "
+                            "ref() those here, so adding a source never means editing "
+                            "every merge model."
+                        ),
+                        path=_relative(path, hub_root),
+                        model=name,
+                    )
+                )
+        elif _JOIN_KEYWORD.search(strip_sql_comments(strip_jinja_comments(sql))):
+            findings.append(
+                DbtContractFinding(
+                    code="dbt-contract.staging-model-joins",
+                    severity=SEVERITY_WARNING,
+                    message=(
+                        f"staging model {name!r} joins. A stg_ model is a 1:1 clean and "
+                        "cast of one source table; put the join in the source's "
+                        "int_<source>__ model."
+                    ),
+                    path=_relative(path, hub_root),
+                    model=name,
+                )
+            )
+    return findings
+
+
 def _authored_seed_csvs(transforms_dir: Path) -> list[Path]:
     """Return every authored seed CSV under the transforms tree, sorted."""
     seeds_dir = transforms_dir / "seeds"
@@ -700,6 +766,8 @@ def run_dbt_contract_lint(
 
     # --- adapter dialect rules over the authored SQL (DD-215) ------------------------------
     findings.extend(_dialect_findings(scan, hub_root))
+    # --- the stg_ / int_<source>__ / int_merged__ layering rule (#949) ----------------------
+    findings.extend(_layering_findings(transforms_dir, hub_root))
     findings.extend(_uncastable_findings(scan, hub_root))
 
     # --- authored seeds (#586 stage b) -----------------------------------------------------

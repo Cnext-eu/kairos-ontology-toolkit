@@ -2734,6 +2734,50 @@ def _unrealized_relationship_diagnostics(
     )
 
 
+def _carried_passthrough_diagnostics(
+    binding: EntityBinding,
+) -> tuple[CompileDiagnostic, ...]:
+    """Warn when a Silver model carries more raw passthrough than ontology-backed fields (#854).
+
+    ``technicalFields`` with ``purpose: carried`` is the explicit escape hatch for a value
+    the binding grammar cannot express (DD-139): it reaches Silver with no ontology
+    property behind it. Legitimate one column at a time; nothing measured how much of a
+    model was made of it. On one hub the ratio was 89 carried to 82 ontology-backed, and a
+    vessel model with 3 real fields and 6 carried columns shipped a `country_iso` and a
+    `ship_type` that looked canonical and were not.
+
+    Per binding, never hub-averaged -- an average hides exactly the model that needs
+    attention. Strictly more carried than backed, because that is easy to explain and hard
+    to argue with. A warning: the model is correct and emittable, and a genuinely raw feed
+    may sit above the line for good.
+    """
+    carried = [
+        technical_field.name
+        for technical_field in binding.technical_fields
+        if technical_field.purpose == "carried"
+    ]
+    backed = len(binding.fields)
+    if len(carried) <= backed:
+        return ()
+    shown = ", ".join(sorted(carried)[:8]) + (" …" if len(carried) > 8 else "")
+    return (
+        CompileDiagnostic(
+            code="binding.carried-outnumbers-canonical",
+            severity=DiagnosticSeverity.WARNING,
+            message=(
+                f"binding '{binding.name}' carries {len(carried)} column(s) with purpose "
+                f"'carried' ({shown}) against {backed} ontology-backed field(s): most of "
+                "this Silver model is raw source values with no canonical meaning, though "
+                "they look canonical downstream. Map what the ontology can express through "
+                "fields:, or extend it (scaffold-extensions); keep 'carried' for what it "
+                "genuinely cannot."
+            ),
+            location=SourceLocation(path=binding.source_path, pointer="/technicalFields"),
+            rule_id="DD-139",
+        ),
+    )
+
+
 def _duplicate_virtual_sources(
     bindings: list[EntityBinding], hub_root: str, context: ResolutionContext
 ) -> dict[str, tuple[str, ...]]:
@@ -3246,6 +3290,30 @@ def _relationship_diagnostics(
             declared_columns = (
                 parent_columns.get(target_class.uri) if target_class is not None else None
             )
+            if declared_columns is None and target_class is not None:
+                # "Could not check" must not read like "checked and fine" (#934). Most hubs
+                # author no Silver contracts, so this used to be skipped for every
+                # relationship without a word, and a join on a column the parent never
+                # emits passed compile, emit and the sample audit alike. `validate`
+                # checks the same key hub-wide against the parent's binding.
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="relationship.external-reference-key-unverified",
+                        message=(
+                            f"externalReference key {declared_key!r} for "
+                            f"{external.domain}.{external.name} was not checked: no Silver "
+                            f"contract in scope declares {target_class.uri}. Declare the "
+                            f"parent's contract (DD-213), or run `kairos-ontology validate`, "
+                            "which checks it against the parent's binding."
+                        ),
+                        location=SourceLocation(
+                            path=binding.source_path,
+                            pointer=f"{pointer}/externalReference/key",
+                        ),
+                        severity=DiagnosticSeverity.INFO,
+                        rule_id="DD-133-safety",
+                    )
+                )
             if declared_columns is not None:
                 unknown = [
                     (position, item.column)
@@ -4135,6 +4203,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         # returns blocking diagnostics only; adding a warning to it would silently block
         # every binding that carries one (see the severity guard below).
         diagnostics.extend(_unrealized_relationship_diagnostics(binding))
+        diagnostics.extend(_carried_passthrough_diagnostics(binding))
         binding_safety = _binding_safety_diagnostics(binding, context)
         if binding_safety:
             diagnostics.extend(binding_safety)
@@ -4201,8 +4270,10 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         relationship_diagnostics = _relationship_diagnostics(
             binding, selected_by_name, context, scope.hub_root, parent_columns
         )
-        if relationship_diagnostics:
-            diagnostics.extend(relationship_diagnostics)
+        diagnostics.extend(relationship_diagnostics)
+        # An info-level note (e.g. an unverified externalReference key, #934) is
+        # reported, never blocking: only a real finding filters the binding from the IR.
+        if any(item.severity is not DiagnosticSeverity.INFO for item in relationship_diagnostics):
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
             continue
         try:

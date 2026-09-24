@@ -495,6 +495,24 @@ def test_external_reference_is_unchecked_when_the_parent_is_ungoverned(tmp_path)
 
     assert result.succeeded, [item.render() for item in result.diagnostics.items]
     assert "relationship.external-reference-key-column-unknown" not in _codes(result)
+    # ...but "could not check" is said, not left to read as "checked and fine" (#934).
+    note = next(
+        item
+        for item in result.diagnostics.items
+        if item.code == "relationship.external-reference-key-unverified"
+    )
+    assert note.severity.value == "info"
+    assert "validate" in note.message
+
+
+def test_a_contracted_parent_leaves_no_unverified_note(tmp_path):
+    hub = _copy_hub(tmp_path)
+    _add_external_reference_fixture(hub)
+    _add_billing_contract(hub)
+
+    result = compile_domain(hub, "party", CompileMode.CHECK)
+
+    assert "relationship.external-reference-key-unverified" not in _codes(result)
 
 
 @pytest.mark.parametrize(

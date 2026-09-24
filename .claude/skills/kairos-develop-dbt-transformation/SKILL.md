@@ -33,8 +33,19 @@ Use these conventions for hand-authored contracted transforms:
 - Single-source model: `int_<source>__<entity>`, for example
   `int_qlik__transport_routes`.
 - Multi-source survivorship model: `int_merged__<entity>`.
-- Multi-source layering: `stg_<source>__<entity>` models do atomic per-source
-  cleaning, then feed one `int_merged__<entity>` model for union and survivorship.
+- Multi-source layering is three layers, and the boundaries are rules, not
+  suggestions:
+  - `stg_<source>__<entity>` must be a 1:1 clean and cast of one source table,
+    with no joins.
+  - `int_<source>__<entity>` holds that source's joins, filters, rankings and
+    code mapping.
+  - `int_merged__<entity>` must only combine `int_<source>__` models (union and
+    survivorship) and must never call `source()`.
+  `validate-dbt-contracts` warns on `dbt-contract.merge-model-reads-source` and
+  `dbt-contract.staging-model-joins`. To migrate an existing merge model, move
+  each source's `source()` reads and rules into its own `int_<source>__` model,
+  `ref()` those from the merge model, and compare Silver row counts and keys
+  before and after.
   Prefer the toolkit macros `kairos_clean_sentinel`, `kairos_normalize_key`,
   `kairos_survivor`, and `kairos_source_system_label` for portable cleanup,
   key normalization, deterministic survivor ranking, and source labels.

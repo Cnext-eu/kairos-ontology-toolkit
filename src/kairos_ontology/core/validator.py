@@ -2139,6 +2139,25 @@ def run_validation(
             )
             print()
 
+        # Cross-domain join keys (#934). `compile` checks an externalReference key only
+        # against the parent's Silver contract, which most hubs never author, so it could
+        # not tell a join on a column the parent never emits from a correct one. Here the
+        # whole hub is in view: check the key against what the parent's binding derives.
+        # Warnings, because a contract can pin names a binding alone does not show.
+        from .external_reference_audit import audit_external_references
+
+        reference_report = audit_external_references(ontologies_path.parent.parent)
+        results["integrity"]["external_references"] = reference_report.to_dict()
+        if reference_report.findings:
+            print("🔗 Cross-domain join keys")
+            print("-" * 50)
+            results["integrity"]["warnings"].extend(
+                item.to_dict() for item in reference_report.findings
+            )
+            for item in reference_report.findings:
+                print(f"  ⚠ {item.message}")
+            print()
+
         # Unmapped real signal (DD-169). A HARD stop, not degradable: alignment is the
         # first stage that can say "this column holds business data the canonical model
         # has nowhere to put", and entity binding is where that becomes permanent — a

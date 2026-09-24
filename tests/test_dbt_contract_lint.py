@@ -539,3 +539,63 @@ def test_scaffolded_passthrough_staging_sql_passes_the_fabric_rule(tmp_path):
         )
         report = run_dbt_contract_lint(tmp_path)
         assert "dbt-contract.dialect-fabric-nested-cte" not in _codes(report), include_pii
+
+
+# ---------------------------------------------------------------------------
+# The stg_ / int_<source>__ / int_merged__ layering rule (#949)
+# ---------------------------------------------------------------------------
+
+
+def _sql(hub: Path, name: str, body: str) -> None:
+    (_models_dir(hub) / f"{name}.sql").write_text(body, encoding="utf-8")
+
+
+def test_a_merge_model_calling_source_is_warned(tmp_path: Path) -> None:
+    """21 of 26 merge models on one hub read raw tables beside the union."""
+    hub = tmp_path
+    _write(hub, _contract("int_merged__party"))
+    _bind(hub, "int_merged__party")
+    _sql(hub, "int_merged__party", (
+        "select * from {{ source('tms', 'org_address') }}\n"
+        "union all select * from {{ ref('int_erp__party') }}\n"
+    ))
+
+    report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
+
+    finding = next(f for f in report.findings if f.code == "dbt-contract.merge-model-reads-source")
+    assert finding.severity == "warning", "existing hubs must be able to migrate"
+    assert "tms.org_address" in finding.message
+    assert report.passed
+
+
+def test_a_merge_model_built_from_refs_only_is_clean(tmp_path: Path) -> None:
+    hub = tmp_path
+    _write(hub, _contract("int_merged__party"))
+    _bind(hub, "int_merged__party")
+    _sql(hub, "int_merged__party", (
+        "-- the source() calls live in the per-source models\n"
+        "select * from {{ ref('int_tms__party') }}\n"
+        "union all select * from {{ ref('int_erp__party') }}\n"
+    ))
+
+    report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
+
+    assert "dbt-contract.merge-model-reads-source" not in _codes(report)
+
+
+def test_a_staging_model_that_joins_is_warned_and_a_comment_is_not_a_join(
+    tmp_path: Path,
+) -> None:
+    hub = tmp_path
+    _write(hub, _contract("int_merged__party"))
+    _bind(hub, "int_merged__party")
+    _sql(hub, "stg_tms__address", (
+        "select a.* from {{ source('tms', 'address') }} a\n"
+        "left join {{ source('tms', 'country') }} c on c.code = a.country\n"
+    ))
+    _sql(hub, "stg_tms__party", "-- no join here, just a cast\nselect cast(id as int) as id\n")
+
+    report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
+
+    joins = [f.model for f in report.findings if f.code == "dbt-contract.staging-model-joins"]
+    assert joins == ["stg_tms__address"]

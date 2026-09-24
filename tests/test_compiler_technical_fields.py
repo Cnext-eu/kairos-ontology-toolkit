@@ -1037,3 +1037,32 @@ def test_no_unrealized_warning_when_purpose_is_not_relationship(tmp_path: Path) 
     assert result.succeeded, [item.render() for item in result.diagnostics.items]
     codes = {item.code for item in result.diagnostics.items}
     assert "relationship.unrealized-technical-field" not in codes
+
+
+def _carried(count: int) -> str:
+    return "technicalFields:\n" + "".join(
+        f"  - name: raw_{i}\n    expression: account_id\n    type: string\n"
+        "    nullable: true\n    purpose: carried\n"
+        for i in range(count)
+    )
+
+
+def test_more_carried_than_canonical_columns_warns() -> None:
+    """#854: 89 carried against 82 ontology-backed on one hub, and nothing said so."""
+    from kairos_ontology.core.compiler.kernel import _carried_passthrough_diagnostics
+
+    binding = load_entity_binding(VALID + _carried(2), path="technical.binding.yaml")
+
+    (diagnostic,) = _carried_passthrough_diagnostics(binding)
+    assert diagnostic.code == "binding.carried-outnumbers-canonical"
+    assert diagnostic.severity is DiagnosticSeverity.WARNING
+    assert "2 column(s)" in diagnostic.message and "1 ontology-backed" in diagnostic.message
+
+
+def test_carried_up_to_the_canonical_count_is_quiet() -> None:
+    """Strictly more, not equal: easy to explain, hard to argue with."""
+    from kairos_ontology.core.compiler.kernel import _carried_passthrough_diagnostics
+
+    binding = load_entity_binding(VALID + _carried(1), path="technical.binding.yaml")
+
+    assert _carried_passthrough_diagnostics(binding) == ()
