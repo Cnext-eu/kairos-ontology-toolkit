@@ -86,6 +86,7 @@ from .sources import (
     register_concept_cmd,
     source_disposition_group,
     build_glossary_cmd,
+    read_document_cmd,
     list_patterns_cmd,
 )
 from .class_disposition import class_disposition_group
@@ -359,6 +360,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(source_disposition_group)
     group.add_command(class_disposition_group)
     group.add_command(build_glossary_cmd)
+    group.add_command(read_document_cmd)
     group.add_command(list_patterns_cmd)
     group.add_command(resolve_ontology_cmd)
     group.add_command(show_class_inventory_cmd)

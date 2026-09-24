@@ -1803,6 +1803,57 @@ def propose_alignment_cmd(
         raise SystemExit(1)
 
 
+@click.command(name="read-document")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    show_default=True,
+    help="text prints the document's text; json adds format, page/slide/sheet count and notes.",
+)
+def read_document_cmd(path: Path, output_format: str) -> None:
+    """Print the text of a staged business-discovery document (#907).
+
+    Reads .pdf, .docx, .pptx, .xlsx, .md, .txt, .csv, .xml and .htm/.html, in reading
+    order, with light structure (## Page / ## Slide / ## Sheet headings, tables as
+    |-rows) so an extraction can cite where a term came from. Deterministic and AI-free:
+    it returns the document's own words. .docx/.pptx/.xlsx need the 'documents' extra
+    (uv sync --extra documents). Legacy .doc/.ppt/.xls must be re-saved in the modern
+    format first; a file that should not be extracted belongs in .import/drafts/.
+
+    \b
+    Examples:
+      kairos-ontology read-document .import/businessdiscovery/operating-model.docx
+      kairos-ontology read-document deck.pptx --format json
+    """
+    from ..core.document_text import DocumentReadError, read_document_text
+
+    try:
+        doc = read_document_text(path)
+    except DocumentReadError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_format == "json":
+        click.echo(
+            json.dumps(
+                {
+                    "path": str(path),
+                    "format": doc.format,
+                    "units": doc.units,
+                    "notes": doc.notes,
+                    "text": doc.text,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    click.echo(doc.text)
+    for note in doc.notes:
+        click.echo(f"\n⚠ {note}", err=True)
+
+
 @click.command(name="discovery-status")
 @click.option(
     "--import-dir",

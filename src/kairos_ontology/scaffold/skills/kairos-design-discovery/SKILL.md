@@ -21,7 +21,13 @@ begins (DD-149).
 
 ## Workflow
 
-1. Read existing discovery inputs and the hub README before proposing changes.
+1. Read existing discovery inputs and the hub README before proposing changes. Every file
+   under `.import/businessdiscovery/` is a discovery input and needs an extraction
+   (`kairos-ontology discovery-status` lists what is missing). Get a document's text with
+   `kairos-ontology read-document <file>` (.pdf, .docx, .pptx, .xlsx, .md, .txt, .htm; the
+   Office formats need `uv sync --extra documents`), and read images or image-only pages
+   visually. A file the user does not want extracted moves to `.import/drafts/`, which
+   nothing reads; never delete or skip it silently.
 2. Summarize the company, offerings, operating concepts, and terminology. Mark public research as
    inferred until approved; never present inference as stakeholder-confirmed fact.
 3. Confirm or AI-approve each business term and ontology link before writing it.

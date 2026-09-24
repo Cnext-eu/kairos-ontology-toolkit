@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-97 commands.
+98 commands.
 
 ## Index
 
@@ -92,6 +92,7 @@ not reasoning.
 | [`promote-transform`](#promote-transform) | Promote a dataplatform-authored contracted dbt model into the hub (issue #634). |
 | [`propose-alignment`](#propose-alignment) | Propose source-column → reference-model-property alignment (LLM-powered). |
 | [`propose-relationships`](#propose-relationships) | Propose relationships: entries for authored bindings (issue #493, DD-160). |
+| [`read-document`](#read-document) | Print the text of a staged business-discovery document (#907). |
 | [`register-concept`](#register-concept) | Register a source-discovered concept the archetype catalog does not contain (#505). |
 | [`resolve-ontology`](#resolve-ontology) | Resolve an ontology closure and show its deterministic manifest. |
 | [`scaffold-binding`](#scaffold-binding) | Scaffold a first-draft v5 EntityBinding YAML for one Bronze source table. |
@@ -1298,6 +1299,23 @@ kairos-ontology propose-relationships [OPTIONS]
 | `--ref-models-dir` |  | Path to ontology-reference-models/ (default: auto-detect). |
 | `--unresolved`, `--no-unresolved` | `True` | Include proposals whose join columns could not be matched (default: include). |
 | `--format` | `text` | Output format (default: text). |
+
+
+## read-document
+
+Print the text of a staged business-discovery document (#907). Reads .pdf, .docx, .pptx, .xlsx, .md, .txt, .csv, .xml and .htm/.html, in reading order, with light structure (## Page / ## Slide / ## Sheet headings, tables as |-rows) so an extraction can cite where a term came from. Deterministic and AI-free: it returns the document's own words. .docx/.pptx/.xlsx need the 'documents' extra (uv sync --extra documents). Legacy .doc/.ppt/.xls must be re-saved in the modern format first; a file that should not be extracted belongs in .import/drafts/.  Examples: kairos-ontology read-document .import/businessdiscovery/operating-model.docx kairos-ontology read-document deck.pptx --format json
+
+```
+kairos-ontology read-document [OPTIONS] PATH
+```
+
+| Argument | Arity |
+|---|---|
+| `PATH` | required |
+
+| Option | Default | Description |
+|---|---|---|
+| `--format` | `text` | text prints the document's text; json adds format, page/slide/sheet count and notes. |
 
 
 ## register-concept

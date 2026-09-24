@@ -1650,6 +1650,10 @@ def _managed_scaffold_map() -> dict[str, Path]:
     discovery_readme = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "README.md"
     if discovery_readme.is_file():
         result[".import/businessdiscovery/README.md"] = discovery_readme
+    # Managed so `update` creates .import/drafts/ in hubs scaffolded before #907.
+    drafts_readme = _SCAFFOLD_DIR / "import" / "drafts" / "README.md"
+    if drafts_readme.is_file():
+        result[".import/drafts/README.md"] = drafts_readme
 
     skills = _SCAFFOLD_DIR / "skills"
     if skills.is_dir():
