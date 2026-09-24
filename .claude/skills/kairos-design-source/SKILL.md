@@ -56,7 +56,9 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
    the reason. Confirm the remaining set with the user before continuing.
 10. Once sources are settled, offer to import any Power BI / TMDL analysis the user has as **demand
     evidence, not a source**. Run `kairos-ontology import-tmdl <pbip.zip | SemanticModel/ |
-    file.tmdl>`; it lands an Engineering Pack, a Concept Mapping template and — for a PBIP
+    file.tmdl>`. It reads the model with the Microsoft TOM SDK, so the .NET 8 SDK must be on
+    PATH (DD-237); an export the SDK refuses is one Power BI Desktop would refuse too, so ask
+    for a complete re-export rather than working around it. It lands an Engineering Pack, a Concept Mapping template and — for a PBIP
     export that carries its `.Report` folders — a report-usage summary under
     `integration/discovery/bi/`. The usage file ranks measures by how often a report
     actually places them on a visual, and fields by how often they are sliced on; it is the

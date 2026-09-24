@@ -25,7 +25,8 @@ from typing import Literal
 import yaml
 
 from .hub_utils import resolve_hub_output_dir
-from .tmdl_parser import TmdlModel, parse_model_folder, parse_tmdl_content
+from .tmdl_parser import TmdlModel, model_name_for_definition_dir
+from .tmdl_tom_reader import TmdlRejectedError, read_model_folder, read_single_table_file
 
 logger = logging.getLogger(__name__)
 
@@ -212,18 +213,12 @@ def _incomplete_suffix(model: TmdlModel) -> str:
     )
 
 
-def generate_engineering_pack(
-    model: TmdlModel, source_label: str = "", crosscheck_note: str = ""
-) -> str:
+def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
     """Generate an Engineering Pack markdown document from a parsed TMDL model.
 
     Args:
         model: Parsed TMDL model
         source_label: Human-readable source path label
-        crosscheck_note: Markdown warning from the TOM SDK cross-check (issue #879),
-            rendered directly under the title so it is read before the inventory it
-            qualifies rather than after it. Empty when the two readings agree or when
-            no second opinion was available, which keeps an unaffected pack unchanged.
 
     Returns:
         Markdown string
@@ -240,12 +235,6 @@ def generate_engineering_pack(
     if source_label:
         lines.append(f"Source: {source_label}")
     lines.append("")
-    if crosscheck_note:
-        # The note is newline-joined Markdown ending in a blank line; splitlines() drops
-        # that trailing empty element, which ran the note into the next heading (#905).
-        lines.extend(crosscheck_note.splitlines())
-        if lines[-1] != "":
-            lines.append("")
 
     # Global inventory
     lines.extend(
@@ -484,30 +473,28 @@ def generate_concept_mapping(
     return header + yaml.dump(data, default_flow_style=False, sort_keys=False, width=100)
 
 
-def _crosscheck_note(model: TmdlModel, definition_dir: Path) -> str:
-    """Ask the TOM SDK what it reads in *definition_dir*, and report any shortfall (#879).
+def _read_models(definition_dirs: list[Path], partial_models: list[str] | None) -> list[TmdlModel]:
+    """Read every definition folder through TOM; a rejected one does not sink the batch.
 
-    Runs whenever ``dotnet`` is on PATH and is skipped silently otherwise, matching how
-    the write-path TMDL validation already behaves. Never blocks an import: this is a
-    second opinion on a reading that has already succeeded, and an advisory check that
-    can fail the command it advises would be worse than not having it.
-
-    Returns the Markdown note for the engineering pack, and logs the same findings for
-    whoever is watching the import happen.
+    A batch import of many exports must not fail wholesale because one of them is
+    incomplete (#807). A model TOM refuses is skipped with a warning and recorded in
+    *partial_models*, which ``--fail-on-partial`` turns into a non-zero exit. When every
+    model is refused there is nothing to import, and the first refusal is raised.
     """
-    from .tmdl_crosscheck import crosscheck_parsed_model, render_crosscheck_note
-
-    try:
-        report = crosscheck_parsed_model(model, definition_dir)
-    except Exception as exc:  # noqa: BLE001 - advisory only, never fatal
-        logger.debug("TMDL cross-check could not run: %s", exc)
-        return ""
-    if not report.disagreed:
-        return ""
-    name = model.name or "unnamed-model"
-    for finding in report.findings:
-        logger.warning("%s: %s", name, finding.detail)
-    return render_crosscheck_note(report, name)
+    models: list[TmdlModel] = []
+    rejected: list[TmdlRejectedError] = []
+    for def_dir in definition_dirs:
+        try:
+            models.append(read_model_folder(def_dir))
+        except TmdlRejectedError as exc:
+            name = model_name_for_definition_dir(def_dir) or "unnamed-model"
+            logger.warning("%s: not imported -- %s", name, exc)
+            if partial_models is not None:
+                partial_models.append(name)
+            rejected.append(exc)
+    if rejected and not models:
+        raise rejected[0]
+    return models
 
 
 def run_import_tmdl(
@@ -515,7 +502,12 @@ def run_import_tmdl(
     output_dir: Path | None = None,
     partial_models: list[str] | None = None,
 ) -> list[Path]:
-    """Main entry point: detect input, parse, and generate outputs.
+    """Main entry point: detect input, read it with the TOM SDK, and generate outputs.
+
+    Reading goes through the Microsoft TOM SDK (#879, DD-237), so ``dotnet`` is required:
+    raises :class:`~kairos_ontology.core.tmdl_tom_reader.TomUnavailableError` without it,
+    and :class:`~kairos_ontology.core.tmdl_tom_reader.TmdlRejectedError` (a ValueError)
+    for an export Power BI itself would refuse.
 
     Args:
         source: Path to ZIP, folder, or .tmdl file
@@ -562,15 +554,8 @@ def run_import_tmdl(
             if not definition_dirs:
                 logger.warning("No SemanticModel definition/ found in ZIP: %s", source)
                 return []
-            for def_dir in definition_dirs:
-                model = parse_model_folder(def_dir)
-                files = _write_outputs(
-                    model,
-                    output_dir,
-                    str(source),
-                    partial_models,
-                    _crosscheck_note(model, def_dir),
-                )
+            for model in _read_models(definition_dirs, partial_models):
+                files = _write_outputs(model, output_dir, str(source), partial_models)
                 generated_files.extend(files)
             generated_files.extend(_write_report_usage(extracted, output_dir, str(source)))
 
@@ -593,15 +578,8 @@ def run_import_tmdl(
         if not definition_dirs:
             logger.warning("No SemanticModel definition/ found via PBIP pointer: %s", source)
             return []
-        for def_dir in definition_dirs:
-            model = parse_model_folder(def_dir)
-            files = _write_outputs(
-                model,
-                output_dir,
-                str(source),
-                partial_models,
-                _crosscheck_note(model, def_dir),
-            )
+        for model in _read_models(definition_dirs, partial_models):
+            files = _write_outputs(model, output_dir, str(source), partial_models)
             generated_files.extend(files)
         for folder in artifact_dirs:
             generated_files.extend(_write_report_usage(folder, output_dir, str(source)))
@@ -611,28 +589,14 @@ def run_import_tmdl(
         if not definition_dirs:
             logger.warning("No SemanticModel definition/ found in: %s", source)
             return []
-        for def_dir in definition_dirs:
-            model = parse_model_folder(def_dir)
-            files = _write_outputs(
-                model,
-                output_dir,
-                str(source),
-                partial_models,
-                _crosscheck_note(model, def_dir),
-            )
+        for model in _read_models(definition_dirs, partial_models):
+            files = _write_outputs(model, output_dir, str(source), partial_models)
             generated_files.extend(files)
         generated_files.extend(_write_report_usage(source, output_dir, str(source)))
 
     elif input_type == "file":
-        # Single .tmdl file — parse directly
-        content = source.read_text(encoding="utf-8")
-        items = parse_tmdl_content(content)
-        model = TmdlModel(name=source.stem)
-        for item in items:
-            if hasattr(item, "columns"):
-                model.tables.append(item)
-            else:
-                model.relationships.append(item)
+        # A single table .tmdl file, staged by the reader as a one-table model.
+        model = read_single_table_file(source)
         files = _write_outputs(model, output_dir, str(source), partial_models)
         generated_files.extend(files)
 
@@ -693,7 +657,6 @@ def _write_outputs(
     output_dir: Path,
     source_label: str,
     partial_models: list[str] | None = None,
-    crosscheck_note: str = "",
 ) -> list[Path]:
     """Write engineering pack and concept mapping for a model."""
     if model.unresolved_table_refs:
@@ -719,7 +682,7 @@ def _write_outputs(
 
     # Engineering Pack
     pack_path = output_dir / f"{slug}-engineering-pack.md"
-    pack_content = generate_engineering_pack(model, source_label, crosscheck_note)
+    pack_content = generate_engineering_pack(model, source_label)
     pack_path.write_text(pack_content, encoding="utf-8")
     generated.append(pack_path)
     logger.info("Generated: %s", pack_path)

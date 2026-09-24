@@ -9,9 +9,9 @@
     TmdlSerializer), so a syntax/structure error is caught at projection time with an
     exact file/line, instead of only surfacing as a cryptic dialog when a human opens
     the PBIP in Desktop. Bundled as source (not a prebuilt binary) under the Python
-    package so it ships with the wheel like every other scaffold asset; invoked via
-    `dotnet run` by tmdl_validate.py when the .NET SDK is available. Never a build or
-    runtime dependency of the toolkit itself; validation is opt in and best effort.
+    package so it ships with the wheel like every other scaffold asset; built once and
+    run with `dotnet <dll>` by tmdl_validate.py. Optional for Gold validation, required
+    for `import-tmdl`, which reads Power BI models with its inventory mode (#879, DD-237).
   -->
 
   <PropertyGroup>
