@@ -275,6 +275,41 @@ class TestGate:
         )
         assert len(undecided_unanchored_tables(hub)) == 1
 
+    def test_a_table_a_dbt_model_binding_reads_is_decided(self, tmp_path):
+        """#973: the binding is the decision. The ledger refuses a `bound` row and
+        `validate` rejects `deferred` for a bound table, so nothing else could clear it."""
+        hub = self._hub(tmp_path)
+        sql = hub / "integration/transforms/dbt/models/intermediate/int_merged__stop.sql"
+        sql.parent.mkdir(parents=True, exist_ok=True)
+        sql.write_text("select * from {{ source('src', 'stops') }}\n", encoding="utf-8")
+        bindings = hub / "integration" / "bindings"
+        bindings.mkdir(parents=True)
+        (bindings / "stop.binding.yaml").write_text(
+            yaml.safe_dump(
+                {"source": {"dbtModel": {"sqlPath": sql.relative_to(hub).as_posix()}}}
+            ),
+            encoding="utf-8",
+        )
+        assert undecided_unanchored_tables(hub) == []
+
+    def test_a_table_a_relation_binding_reads_is_decided(self, tmp_path):
+        hub = self._hub(tmp_path)
+        bindings = hub / "integration" / "bindings"
+        bindings.mkdir(parents=True)
+        (bindings / "stop.binding.yaml").write_text(
+            yaml.safe_dump({"source": {"relation": "src.stops"}}), encoding="utf-8"
+        )
+        assert undecided_unanchored_tables(hub) == []
+
+    def test_a_binding_for_another_table_decides_nothing(self, tmp_path):
+        hub = self._hub(tmp_path)
+        bindings = hub / "integration" / "bindings"
+        bindings.mkdir(parents=True)
+        (bindings / "other.binding.yaml").write_text(
+            yaml.safe_dump({"source": {"relation": "src.other"}}), encoding="utf-8"
+        )
+        assert len(undecided_unanchored_tables(hub)) == 1
+
     def test_domain_scope_is_respected(self, tmp_path):
         hub = self._hub(tmp_path)
         assert undecided_unanchored_tables(hub, domains=["consignment"])
