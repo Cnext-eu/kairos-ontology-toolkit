@@ -60,6 +60,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.22.0rc4] — 2026-09-24
+
+Fourth release candidate for 5.22.0. It adds two things on top of rc3:
+
+- `scaffold-staging` writes the per-source `int_<source>__<entity>` layer (#949).
+- Gold fixes for products that share a domain (#859, #860), plus ISO week columns
+  on `dim_date` (#833).
+
+**Upgrade note.** `weekPattern` on a calendar profile must now be `iso-8601` or
+`iso-8601-monday`. A hub that uses any other value fails `validate` and compile with
+`calendar.unsupported-week-pattern` until the value is changed. The rc2 upgrade notes
+still apply.
+
+### Added
+- **`dim_date` has `week_number` and `week_start_date` (#833).** Both follow ISO 8601:
+  weeks start on Monday, and week 1 is the week that contains the year's first Thursday.
+  On Databricks the week number comes from `weekofyear`; on Fabric it comes from
+  `datepart(iso_week, …)`. `week_start_date` is that week's Monday. It sorts and groups
+  weeks correctly across a year boundary, which a bare week number does not. Every
+  surface that reads the calendar declaration picks both columns up: the dbt model, the
+  DDL, the TMDL, `schema.yml`, the ERD and both allowlists. An insight that slices by
+  `dim_date.week_number` now resolves.
+
+### Changed
+- **`weekPattern` must be `iso-8601` or `iso-8601-monday` (#833).** These are the two
+  conventions the calendar implements, and both mean the same ISO weeks. Any other
+  value is now rejected in two places:
+  - `validate`, through SHACL `sh:in`;
+  - compile, with `calendar.unsupported-week-pattern`.
+
+  Before, the value was accepted and copied onto every row even though nothing acted on
+  it.
+- **Identical calendar profiles in one Gold product are one calendar (#859).** A shared
+  conformed domain and a fact domain in the same product can now both declare a
+  calendar profile. If every setting matches (bounds, fiscal start, week pattern, locale,
+  holiday source, time zone, period closure and approval), the Gold product uses one
+  calendar and combines both profiles' role-playing dates. The product report lists the
+  other profiles under `calendar.contributing_profiles`.
+  `gold.product-calendar-conflict` is now raised only when the settings really differ,
+  and its message names the fields that differ.
+- **`scaffold-staging` generates all three dbt layers (#949).** For each `--source` it
+  now writes an `int_<source>__<entity>` model between the `stg_<source>__<entity>`
+  stage and `int_merged__<entity>`. That model starts as a passthrough and is where the
+  source's joins, filters, main-record rankings and code mapping go. The merge model now
+  reads only the `int_<source>__` models, never a stage or `source()`. Adding a third
+  source then means adding its own `int_` model, not editing the merge. What the
+  scaffold writes passes the `validate-dbt-contracts` layering warnings added in
+  5.22.0rc1. The `kairos-develop-dbt-transformation` skill and its examples follow the
+  same rule.
+
+### Fixed
+- **Dropping a shared domain from one Gold product no longer deletes another product's
+  provenance sidecar (#860).** `metadata/<domain>-gold.provenance.json` is listed in the
+  manifest of every product that uses the domain. When one product stops writing it, the
+  file leaves that product's manifest but stays on disk while another manifest in the
+  same directory still lists it. The last product to drop the domain removes it, as
+  before.
+
 ## [5.22.0rc3] — 2026-09-24
 
 Third release candidate for 5.22.0. It adds one change on top of rc2: `compile --all` stops
