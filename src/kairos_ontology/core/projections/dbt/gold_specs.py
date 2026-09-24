@@ -265,6 +265,13 @@ class DimensionalGoldSpec:
     #: Their edges stay single-direction, so a filter on either endpoint stops at the
     #: bridge; reported because that is rarely what a report author expects.
     undecided_bridge_filters: tuple[str, ...] = ()
+    #: Non-blocking BPA findings from shaping (DD-238), ``(code, message, resource)``.
+    #: `compile --check` reports each as a warning; nothing here changes an artifact.
+    advisories: tuple[tuple[str, str, str], ...] = ()
+    #: ``(from, to, reason)`` for each relationship the shaper refused to emit (DD-238).
+    #: Today only "type-mismatch": its two columns render as different TMDL types, which
+    #: Direct Lake refuses to load and DirectQuery joins through an implicit cast.
+    dropped_relationships: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

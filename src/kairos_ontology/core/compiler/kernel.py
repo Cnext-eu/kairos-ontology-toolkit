@@ -38,7 +38,11 @@ from ..projections.dbt.mapping_renderers import quote_mapping_identifier
 from ..projections.dbt.policy_bind import EXT as _EXT_NS
 from ..projections.dbt.policy_bind import _data_quality_rules, bind_policy_facts
 from ..projections.dbt.gold_specs import GoldContractError
-from ..projections.dbt.policy_normalize import PolicyNormalizationError, _source_type
+from ..projections.dbt.policy_normalize import (
+    PolicyCollectionError,
+    PolicyNormalizationError,
+    _source_type,
+)
 from ..projections.dbt.silver_contract import canonical_type_label
 from ..projections.dbt.policy_specs import (
     AuthoredValuesFact,
@@ -4460,6 +4464,60 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 shape_project(contract), tuple(valid_bindings), context
             )
             materialized = plan_materialization(contract, shaped)
+            # DD-238: non-blocking BPA findings from Gold shaping. Reported where the author
+            # fixes them -- the Gold extension -- and never block the plan.
+            gold_product = getattr(shaped, "gold_product", None)
+            for code, message, _resource in getattr(gold_product, "advisories", ()) or ():
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code=code,
+                        message=message,
+                        severity=DiagnosticSeverity.WARNING,
+                        location=SourceLocation(
+                            path=str(
+                                Path(scope.hub_root)
+                                / "model"
+                                / "extensions"
+                                / f"{context.domain}-gold-ext.ttl"
+                            )
+                        ),
+                        rule_id="DD-238-bpa-profile",
+                    )
+                )
+        except (PolicyNormalizationError, PolicyCollectionError) as exc:
+            # #980: an authored-policy failure caught here -- e.g. a provisional measure
+            # missing measureDataType -- fell into the generic handler below and surfaced
+            # as `safety.type-incompatible` at the hub root, hiding the rule that fired and
+            # the file to edit. Keep each error's own code and rule, and point Gold-stage
+            # codes at the Gold extension.
+            failures = (
+                exc.diagnostics if isinstance(exc, PolicyCollectionError) else (exc,)
+            )
+            for failure in failures:
+                gold_stage = failure.code.startswith(
+                    ("measure.", "gold.", "calendar.", "security.", "perspective.")
+                )
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code=failure.code,
+                        message=(
+                            failure.message
+                            if hasattr(failure, "message")
+                            else str(failure).removeprefix(f"{failure.code}: ")
+                        ),
+                        location=SourceLocation(
+                            path=str(
+                                Path(scope.hub_root)
+                                / "model"
+                                / "extensions"
+                                / f"{context.domain}-gold-ext.ttl"
+                            )
+                            if gold_stage
+                            else scope.hub_root
+                        ),
+                        rule_id=failure.rule_id,
+                    )
+                )
         except GoldContractError as exc:
             # #752/#763: a Gold contract failure (DD-112 `gold.*`) keeps its own code, rule
             # and file instead of being flattened into `safety.type-incompatible` at the hub

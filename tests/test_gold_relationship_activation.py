@@ -235,21 +235,25 @@ class TestEndToEnd:
         assert len(blocks) == 2, tmdl
         assert not any("isActive: false" in block for block in blocks), tmdl
 
-    def test_every_deactivation_is_reported_with_its_reason(self, tmp_path):
-        """A silent pick would change a report's meaning with nothing to review."""
+    def test_the_fixture_has_no_deactivation_left_to_report(self, tmp_path):
+        """Its one inactive edge was the #794 fallback onto `_source_system`, which also
+        joined an integer to a string; DD-238 drops and reports that edge instead."""
         report = harness._report(harness._generate("invoice"), "invoice")
-        deactivated = report["deactivated_relationships"]
-
-        assert [item["reason"] for item in deactivated] == ["unproven-key"]
-        assert deactivated[0]["to"] == "fact_invoice._source_system"
+        assert "deactivated_relationships" not in report
+        assert report["dropped_relationships"] == [
+            {
+                "from": "fact_invoice_line.invoice_sk",
+                "to": "fact_invoice._source_system",
+                "reason": "type-mismatch",
+            }
+        ]
 
     def test_a_single_role_product_has_no_ambiguous_path(self, tmp_path):
         """Compatibility: nothing is deactivated for ambiguity when there is none.
 
-        The fixture does carry one inactive relationship, but for the unrelated #794
-        reason -- its one side is `fact_invoice._source_system`, which no declared
-        key backs. The calendar edge, the only candidate for an ambiguous path here,
-        stays active.
+        The fixture's one unproven (#794) edge, onto `fact_invoice._source_system`, is
+        dropped for its type mismatch (DD-238), so nothing is deactivated at all. The
+        calendar edge, the only candidate for an ambiguous path here, stays active.
         """
         artifacts = harness._generate("invoice")
         report = harness._report(artifacts, "invoice")
@@ -331,14 +335,14 @@ class TestTheOneSideNeedsADeclaredUniqueKey:
 class TestTheUnprovenRelationshipIsEmittedInactive:
     """Inactive, not refused: failing closed would block hubs that publish today."""
 
-    def test_the_fixture_relationship_is_deactivated_and_explained(self):
+    def test_an_unproven_edge_across_types_is_dropped_not_emitted(self):
+        """DD-238: the fixture's unproven edge joins int64 to string. Direct Lake refuses
+        that even inactive, so it is dropped and reported rather than emitted."""
         artifacts = harness._generate("invoice")
         tmdl = artifacts[next(path for path in artifacts if path.endswith("relationships.tmdl"))]
-        block = next(item for item in tmdl.split("relationship ") if "_source_system" in item)
-        assert "isActive: false" in block
-
+        assert "_source_system" not in tmdl
         report = harness._report(artifacts, "invoice")
-        assert [item["reason"] for item in report["deactivated_relationships"]] == ["unproven-key"]
+        assert [item["reason"] for item in report["dropped_relationships"]] == ["type-mismatch"]
 
     def test_an_unproven_edge_never_displaces_a_sound_one(self):
         """It must not claim a place in the spanning forest and deactivate a real one."""

@@ -450,8 +450,9 @@ PROFILE: tuple[RuleProfile, ...] = (
         _d(
             _RA,
             "Direct Lake refuses a relationship between columns of different types, and "
-            "DirectQuery joins them with an implicit cast. Blocking: exact on the "
-            "rendered column types.",
+            "DirectQuery joins them with an implicit cast. The shaper drops such a "
+            "relationship and reports it under dropped_relationships; the assertion then "
+            "blocks any that still reaches the rendered model, exact on column types.",
             enforced_by="gold.relationship-type-mismatch",
             blocking=True,
         ),
@@ -520,14 +521,19 @@ PROFILE: tuple[RuleProfile, ...] = (
             _CD,
             "Measures always carry measureDefinition. A visible column without an ontology "
             "rdfs:comment is warned, because the description is what a report author reads "
-            "in the field list.",
+            "in the field list. Tables and the calculation group carry no description yet; "
+            "the post-deploy run reports those.",
             enforced_by="gold.description-missing",
         ),
     ),
     _rule(
         "PERSPECTIVES_WITH_NO_OBJECTS",
         "a50baf2a4732",
-        _d(_BC, "A perspective is emitted only from the tables that declare it."),
+        _d(
+            _BC,
+            "A perspective is emitted only from the tables that declare it, listing each "
+            "table's columns and measures as members.",
+        ),
     ),
     _rule(
         "CALCULATION_GROUPS_WITH_NO_CALCULATION_ITEMS",

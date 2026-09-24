@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date
 
 import yaml
@@ -149,8 +150,14 @@ def _bpa_ignore_index(spec: DimensionalGoldSpec) -> BpaIgnoreIndex:
     return {key: tuple(value) for key, value in index.items()}
 
 
+#: Control characters other than the line breaks replaced below. TMDL carries them, but
+#: BPA's AVOID_INVALID_DESCRIPTION_CHARACTERS flags them and no reader wants them (DD-238).
+_TMDL_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 def _tmdl_text(value: str) -> str:
-    return value.replace('"', '""').replace("\r", " ").replace("\n", " ")
+    text = value.replace('"', '""').replace("\r", " ").replace("\n", " ")
+    return _TMDL_CONTROL.sub("", text)
 
 
 def _dbt_table_sql(table: GoldTableSpec, physical: GoldPhysicalTablePlan) -> str:
@@ -1220,6 +1227,19 @@ def _security_tmdl(spec: DimensionalGoldSpec) -> str:
 
 
 def _perspectives_tmdl(spec: DimensionalGoldSpec) -> str:
+    """Render each perspective with its tables' columns and measures as members.
+
+    A bare `perspectiveTable` carries no member, and Tabular Editor's Best Practice
+    Analyzer -- run against the acme model for DD-238 -- reported the perspective as
+    having no objects at all (PERSPECTIVES_WITH_NO_OBJECTS). Desktop writes perspectives
+    the same explicit way, so a perspective now lists every column and emitted measure of
+    each table it declares.
+    """
+    columns = {table.name: [column.name for column in table.columns] for table in spec.tables}
+    measures: dict[str, list[str]] = {}
+    for measure in spec.measures:
+        if measure.emitted:
+            measures.setdefault(measure.home_table, []).append(measure.name)
     lines: list[str] = []
     for name, tables in spec.perspectives:
         lines.extend(
@@ -1230,7 +1250,13 @@ def _perspectives_tmdl(spec: DimensionalGoldSpec) -> str:
             ]
         )
         for table in tables:
-            lines.extend([f"\tperspectiveTable {table}", ""])
+            lines.append(f"\tperspectiveTable {table}")
+            lines.extend(f"\t\tperspectiveColumn {column}" for column in columns.get(table, ()))
+            lines.extend(
+                "\t\tperspectiveMeasure '{}'".format(measure.replace("'", "''"))
+                for measure in measures.get(table, ())
+            )
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -1391,6 +1417,19 @@ def gold_product_report(
                 ]
             }
             if any(not item.is_active for item in spec.relationships)
+            else {}
+        ),
+        # Relationships the shaper refused to emit because their columns' types differ
+        # (DD-238). Reported rather than silent: the fix is authoring -- a declared key or
+        # a type change in Silver -- and the author needs to know the join is missing.
+        **(
+            {
+                "dropped_relationships": [
+                    {"from": source, "to": target, "reason": reason}
+                    for source, target, reason in spec.dropped_relationships
+                ]
+            }
+            if spec.dropped_relationships
             else {}
         ),
         # Edges that filter both ways, and why (DD-238). A bidirectional edge changes
