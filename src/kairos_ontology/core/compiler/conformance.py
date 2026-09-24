@@ -271,13 +271,28 @@ def build_conformance_plan(
         if len(members) < 2:
             continue
         groups = {item.conformance.group for item in members if item.conformance is not None}
+        # #927: bindings whose keys differ in arity are rarely one entity from several
+        # sources -- far more often unrelated entities on one abstract class. Say so,
+        # because the gate's only other suggestion (declare conformance) would union them.
+        arities = sorted(
+            {len(item.identity.source_key or item.grain.columns) for item in members}
+        )
+        hint = (
+            f" These bindings key on {'/'.join(str(a) for a in arities)} columns, which "
+            "suggests different entities sharing an abstract class rather than one entity "
+            "from several sources: give each its own hub-local subclass instead of "
+            "declaring conformance."
+            if len(arities) > 1
+            else ""
+        )
         for binding in members:
             if binding.conformance is None:
                 diagnostics.append(
                     _diagnostic(
                         binding,
                         "conformance.group-required",
-                        f"multiple bindings target '{target}'; every binding must declare conformance",
+                        f"multiple bindings target '{target}'; every binding must declare "
+                        f"conformance.{hint}",
                     )
                 )
         if len(groups) != 1:

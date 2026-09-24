@@ -21,7 +21,11 @@ begins (DD-149).
 
 ## Workflow
 
-1. Read existing discovery inputs and the hub README before proposing changes. Every file
+1. Read existing discovery inputs and the hub README before proposing changes. When the
+   accelerator pack ships a blueprint dossier
+   (`accelerator-packs/<pack>/current/blueprint/`), read its capability coverage and
+   overlap register too: they say which business capabilities and overlapping concepts
+   the pack already reasoned about, so discovery questions can target what is open. Every file
    under `.import/businessdiscovery/` is a discovery input and needs an extraction
    (`kairos-ontology discovery-status` lists what is missing). Get a document's text with
    `kairos-ontology read-document <file>` (.pdf, .docx, .pptx, .xlsx, .md, .txt, .htm; the

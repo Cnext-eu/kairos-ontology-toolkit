@@ -307,15 +307,32 @@ def _resolve_universe_token(
     token: str,
     class_record: dict[str, Any],
     name_to_uris: dict[str, set[str]],
+    class_owner: dict[str, str] | None = None,
 ) -> str | None:
-    """Resolve a full IRI or bare local name to an in-scope accelerator class URI."""
+    """Resolve a full IRI, ``module:Class`` or bare local name to an in-scope class URI.
+
+    A bare name resolves only when it is unique among the activated modules. A duplicated
+    name can be pinned with a module prefix (#863): ``consignment:TransportLeg`` or
+    ``mmt/consignment:TransportLeg`` keeps the candidates whose owning module, or whose
+    namespace path, ends in that prefix. The prefix used to be discarded, so the tie the
+    proposer defers to the modeller had no way to be written down.
+    """
     token = (token or "").strip()
     if not token:
         return None
     if "://" in token or token.startswith("urn:"):
         return token if token in class_record else None
-    local = token.rsplit(":", 1)[-1]
+    prefix, _, local = token.rpartition(":")
     candidates = name_to_uris.get(local, set())
+    if len(candidates) > 1 and prefix:
+        prefix = prefix.strip("/")
+
+        def in_module(uri: str) -> bool:
+            owner = (class_owner or {}).get(uri, "")
+            namespace = uri.rsplit("#", 1)[0].rstrip("/")
+            return owner == prefix or namespace == prefix or namespace.endswith("/" + prefix)
+
+        candidates = {uri for uri in candidates if in_module(uri)}
     if len(candidates) == 1:
         return next(iter(candidates))
     return None
@@ -722,7 +739,7 @@ def run_design_landscape(
                 # business actually reports on. Awaiting confirmation, not ignored.
                 candidates += 1
                 continue
-            resolved_uri = _resolve_universe_token(match, class_record, name_to_uris)
+            resolved_uri = _resolve_universe_token(match, class_record, name_to_uris, class_owner)
             if resolved_uri is None:
                 gaps.append(
                     f"BI concept-mapping {mapping_path.name}: reference_model_match "
