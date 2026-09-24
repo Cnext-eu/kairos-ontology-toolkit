@@ -240,11 +240,13 @@ def load_bound_relations(bindings_dir: Path, hub_root: Path) -> set[tuple[str, s
 
     Model SQL is scanned with the compiler's :func:`extract_source_pairs`, the single
     extraction authority, so this audit can never disagree with the two closure walks
-    about which sources a model reads. Only the selected model is scanned, not its
-    transitive ``ref()`` closure: resolving that needs a parsed ``EntityBinding`` and
-    raises on the first defect, which is the compiler's job, not an advisory audit's. A
-    source table reached only through an upstream ``ref()``ed model is therefore still
-    reported undecided.
+    about which sources a model reads. The selected model's ``ref()`` closure is walked
+    too (#973): the three-layer rule (#949) puts every ``source()`` call in a ``stg_``
+    model two ``ref()`` hops below the ``int_merged__`` model a binding selects, so
+    scanning only the selected model would find nothing. The walk is lenient where the
+    compiler's is strict -- a ``ref()`` that matches no authored model, or more than
+    one, ends that branch instead of raising -- because diagnosing it is the compiler's
+    job, not an advisory audit's.
 
     *hub_root* resolves the binding's repository-relative ``sqlPath``. An unreadable path
     is skipped rather than raised on, matching this function's existing posture toward a
@@ -253,6 +255,9 @@ def load_bound_relations(bindings_dir: Path, hub_root: Path) -> set[tuple[str, s
     bound: set[tuple[str, str]] = set()
     if not bindings_dir.is_dir():
         return bound
+    # Built on the first dbtModel binding and shared by the rest: one directory scan per
+    # call, not one per binding.
+    model_index: dict[str, list[Path]] | None = None
     for path in sorted(bindings_dir.glob("*.yaml")):
         try:
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -266,11 +271,27 @@ def load_bound_relations(bindings_dir: Path, hub_root: Path) -> set[tuple[str, s
         if isinstance(relation, str) and "." in relation:
             system, _, table = relation.partition(".")
             bound.add((system.strip(), table.strip()))
-        bound |= _dbt_model_source_pairs(source, hub_root)
+        if model_index is None:
+            model_index = _model_index(hub_root)
+        bound |= _dbt_model_source_pairs(source, hub_root, model_index)
     return bound
 
 
-def _dbt_model_source_pairs(source: dict[str, Any], hub_root: Path) -> set[tuple[str, str]]:
+def _model_index(hub_root: Path) -> dict[str, list[Path]]:
+    """Authored model SQL by stem -- ``ref()`` names match stems exactly, as in dbt."""
+    models_dir = Path(hub_root) / "integration" / "transforms" / "dbt" / "models"
+    index: dict[str, list[Path]] = {}
+    if models_dir.is_dir():
+        for model_path in sorted(models_dir.rglob("*.sql")):
+            index.setdefault(model_path.stem, []).append(model_path)
+    return index
+
+
+def _dbt_model_source_pairs(
+    source: dict[str, Any],
+    hub_root: Path,
+    model_index: dict[str, list[Path]],
+) -> set[tuple[str, str]]:
     """Return the source tables a ``source.dbtModel`` binding's own SQL reads.
 
     Split out so the two authored source forms read as the independent alternatives they
@@ -278,17 +299,31 @@ def _dbt_model_source_pairs(source: dict[str, Any], hub_root: Path) -> set[tuple
     ``validate`` and by hub inspection, neither of which should pull in the compiler to
     read a ledger.
     """
-    from .compiler.dbt_source import extract_source_pairs
+    from .compiler.dbt_source import extract_refs, extract_source_pairs
 
     model = source.get("dbtModel")
     sql_path = model.get("sqlPath") if isinstance(model, dict) else None
     if not isinstance(sql_path, str) or not sql_path.strip():
         return set()
-    try:
-        text = (Path(hub_root) / sql_path).read_text(encoding="utf-8")
-    except Exception:  # defensive: an unresolvable sqlPath is the compiler's problem
-        return set()
-    return set(extract_source_pairs(text))
+    pairs: set[tuple[str, str]] = set()
+    seen: set[Path] = set()
+    pending = [Path(hub_root) / sql_path]
+    while pending:
+        path = pending.pop()
+        try:
+            key = path.resolve()
+            text = path.read_text(encoding="utf-8")
+        except Exception:  # defensive: an unresolvable path is the compiler's problem
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs |= extract_source_pairs(text)
+        for ref_name in extract_refs(text):
+            matches = model_index.get(ref_name, [])
+            if len(matches) == 1:
+                pending.append(matches[0])
+    return pairs
 
 
 def column_decision(

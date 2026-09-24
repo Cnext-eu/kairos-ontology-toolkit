@@ -686,3 +686,57 @@ def test_clearing_every_entry_of_a_system_removes_its_file(tmp_path: Path) -> No
     assert outcome["removed"] == 1 and outcome["kept"] == 1
     assert not ledger_path(tmp_path, "tms").exists()
     assert ledger_path(tmp_path, "erp").exists()
+
+
+def test_load_bound_relations_follows_the_ref_closure(tmp_path: Path) -> None:
+    """#973: under the three-layer rule (#949) the merge model a binding selects reads no
+    source() itself -- it refs `int_<source>__` models, which ref the `stg_` stages. Only
+    scanning the selected model found nothing, so every such table read as unbound."""
+    models = tmp_path / "integration/transforms/dbt/models"
+    for relpath, sql in {
+        "staging/stg_tms__shipment.sql": "select * from {{ source('tms', 'shipment') }}",
+        "staging/stg_tms__shipment_link.sql": "select * from {{ source('tms', 'shipment_link') }}",
+        "intermediate/int_tms__shipment.sql": (
+            "select * from {{ ref('stg_tms__shipment') }} "
+            "join {{ ref('stg_tms__shipment_link') }} using (id)"
+        ),
+        "intermediate/int_merged__shipment.sql": "select * from {{ ref('int_tms__shipment') }}",
+        "intermediate/int_unrelated.sql": "select * from {{ source('tms', 'unrelated') }}",
+    }.items():
+        (models / relpath).parent.mkdir(parents=True, exist_ok=True)
+        (models / relpath).write_text(sql + "\n", encoding="utf-8")
+    bindings = tmp_path / "integration" / "bindings"
+    bindings.mkdir(parents=True)
+    (bindings / "shipment.binding.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "source": {
+                    "dbtModel": {
+                        "name": "int_merged__shipment",
+                        "sqlPath": "integration/transforms/dbt/models/intermediate/"
+                        "int_merged__shipment.sql",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_bound_relations(bindings, tmp_path) == {
+        ("tms", "shipment"),
+        ("tms", "shipment_link"),
+    }
+
+
+def test_an_unresolvable_ref_ends_the_branch_without_raising(tmp_path: Path) -> None:
+    """The compiler diagnoses a dangling ref(); this advisory walk just stops there."""
+    _write_dbt_model_binding(tmp_path, "tms", "shipment")
+    sql = tmp_path / "integration/transforms/dbt/models/intermediate/int_assignment.sql"
+    sql.write_text(
+        sql.read_text(encoding="utf-8") + "union all select * from {{ ref('missing') }}\n",
+        encoding="utf-8",
+    )
+
+    assert load_bound_relations(tmp_path / "integration" / "bindings", tmp_path) == {
+        ("tms", "shipment")
+    }

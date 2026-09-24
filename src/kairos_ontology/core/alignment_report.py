@@ -957,8 +957,14 @@ def undecided_unanchored_tables(
     "this table is genuinely out of scope" is a durable answer rather than an
     absence. A table-grain disposition covers it whatever the reason; a column-grain
     one does not, because deciding one column says nothing about the table (#948).
+
+    A table an EntityBinding reads is decided too (#973): the binding is the decision,
+    and the ledger refuses a ``bound`` row because "authoring the binding is what states
+    it". :func:`load_bound_relations` is the one authority for that, shared with the
+    DD-164 audit, so the gate and ``validate`` cannot disagree about which tables are
+    bound.
     """
-    from .source_disposition import load_dispositions
+    from .source_disposition import load_bound_relations, load_dispositions
 
     report = build_alignment_report(
         Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
@@ -969,11 +975,13 @@ def undecided_unanchored_tables(
         for (system, table, column) in load_dispositions(Path(hub_root))
         if not column
     }
+    bound = load_bound_relations(Path(hub_root) / "integration" / "bindings", Path(hub_root))
     return [
         table
         for table in report.unanchored
         if (scope is None or table.domain in scope)
         and (table.system, table.table) not in decided
+        and (table.system, table.table) not in bound
     ]
 
 
