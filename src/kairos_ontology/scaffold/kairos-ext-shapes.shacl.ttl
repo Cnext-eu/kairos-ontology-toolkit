@@ -623,7 +623,12 @@ kairos-ext:CalendarProfileShape a sh:NodeShape ;
         sh:minInclusive 1 ;
         sh:maxInclusive 12 ;
     ] ;
-    sh:property [ sh:path kairos-ext:weekPattern ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:weekPattern ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "iso-8601" "iso-8601-monday" ) ;
+    ] ;
     sh:property [ sh:path kairos-ext:calendarLocale ; sh:minCount 1 ; sh:maxCount 1 ] ;
     sh:property [ sh:path kairos-ext:holidaySource ; sh:minCount 1 ; sh:maxCount 1 ] ;
     sh:property [ sh:path kairos-ext:calendarTimeZone ; sh:minCount 1 ; sh:maxCount 1 ] ;

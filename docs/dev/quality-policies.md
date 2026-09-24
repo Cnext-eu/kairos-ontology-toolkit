@@ -339,6 +339,8 @@ Produces `MeasureSpec`.
 - `startDate` ≤ `endDate`, both ISO `YYYY-MM-DD` (`invalid-date` / `invalid-range`).
 - `fiscalYearStartMonth` an integer 1–12.
 - `calendarApprovalStatus` ∈ {draft, approved}.
+- `weekPattern` ∈ {iso-8601, iso-8601-monday} (`unsupported-week-pattern`, #833): the
+  convention `dim_date.week_number` and `week_start_date` implement.
 - Plus `weekPattern`, `locale`, `holidaySource`, `timeZone`, `periodClosure`, and
   `rolePlayingDates`. Produces `CalendarProfileSpec`.
 

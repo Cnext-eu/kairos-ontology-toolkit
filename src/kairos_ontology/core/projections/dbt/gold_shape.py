@@ -1404,6 +1404,71 @@ def _shape_tables(
     return tuple(sorted(tables, key=lambda item: (item.role.value, item.name)))
 
 
+#: The settings that make two calendar profiles the same calendar (#859). Role-playing
+#: dates are deliberately absent: each domain binds its own date columns, and those are
+#: unioned rather than compared.
+_CALENDAR_IDENTITY = (
+    "start_date",
+    "end_date",
+    "fiscal_year_start_month",
+    "week_pattern",
+    "locale",
+    "holiday_source",
+    "time_zone",
+    "period_closure",
+    "approval_status",
+)
+
+
+def _product_calendar(members):
+    """The product's one calendar policy, and the other profiles merged into it (#859).
+
+    DD-112 allows one calendar per Gold product. DD-228 lets a shared conformed domain --
+    typically party -- carry a calendar several products read, while a fact domain in the
+    same product declares one too. When the two are identical in every setting they are
+    one calendar with two contributors, exactly as the dbt lane already treats them
+    (#849); their role-playing dates are unioned. Only a real difference in bounds, week
+    pattern, fiscal start or the rest is a conflict.
+    """
+    declaring = sorted(
+        (member for member in members if member.policy.gold.calendar is not None),
+        key=lambda member: member.ontology_name,
+    )
+    if not declaring:
+        return None, ()
+    owner = declaring[0]
+    if len(declaring) == 1:
+        return owner.policy, ()
+    base = owner.policy.gold.calendar
+    for member in declaring[1:]:
+        other = member.policy.gold.calendar
+        different = [
+            name
+            for name in _CALENDAR_IDENTITY
+            if getattr(base, name).value != getattr(other, name).value
+        ]
+        if different:
+            names = ", ".join(m.ontology_name for m in declaring)
+            _fail(
+                "gold.product-calendar-conflict",
+                (
+                    f"{len(declaring)} domains declare a calendar profile for this Gold "
+                    f"product ({names}) and they differ in {', '.join(different)}; one "
+                    "calendar per product (DD-112) -- make them identical, or let one "
+                    "domain declare it"
+                ),
+                rule_id="DD-112-profile",
+            )
+    roles: list[str] = []
+    for member in declaring:
+        for value in member.policy.gold.calendar.role_playing_dates.value:
+            if value not in roles:
+                roles.append(value)
+    merged = replace(base, role_playing_dates=replace(base.role_playing_dates, value=tuple(roles)))
+    policy = replace(owner.policy, gold=replace(owner.policy.gold, calendar=merged))
+    return policy, tuple(m.policy.gold.calendar.resource_uri for m in declaring[1:])
+
+
 def _sole(
     members: tuple["GoldDomainInput", ...],
     pick,
@@ -1515,15 +1580,10 @@ def _shape_dimensional_product(
     # The calendar is shaped *before* the relationships it contributes edges to: each
     # role-playing date is a path between its fact and `dim_date`, and the spanning
     # forest below cannot resolve ambiguity it cannot see (#792).
-    calendar_owner = _sole(
-        members,
-        lambda member: member.policy.gold.calendar,
-        code="gold.product-calendar-conflict",
-        what="calendar profile",
-    )
-    calendar = (
-        _shape_calendar(calendar_owner.policy, ordered) if calendar_owner is not None else None
-    )
+    calendar_policy, contributing = _product_calendar(members)
+    calendar = _shape_calendar(calendar_policy, ordered) if calendar_policy is not None else None
+    if calendar is not None and contributing:
+        calendar = replace(calendar, contributing_profiles=contributing)
 
     relationships, unresolved = _shape_relationships(ordered, tuple(descriptors), models)
     relationships = relationships + _calendar_relationships(calendar)

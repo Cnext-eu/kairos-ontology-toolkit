@@ -796,7 +796,7 @@ kairos-ext:fiscalYearStartMonth a owl:AnnotationProperty ;
 
 kairos-ext:weekPattern a owl:AnnotationProperty ;
     rdfs:label "week pattern"@en ;
-    rdfs:comment "Approved week numbering and week-start convention."@en ;
+    rdfs:comment "Approved week numbering and week-start convention: iso-8601 (or iso-8601-monday, the same convention with the start day stated) -- Monday start, week 1 holds the year's first Thursday. dim_date.week_number and week_start_date follow it."@en ;
     rdfs:domain kairos-ext:CalendarProfile ;
     rdfs:range xsd:string .
 

@@ -183,6 +183,9 @@ class GoldCalendarSpec:
     period_closure: str
     roles: tuple[GoldCalendarRoleSpec, ...]
     approved: bool
+    #: The other calendar profiles, identical in every setting, that contributed roles to
+    #: this one (#859). Empty for a product with one declaring domain.
+    contributing_profiles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

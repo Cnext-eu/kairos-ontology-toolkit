@@ -172,3 +172,91 @@ class TestInsightCoverage:
             (self._insight(f"{CALENDAR_TABLE}.month_number"),), self._spec(approved=False)
         )
         assert coverage[0].missing_dimensions == (f"{CALENDAR_TABLE}.month_number",)
+
+
+class TestWeekNumber:
+    """#833: `week_pattern` was echoed onto every row and nothing acted on it."""
+
+    @staticmethod
+    def _fact(week: str):
+        from kairos_ontology.core.projections.dbt.policy_specs import (
+            AuthoredValuesFact,
+            CalendarFact,
+        )
+
+        uri = "https://example.test/ontology/party#Calendar"
+
+        def value(*items: str) -> AuthoredValuesFact:
+            return AuthoredValuesFact(uri, "urn:predicate", items)
+
+        return CalendarFact(
+            resource_uri=uri,
+            start_date=value("2020-01-01"),
+            end_date=value("2030-12-31"),
+            fiscal_year_start_month=value("1"),
+            week_pattern=value(week),
+            locale=value("en-BE"),
+            holiday_source=value("none-approved"),
+            time_zone=value("Europe/Brussels"),
+            period_closure=value("none"),
+            role_playing_dates=value("orderDate"),
+            approval_status=value("approved"),
+        )
+
+    @pytest.mark.parametrize("week", ["iso-8601", "iso-8601-monday"])
+    def test_the_iso_patterns_are_accepted(self, week):
+        from kairos_ontology.core.projections.dbt.policy_normalize import _normalize_calendar
+
+        assert _normalize_calendar(self._fact(week)).week_pattern.value == week
+
+    @pytest.mark.parametrize("week", ["us-sunday", "iso-8601-sunday", "ISO"])
+    def test_a_pattern_the_calendar_does_not_implement_is_rejected(self, week):
+        from kairos_ontology.core.projections.dbt.policy_normalize import (
+            PolicyNormalizationError,
+            _normalize_calendar,
+        )
+
+        with pytest.raises(PolicyNormalizationError) as excinfo:
+            _normalize_calendar(self._fact(week))
+        assert excinfo.value.code == "calendar.unsupported-week-pattern"
+
+    def test_the_shacl_shape_enumerates_the_same_patterns(self):
+        """Authoring-time validation and normalization must accept the same set."""
+        from importlib import resources
+
+        from kairos_ontology.core.projections.dbt.calendar_columns import ISO_WEEK_PATTERNS
+
+        shapes = (
+            resources.files("kairos_ontology.scaffold")
+            .joinpath("kairos-ext-shapes.shacl.ttl")
+            .read_text(encoding="utf-8")
+        )
+        enumerated = " ".join(f'"{item}"' for item in sorted(ISO_WEEK_PATTERNS))
+        assert f"sh:in ( {enumerated} )" in shapes
+
+    @pytest.mark.parametrize(
+        ("adapter", "week_function"),
+        [("databricks", "weekofyear(date_day)"), ("fabric-warehouse", "datepart(iso_week,")],
+    )
+    def test_the_week_number_is_iso_on_each_adapter(self, adapter, week_function):
+        """T-SQL's plain `week` part counts from Jan 1 and is not ISO; Spark's
+        weekofyear is."""
+        from kairos_ontology.core.projections.dbt.gold_render import _dbt_calendar_sql
+
+        sql = _dbt_calendar_sql(_calendar(), adapter)
+        assert f"{week_function}" in sql
+        assert "datepart(week," not in sql
+
+    def test_the_week_start_does_not_depend_on_datefirst(self):
+        from kairos_ontology.core.projections.dbt.gold_render import _dbt_calendar_sql
+
+        sql = _dbt_calendar_sql(_calendar(), "fabric-warehouse")
+        assert "weekday" not in sql
+        assert "cast('19000101' as date)" in sql
+
+    def test_an_insight_slicing_by_week_resolves(self):
+        spec = SimpleNamespace(measures=(), tables=(), calendar=_calendar())
+        insight = TestInsightCoverage._insight(
+            f"{CALENDAR_TABLE}.week_number", f"{CALENDAR_TABLE}.week_start_date"
+        )
+        assert check_coverage((insight,), spec)[0].missing_dimensions == ()

@@ -26,6 +26,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+#: The ``weekPattern`` values the generated calendar implements (#833). Both name ISO 8601
+#: weeks: Monday is the first day, and week 1 is the week holding the year's first
+#: Thursday. ``iso-8601-monday`` states the week-start day explicitly and means the same.
+#: A convention outside this set is rejected when the profile is normalized, because
+#: echoing it onto every row beside an ISO ``week_number`` would declare one convention
+#: and implement another.
+ISO_WEEK_PATTERNS: frozenset[str] = frozenset({"iso-8601", "iso-8601-monday"})
+
+
 @dataclass(frozen=True, slots=True)
 class CalendarColumn:
     """One column of the generated calendar dimension."""
@@ -53,6 +62,12 @@ CALENDAR_COLUMNS: tuple[CalendarColumn, ...] = (
     CalendarColumn("month_number", "int32", "Calendar month, 1-12."),
     CalendarColumn("month_name", "string", "Full month name, in the calendar locale."),
     CalendarColumn("day_of_month", "int32", "Day of the month, 1-31."),
+    CalendarColumn("week_number", "int32", "ISO 8601 week of the year, 1-53."),
+    CalendarColumn(
+        "week_start_date",
+        "date",
+        "Monday that starts the ISO week; sorts and groups weeks across a year boundary.",
+    ),
     CalendarColumn(
         "fiscal_year_start_month",
         "int32",
