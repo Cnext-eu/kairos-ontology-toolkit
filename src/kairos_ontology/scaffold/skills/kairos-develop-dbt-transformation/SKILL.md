@@ -52,19 +52,22 @@ Use these conventions for hand-authored contracted transforms:
 
 `stg_*` is internal to a hand-authored contracted transform and does not
 contradict the generated-Silver "no staging layer" rule. The EntityBinding
-references the final `int_*` model via `source.dbtModel`. These are conventions,
-not enforced or linted invariants.
+references the final `int_*` model via `source.dbtModel`. The layer boundaries
+are linted as warnings by `validate-dbt-contracts` (#949), so an existing hub can
+migrate model by model.
 
 **`scaffold-staging` generates this layering (issue #399).**
 `kairos-ontology scaffold-staging --entity <entity> --domain <domain> --source
-<system>.<table> --source <system>.<table> [...]` writes one
-`stg_<source>__<entity>.sql` + properties YAML per `--source` (reusing the same
+<system>.<table> --source <system>.<table> [...]` writes, per `--source`, one
+`int_<source>__<entity>.sql` passthrough (where that source's joins, filters and
+rules go, #949) over one `stg_<source>__<entity>.sql`, each with properties YAML
+(the stage reusing the same
 per-table staging SELECT `scaffold-binding`'s passthrough archetype already
 generates, each independently contracted with `config.contract.enforced: true`
 and no `meta.kairos` — a stage is never itself a bindable virtual source) plus
 one `int_merged__<entity>.sql` + properties YAML with the full `meta.kairos`
-block. The merged model's SQL unions only the columns common to every source
-stage and leaves `<CONFIRM_NATURAL_KEY_COLUMN>`/`<CONFIRM_PRIORITY_COLUMN>`
+block. The merged model reads only the `int_<source>__` models, unions only the
+columns common to every source, and leaves `<CONFIRM_NATURAL_KEY_COLUMN>`/`<CONFIRM_PRIORITY_COLUMN>`
 sentinels for `kairos_survivor` (irreducible modeling judgment, not something a
 scaffold can infer); its YAML leaves `<CONFIRM_TARGET_CLASS>`/
 `<CONFIRM_VIRTUAL_SOURCE_IRI>`/`<CONFIRM_GRAIN_KEY_COLUMN>`/
@@ -83,7 +86,7 @@ between the sources, not the pattern that happens to be more familiar:
 
 - **Survivorship (competing sources).** Two or more sources supply the same
   attributes for overlapping keys and only one row per key may win. Union the
-  cleaned `stg_*` models, rank with `kairos_survivor` over a mandatory total
+  per-source `int_<source>__*` models, rank with `kairos_survivor` over a mandatory total
   order (`priority_column` plus deterministic tiebreaks), and keep the rank-1
   row per natural key. This is the existing pattern the toolkit macros above
   already support.
@@ -106,8 +109,8 @@ between the sources, not the pattern that happens to be more familiar:
       b.route_code,
       a.order_id is not null as in_source_a,
       b.order_id is not null as in_source_b
-  from {{ ref('stg_source_a__orders') }} as a
-  full outer join {{ ref('stg_source_b__orders') }} as b
+  from {{ ref('int_source_a__orders') }} as a
+  full outer join {{ ref('int_source_b__orders') }} as b
       on a.order_id = b.order_id
   ```
 
@@ -116,7 +119,7 @@ between the sources, not the pattern that happens to be more familiar:
 
 Both strategies still author a single contracted `int_merged__<entity>` model
 with one output grain and one properties YAML — the choice only changes the
-SQL between the `stg_*` union and the final select.
+SQL between the `int_<source>__*` union and the final select.
 
 ## Seeds for static reference data (issue #586)
 

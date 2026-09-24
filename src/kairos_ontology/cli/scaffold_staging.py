@@ -39,13 +39,14 @@ import click
     "and the merged model's common columns, and named in the stage header comment (#758).",
 )
 def scaffold_staging_cmd(entity, domain, sources, force, dry_run, include_pii):
-    """Scaffold first-class stg_<source>__<entity> + int_merged__<entity> staging (issue #399, #616).
+    """Scaffold stg_<source>__<entity> -> int_<source>__<entity> -> int_merged__<entity> (issue #399, #616, #949).
 
-    kairos-develop-dbt-transformation/SKILL.md already documents this layering -- one
-    stg_<source>__<entity> model per contributing source, feeding one merged survivorship
-    model -- as a convention with no tooling behind it. This writes the starter SQL +
-    properties YAML for each stage (reusing the same per-table staging SELECT
-    scaffold-binding's passthrough archetype already generates) plus the merged model.
+    The three layers kairos-develop-dbt-transformation/SKILL.md states as rules: per
+    source, a stg_<source>__<entity> clean-and-cast of one table and an
+    int_<source>__<entity> passthrough where that source's joins, filters, rankings and
+    code mapping go; then one int_merged__<entity> that only combines the int_ models.
+    This writes the starter SQL + properties YAML for each (the stage reuses the same
+    per-table staging SELECT scaffold-binding's passthrough archetype already generates).
 
     With two or more --source entries, the merged model is a survivorship skeleton with
     sentinel placeholders for the judgment a human must confirm (natural key, priority
@@ -96,6 +97,7 @@ def scaffold_staging_cmd(entity, domain, sources, force, dry_run, include_pii):
     click.echo(f"✅ {verb} {len(result.stages)} stage(s) + 1 merged model for '{entity}':")
     for stage in result.stages:
         click.echo(f"   - {stage.model_name}: {stage.sql_path}")
+        click.echo(f"     {stage.intermediate_name}: {stage.intermediate_sql_path}")
     click.echo(f"   - {result.merged_model_name}: {result.merged_sql_path}")
     click.echo(
         f"   Common columns across every stage ({len(result.common_columns)}): "
