@@ -260,6 +260,21 @@ class TestGate:
         )
         assert undecided_unanchored_tables(hub) == []
 
+    def test_a_column_grain_disposition_does_not_decide_the_table(self, tmp_path):
+        """Deciding one column says nothing about whether the table has a home (#948)."""
+        hub = self._hub(tmp_path)
+        from kairos_ontology.core.source_disposition import record_disposition
+
+        record_disposition(
+            hub_root=hub,
+            system="src",
+            table="stops",
+            column="stop_note",
+            disposition="not-business-data",
+            rationale="free text",
+        )
+        assert len(undecided_unanchored_tables(hub)) == 1
+
     def test_domain_scope_is_respected(self, tmp_path):
         hub = self._hub(tmp_path)
         assert undecided_unanchored_tables(hub, domains=["consignment"])

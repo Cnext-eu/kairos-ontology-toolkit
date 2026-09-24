@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-96 commands.
+97 commands.
 
 ## Index
 
@@ -105,6 +105,7 @@ not reasoning.
 | [`show-class-inventory`](#show-class-inventory) | Print a versioned semantic-index class slice as JSON. |
 | [`show-source-schema`](#show-source-schema) | Print the parsed source vocabulary for one source system as JSON. |
 | [`source-disposition`](#source-disposition) | Record what the hub decided to do with each source table (DD-164). |
+| [`source-disposition clear`](#source-disposition-clear) | Withdraw recorded dispositions -- as auditable as recording them. |
 | [`source-disposition list`](#source-disposition-list) | Show every source table's decision state, and what is still undecided. |
 | [`source-disposition set`](#source-disposition-set) | Record one table's disposition in the hub ledger. |
 | [`source-privacy`](#source-privacy) | Check or sanitize persisted source sample artifacts without exposing values. |
@@ -1540,6 +1541,25 @@ kairos-ontology source-disposition [OPTIONS] COMMAND [ARGS]...
 ```
 
 
+## source-disposition clear
+
+Withdraw recorded dispositions -- as auditable as recording them.
+
+```
+kairos-ontology source-disposition clear [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--system` |  | Withdraw only entries for this source system. |
+| `--table` |  | With --system: only entries for this table. |
+| `--column` |  | Only the entry for this column. Without it, both table- and column-grain entries of the matching tables are withdrawn. |
+| `--table-grain-only` |  | Only table-grain entries, e.g. every table-grain 'deferred' recorded before #881. |
+| `--disposition` |  | Withdraw only entries with this disposition. |
+| `--decided-by` |  | Withdraw only entries recorded by this decider (e.g. every 'autopilot' answer). |
+| `--dry-run` |  | Report what would be removed. |
+
+
 ## source-disposition list
 
 Show every source table's decision state, and what is still undecided.
@@ -1565,9 +1585,9 @@ kairos-ontology source-disposition set [OPTIONS]
 |---|---|---|
 | `--system` | **required** | Source system the table belongs to. |
 | `--table` | **required** | Physical table name (source.relation's suffix). |
-| `--column` | `` | Decide one column rather than the whole table. A table-grain decision already covers every column in it. |
+| `--column` | `` | Decide one column rather than the whole table. A table-grain decision covers the table's columns only for 'not-business-data' and 'blueprint-gap' (#881). |
 | `--all-tables` |  | With --column: record the same decision for every table where that column is an undecided gap. The same column name recurs because the same business fact does, so it is one decision, not N. |
-| `--disposition` | **required** | What the hub decided to do with this table. A TABLE-grain decision retires every gap column in that table from the DD-169 pre-binding gate, so they are never raised again -- including after the table is bound (#881). That is intended for 'not-business-data' (the table is not business data, so neither are its columns) and defensible for 'blueprint-gap'. It is a trap for 'deferred', which means 'in scope, not modelled yet' -- exactly what the gate exists to keep asking about. Prefer --column, or draft-gap-decisions, when the columns still need deciding. |
+| `--disposition` | **required** | What the hub decided to do with this table. A TABLE-grain 'not-business-data' or 'blueprint-gap' also retires every gap column in that table from the DD-169 pre-binding gate: the table is not business data, or the reference model is missing what its columns need. Any other table-grain value -- 'deferred', 'bound', 'registered-extension' -- decides the table only; the gate keeps raising its gap columns until each is decided with --column or draft-gap-decisions (#881). |
 | `--rationale` | `` | Why. Required for a non-obvious disposition. |
 | `--decided-by` | `user` | Who made this call, so a reviewer can weight it. |
 | `--evidence` | `Sentinel.UNSET` | Supporting evidence locator (row counts, a report, a column list). Repeatable. |

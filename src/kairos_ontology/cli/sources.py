@@ -3470,29 +3470,35 @@ def _cascade_warning(hub_root, system: str, table: str, disposition: str) -> lis
     # which dispositions cascade -- they are two views of one rule (#881).
     from ..core.source_disposition import CASCADING_DISPOSITIONS
 
+    cascades = disposition in CASCADING_DISPOSITIONS
     covered = _gap_columns_for_table(hub_root, system, table)
     if covered is None:
+        if cascades:
+            return [
+                "  ⚠ alignment has not covered this table, so nothing yet knows which of",
+                "    its columns carry business data with no canonical home — and this",
+                "    decision already answers for all of them. Consider 'propose-alignment'",
+                "    first.",
+            ]
         return [
-            "  ⚠ alignment has not covered this table, so nothing yet knows which of its",
-            "    columns carry business data with no canonical home — and this decision",
-            "    already answers for all of them. Consider 'propose-alignment' first.",
+            "  ℹ alignment has not covered this table yet. Once 'propose-alignment' has,",
+            "    the DD-169 pre-binding gate raises its gap columns one by one: a",
+            f"    table-grain '{disposition}' does not answer for them (#881).",
         ]
     if not covered:
         return []
-    if disposition in CASCADING_DISPOSITIONS:
+    if cascades:
         return [
             f"  ℹ {len(covered)} gap column(s) retired with the table, which is what",
             f"    '{disposition}' means.",
         ]
+    # Since #881 only the cascading dispositions answer for a table's columns. Saying
+    # these columns were decided here was the message the gate stopped honouring (#948).
     return [
-        f"  ⚠ {len(covered)} gap column(s) in this table now count as DECIDED. The DD-169",
-        "    pre-binding gate will not raise them again — including after you bind this",
-        "    table.",
-        f"    '{disposition}' means \"in scope, not modelled yet\", but the gate cannot",
-        "    tell that apart from \"out of scope\".",
-        "    Keep them in review:  kairos-ontology draft-gap-decisions --suggest",
-        "    Undo:                 kairos-ontology source-disposition clear "
-        f"--system {system} --table {table}",
+        f"  ℹ {len(covered)} gap column(s) in this table still need a decision each. A",
+        f"    table-grain '{disposition}' does not answer for its columns (#881), so the",
+        "    DD-169 pre-binding gate keeps raising them.",
+        "    Decide them:  kairos-ontology draft-gap-decisions --suggest",
     ]
 
 
@@ -3552,8 +3558,8 @@ def _alignment_covers_table(hub_root, system: str, table: str) -> bool:
 @click.option(
     "--column",
     default="",
-    help="Decide one column rather than the whole table. A table-grain decision "
-    "already covers every column in it.",
+    help="Decide one column rather than the whole table. A table-grain decision covers "
+    "the table's columns only for 'not-business-data' and 'blueprint-gap' (#881).",
 )
 @click.option(
     "--all-tables",
@@ -3567,13 +3573,12 @@ def _alignment_covers_table(hub_root, system: str, table: str) -> bool:
     "--disposition",
     required=True,
     type=click.Choice(sorted(_DISPOSITION_CHOICES())),
-    help="What the hub decided to do with this table. A TABLE-grain decision retires "
-    "every gap column in that table from the DD-169 pre-binding gate, so they are never "
-    "raised again -- including after the table is bound (#881). That is intended for "
-    "'not-business-data' (the table is not business data, so neither are its columns) "
-    "and defensible for 'blueprint-gap'. It is a trap for 'deferred', which means 'in "
-    "scope, not modelled yet' -- exactly what the gate exists to keep asking about. "
-    "Prefer --column, or draft-gap-decisions, when the columns still need deciding.",
+    help="What the hub decided to do with this table. A TABLE-grain 'not-business-data' "
+    "or 'blueprint-gap' also retires every gap column in that table from the DD-169 "
+    "pre-binding gate: the table is not business data, or the reference model is "
+    "missing what its columns need. Any other table-grain value -- 'deferred', 'bound', "
+    "'registered-extension' -- decides the table only; the gate keeps raising its gap "
+    "columns until each is decided with --column or draft-gap-decisions (#881).",
 )
 @click.option("--rationale", default="", help="Why. Required for a non-obvious disposition.")
 @click.option(
@@ -3693,6 +3698,81 @@ def source_disposition_list_cmd(output_format: str) -> None:
         click.echo(f"   {marker} {item.message}")
     for notice in report.notices:
         click.echo(f"   ℹ {notice}")
+
+
+@source_disposition_group.command(name="clear")
+@click.option("--system", default=None, help="Withdraw only entries for this source system.")
+@click.option("--table", default=None, help="With --system: only entries for this table.")
+@click.option(
+    "--column",
+    default=None,
+    help="Only the entry for this column. Without it, both table- and column-grain "
+    "entries of the matching tables are withdrawn.",
+)
+@click.option(
+    "--table-grain-only",
+    is_flag=True,
+    default=False,
+    help="Only table-grain entries, e.g. every table-grain 'deferred' recorded before #881.",
+)
+@click.option(
+    "--disposition",
+    default=None,
+    type=click.Choice(sorted(_DISPOSITION_CHOICES())),
+    help="Withdraw only entries with this disposition.",
+)
+@click.option(
+    "--decided-by",
+    default=None,
+    help="Withdraw only entries recorded by this decider (e.g. every 'autopilot' answer).",
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Report what would be removed.")
+def source_disposition_clear_cmd(
+    system: str | None,
+    table: str | None,
+    column: str | None,
+    table_grain_only: bool,
+    disposition: str | None,
+    decided_by: str | None,
+    dry_run: bool,
+) -> None:
+    """Withdraw recorded dispositions -- as auditable as recording them."""
+    from ..core.hub_utils import find_hub_root
+    from ..core.source_disposition import clear_dispositions, load_dispositions
+
+    if table and not system:
+        raise click.ClickException("--table needs --system.")
+    if column is not None and table_grain_only:
+        raise click.ClickException("--column and --table-grain-only are mutually exclusive.")
+    if not any((system, column is not None, table_grain_only, disposition, decided_by)):
+        raise click.ClickException(
+            "Give at least one of --system, --column, --table-grain-only, --disposition, "
+            "--decided-by."
+        )
+    hub_root = find_hub_root(Path.cwd(), require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+    tables: set[tuple[str, str]] | None = None
+    if system:
+        tables = {
+            (s, t)
+            for (s, t, _c) in load_dispositions(hub_root)
+            if s == system and (table is None or t == table)
+        }
+    outcome = clear_dispositions(
+        hub_root,
+        tables=tables,
+        column="" if table_grain_only else column,
+        disposition=disposition,
+        decided_by=decided_by,
+        dry_run=dry_run,
+    )
+    verb = "would remove" if dry_run else "removed"
+    click.echo(f"✓ {verb} {outcome['removed']} entr(y/ies), {outcome['kept']} kept")
+    for key, count in sorted(outcome["by_table"].items()):
+        click.echo(f"   - {key}: {count}")
 
 
 @click.command(name="build-glossary")

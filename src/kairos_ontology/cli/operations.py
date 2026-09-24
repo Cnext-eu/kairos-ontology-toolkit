@@ -297,6 +297,44 @@ def _migrate_dataplatform_custom_models(repo_root: Path, check: bool) -> None:
     )
 
 
+def _report_non_cascading_table_dispositions(repo_root: Path) -> None:
+    """Say which table-grain dispositions no longer answer for their columns (#948).
+
+    Before #881 any table-grain entry retired its table's gap columns from the DD-169
+    gate. Since then only ``not-business-data`` and ``blueprint-gap`` do, so a hub that
+    recorded table-grain ``deferred`` or ``bound`` finds the gate blocking on columns it
+    believes are decided. Read-only, so it runs the same with and without ``--check``.
+    """
+    from ..core.alignment_report import undecided_gap_columns
+    from ..core.hub_utils import find_hub_root
+    from ..core.source_disposition import load_dispositions, non_cascading_table_entries
+
+    hub_root = find_hub_root(repo_root, require_model=False)
+    if hub_root is None:
+        return
+    entries = non_cascading_table_entries(load_dispositions(hub_root))
+    if not entries:
+        return
+    tables = {(str(e.get("system") or ""), str(e.get("table") or "")) for e in entries}
+    try:
+        undecided = [
+            c for c in undecided_gap_columns(hub_root) if (c.system, c.table) in tables
+        ]
+    except Exception:  # defensive: a broken alignment is validate's problem, not update's
+        return
+    if not undecided:
+        return
+    print(
+        f"⚠  {len(entries)} table-grain disposition(s) (deferred / bound / "
+        f"registered-extension) no longer decide their tables' columns (#881): "
+        f"{len(undecided)} gap column(s) in those tables are undecided for the DD-169 gate."
+    )
+    print(
+        "   Decide them with `kairos-ontology draft-gap-decisions --suggest`, then "
+        "`--apply`."
+    )
+
+
 @click.command()
 @click.option(
     "--check",
@@ -846,6 +884,12 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
 
     git_hygiene_created = [] if check else _create_missing_git_hygiene(repo_root)
     git_hygiene_gaps = _git_hygiene_gaps(repo_root)
+
+    # --- Table-grain dispositions the #881 gate no longer honours (#948) -----
+    # Advisory only: printed before the report so `--check` shows it too, and never
+    # flips the exit code -- it is about authored decisions, not managed-file drift.
+    if not is_dataplatform:
+        _report_non_cascading_table_dispositions(repo_root)
 
     # --- Report -------------------------------------------------------------
     if check:

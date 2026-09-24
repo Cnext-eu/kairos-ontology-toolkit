@@ -283,7 +283,53 @@ def _dbt_model_source_pairs(source: dict[str, Any], hub_root: Path) -> set[tuple
     return set(extract_source_pairs(text))
 
 
-def load_dispositions(hub_root: Path) -> dict[tuple[str, str], dict[str, Any]]:
+def column_decision(
+    recorded: dict[tuple[str, str, str], dict[str, Any]],
+    system: str,
+    table: str,
+    column: str,
+) -> dict[str, Any] | None:
+    """The ledger entry that decides one column for the DD-169 gate, or ``None``.
+
+    The one definition of "this column is decided" (#948). A column-grain entry always
+    decides it; a table-grain entry decides it only when its disposition is in
+    :data:`CASCADING_DISPOSITIONS` (#881). The gate, the decision sheet and the
+    auto-disposition pass all ask this, so a helper that reports nothing to decide
+    while the gate blocks cannot happen again.
+
+    ``recorded`` is :func:`load_dispositions` output.
+    """
+    if column:
+        entry = recorded.get((system, table, column))
+        if entry is not None:
+            return entry
+    table_entry = recorded.get((system, table, ""))
+    if (
+        table_entry is not None
+        and str(table_entry.get("disposition") or "") in CASCADING_DISPOSITIONS
+    ):
+        return table_entry
+    return None
+
+
+def non_cascading_table_entries(
+    recorded: dict[tuple[str, str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Table-grain entries that no longer answer for their table's columns (#881, #948).
+
+    A hub that recorded table-grain ``deferred``, ``bound`` or ``registered-extension``
+    before #881 had those entries silence the DD-169 gate for every column in the table.
+    They no longer do, so on upgrade the gate starts blocking on columns the operator
+    believes are decided. ``update`` reports them so the change is not a surprise.
+    """
+    return [
+        entry
+        for (_system, _table, column), entry in sorted(recorded.items())
+        if not column and str(entry.get("disposition") or "") not in CASCADING_DISPOSITIONS
+    ]
+
+
+def load_dispositions(hub_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
     """Read the disposition ledger, or ``{}`` when the hub has not written one yet."""
     path = Path(hub_root) / DISPOSITIONS_RELPATH
     if not path.is_file():
@@ -427,6 +473,7 @@ def clear_dispositions(
     hub_root: Path,
     *,
     tables: set[tuple[str, str]] | None = None,
+    column: str | None = None,
     disposition: str | None = None,
     decided_by: str | None = None,
     dry_run: bool = False,
@@ -440,7 +487,8 @@ def clear_dispositions(
 
     Filters are conjunctive and all optional; ``decided_by`` is the important one
     in practice, because it lets an agent's blanket answers be withdrawn without
-    touching a decision a human actually made.
+    touching a decision a human actually made. ``column`` matches one column-grain
+    entry by name; ``""`` matches table-grain entries only.
     """
     path = Path(hub_root) / DISPOSITIONS_RELPATH
     if not path.is_file():
@@ -455,6 +503,8 @@ def clear_dispositions(
         if tables is not None:
             if (str(entry.get("system") or ""), str(entry.get("table") or "")) not in tables:
                 return False
+        if column is not None and str(entry.get("column") or "") != column:
+            return False
         if disposition is not None and str(entry.get("disposition") or "") != disposition:
             return False
         if decided_by is not None and str(entry.get("decided_by") or "") != decided_by:

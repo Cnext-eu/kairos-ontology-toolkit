@@ -191,6 +191,69 @@ class TestDecisionSheet:
             for i in range(3)
         )
 
+    def test_table_grain_deferred_does_not_empty_the_sheet(self, tmp_path):
+        """#948: the gate blocks on these columns, so the sheet must list them."""
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+        from kairos_ontology.core.source_disposition import record_disposition
+
+        hub = self._hub_with_gaps(tmp_path)
+        record_disposition(hub_root=hub, system="qargo", table="companies",
+                           disposition="deferred", rationale="later", decided_by="user")
+
+        sheet = build_decision_sheet(hub)
+
+        gate = undecided_gap_columns(hub)
+        assert gate, "a table-grain deferred must not satisfy the gate (#881)"
+        assert sheet["summary"]["source_columns_covered"] == len(gate)
+
+    @pytest.mark.parametrize("table_disposition", sorted(DISPOSITIONS))
+    def test_sheet_and_gate_agree_for_every_table_disposition(self, tmp_path, table_disposition):
+        """One rule decides a column, so the sheet can never drift from the gate again."""
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+        from kairos_ontology.core.source_disposition import record_disposition
+
+        from kairos_ontology.core.source_disposition import DISPOSITIONS_RELPATH
+
+        hub = self._hub_with_gaps(tmp_path)
+        # Written directly: a hub upgraded from before #881 holds table-grain values,
+        # `bound` among them, that record_disposition no longer accepts.
+        (hub / DISPOSITIONS_RELPATH).write_text(yaml.safe_dump({"schema_version": 1, "tables": [
+            {"system": "qargo", "table": "companies", "disposition": table_disposition},
+        ]}), encoding="utf-8")
+        record_disposition(hub_root=hub, system="qargo", table="companies",
+                           column="OrderNo", disposition="blueprint-gap", rationale="r")
+
+        covered = build_decision_sheet(hub)["summary"]["source_columns_covered"]
+        assert covered == len(undecided_gap_columns(hub))
+
+    def test_apply_leaves_an_already_decided_occurrence_alone(self, tmp_path):
+        from kairos_ontology.core.source_disposition import record_disposition
+
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "party-alignment.yaml").write_text(
+            yaml.safe_dump({"domain": "party", "tables": [
+                {"system": "qargo", "table": f"t{i}", "ref_class": "C", "columns": [],
+                 "custom_columns": [{"column": "OrderNo", "data_type": "int"}]}
+                for i in range(2)
+            ]}),
+            encoding="utf-8",
+        )
+        sheet = build_decision_sheet(tmp_path)
+        for entry in sheet["decisions"]:
+            entry["decision"] = "blueprint-gap"
+        write_decision_sheet(tmp_path, sheet)
+        record_disposition(hub_root=tmp_path, system="qargo", table="t0", column="OrderNo",
+                           disposition="deferred", rationale="human", decided_by="user")
+
+        stats = apply_decision_sheet(tmp_path)
+
+        assert stats["columns_written"] == 1
+        assert stats["skipped_already_decided"] == 1
+        recorded = load_dispositions(tmp_path)
+        assert recorded[("qargo", "t0", "OrderNo")]["decided_by"] == "user"
+        assert recorded[("qargo", "t1", "OrderNo")]["disposition"] == "blueprint-gap"
+
     def test_an_invalid_disposition_is_refused_before_anything_is_written(self, tmp_path):
         hub = self._hub_with_gaps(tmp_path)
         sheet = build_decision_sheet(hub)
@@ -204,7 +267,8 @@ class TestDecisionSheet:
         hub = self._hub_with_gaps(tmp_path)
         write_decision_sheet(hub, build_decision_sheet(hub))
         assert apply_decision_sheet(hub) == {
-            "names_applied": 0, "families_applied": 0, "columns_written": 0}
+            "names_applied": 0, "families_applied": 0, "columns_written": 0,
+            "skipped_already_decided": 0}
 
     def test_apply_without_a_sheet_is_an_explicit_error(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="Draft one first"):
