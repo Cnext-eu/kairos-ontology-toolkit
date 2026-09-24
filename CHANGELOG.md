@@ -60,6 +60,194 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.22.0rc5] — 2026-09-24
+
+Fifth release candidate for 5.22.0. It adds two things on top of rc4:
+
+- Tables bound through `source.dbtModel` count as decided for the DD-180 gate (#973).
+- The Power BI Best Practice Analyzer work (DD-238, #976 to #983): a Kairos-owned rule
+  profile, bridge filter direction, measure display names and data types, a proper date
+  table, BPA diagnostics in `compile --check`, and an advisory post-deploy check in the
+  dataplatform.
+
+**Upgrade notes.**
+
+- A measure that references a column without its table, e.g. `SUM([total_amount])`, now
+  fails `compile --check` with `gold.dax-column-unqualified`. Write
+  `SUM(fact_invoice[total_amount])`, or record a `kairos-ext:bpaIgnoreRule` with its reason.
+- Hubs with an approved calendar get a re-keyed `dim_date` (`isKey` moves to `full_date`).
+  Hubs with a many-to-many bridge get a bidirectional edge on its fact side. Numbers through
+  that bridge change, from wrong to right. Republish the model.
+- Dataplatforms: run `kairos-ontology update --refresh-workflows` to receive the fixed deploy
+  workflow and the advisory BPA notebook.
+
+### Added
+- **A Kairos-owned Power BI Best Practice Analyzer profile (DD-238).** Every rule in
+  Microsoft's `BPARules.json` now has one recorded disposition per target (Fabric Direct
+  Lake, Databricks DirectQuery): guaranteed by construction, checked at compile time,
+  asserted at render, advisory after deploy, not applicable, or rejected with the decision it
+  contradicts. The rules are vendored at a pinned upstream commit and refreshed by hand; a
+  test fails until any new or changed upstream rule is triaged. The full table is in
+  `docs/guide/BPA_PROFILE.md`.
+- **`kairos-ext:bpaIgnoreRule` records an exception to one BPA rule for one object**, as
+  `"<RULE_ID> on <model|table|column|measure|relationship> [<target>]: <reason>"` on the Gold
+  extension's `owl:Ontology` resource. The reason is mandatory. The exception is emitted as
+  the `BestPracticeAnalyzer_IgnoreRules` annotation Tabular Editor honours, and listed under `bpa_exceptions` in the product report. An unknown rule, a rule
+  that cannot apply to that kind of object, or a target the product does not emit is
+  rejected.
+- The Gold provenance sidecar records the BPA profile version and upstream commit under
+  `bpaProfile`.
+- **`kairos-ext:goldRelationshipCrossFilter "Table.column -> Table.column = both|single"`**
+  decides one relationship's filter direction, fail-closed on an edge the product does not
+  emit. Bidirectional edges and why are listed under `bidirectional_relationships` in the
+  product report.
+- **`kairos-ext:measureDisplayName` gives a measure the name report users see.** Measures
+  were named by their `measureId` (e.g. `'invoice.total-amount'`) in the field list. The
+  display name now names the measure in the model, while `measureId` stays the stable key
+  and still seeds the lineageTag, so Fabric treats a rename as an edit. Without one the
+  measure keeps its ID as its name, byte-identical. Another measure's DAX must reference it
+  by the display name; a reference by ID fails with `gold.dax-measure-reference-by-id` and
+  names the reference to write. Invalid or colliding names fail
+  (`gold.measure-display-name-invalid`, `gold.measure-display-name-collision`).
+- **`compile --check` now reports BPA findings in Gold measures and columns (DD-238).**
+  Two block, because they are exact for the references a measure declares:
+  `gold.dax-column-unqualified` (a column referenced as `[amount]` instead of
+  `fact_sale[amount]`) and `gold.dax-measure-qualified` (a measure referenced with a table
+  prefix). Three warn: `gold.description-missing` (visible columns without an ontology
+  `rdfs:comment`, one warning per table), `gold.float-column` and
+  `gold.dax-division-operator`. String literals and comments are never read as references.
+  A `kairos-ext:bpaIgnoreRule` with its reason excuses one object; an exception excusing
+  nothing fails with `gold.bpa-ignore-unused`.
+- **`emit-gold` and `package-powerbi-release` assert the profile's guarantees on the
+  rendered model**: a marked date table with a DateTime key, a sorted `month_name`, visible
+  numbers never summarized, every column sourced, every measure with an expression and a
+  format string, no control characters in descriptions, and no active relationship between
+  columns of different types.
+- **The dataplatform checks the deployed semantic model against Best Practice Analyzer
+  rules, advisory and never blocking (DD-238).** Some rules need a live model with data:
+  cardinality, referential-integrity violations, Direct Lake guardrails and fallback to
+  DirectQuery. `init-dataplatform` now scaffolds `fabric/KairosModelBpa.Notebook`, which runs
+  Semantic Link Labs' `run_model_bpa(extended=True)` and, on Direct Lake, the guardrail and
+  fallback checks. It maps each finding to its Microsoft rule ID and the Kairos profile's
+  disposition, and applies the model's own `BestPracticeAnalyzer_IgnoreRules` annotations,
+  which Semantic Link Labs does not read. Findings are appended to a `kairos_bpa_findings`
+  lakehouse table when the `FABRIC_BPA_LAKEHOUSE_ID`/`_NAME` repository variables are set.
+- `deploy-powerbi-semantic-model.yml` gains a `run_bpa_advisory` input (default on) and a
+  `continue-on-error` step after publishing that deploys and runs the notebook. It is
+  read-only over the model and exits cleanly when the notebook is absent or the workspace has
+  no Fabric, Premium or PPU capacity. That is typical for a Databricks DirectQuery model in a
+  Pro workspace, which gets a manual check instead. Fix findings in the hub, never in the
+  deployed model.
+- The `semantic-link-labs` pin (0.17.1) is owned by the toolkit and moves only with a release.
+  Existing dataplatforms receive the notebook and the updated workflow with
+  `kairos-ontology update --refresh-workflows`.
+
+### Changed (BREAKING for hubs whose measures reference columns unqualified)
+- A measure written `SUM([total_amount])` -- the form the scaffold template used to teach --
+  now fails `compile --check`. Qualify the reference (`SUM(fact_invoice[total_amount])`), or
+  record a `bpaIgnoreRule` with the reason the rule does not hold.
+
+### Changed (model change for hubs with an approved calendar)
+- **`dim_date` is now keyed on `full_date`, so Power BI recognises it as a date table.** The
+  semantic model put `isKey` on the Int64 `date_key` while every calendar role
+  relationship joined `full_date`, so the table never counted as a date table (BPA
+  `MODEL_SHOULD_HAVE_A_DATE_TABLE`). `isKey` now sits on the DateTime `full_date`. The
+  warehouse is unchanged: the DDL, the ERD and the dbt tests still key on `date_key`. In
+  Fabric this re-keys `dim_date`; republish the model after upgrading (DD-238).
+- **Calendar columns render like every other table's.** Each now carries
+  `summarizeBy: none`, so year and month numbers no longer default to Sum, and a
+  deterministic lineageTag, so a calendar column is the same object across emits.
+  `month_name` sorts by `month_number` instead of alphabetically. Hubs without an approved
+  calendar are unaffected.
+
+### Fixed
+- **A table a binding reads no longer blocks `compile` as an undecided unanchored table
+  (#973).** Since #948, the DD-180 gate counted only table-grain ledger rows as decisions.
+  It never looked at bindings, so a table that is bound but has no reference-class
+  anchor could not be cleared by any command:
+  - `source-disposition set --disposition bound` is refused, because the binding is
+    what states it.
+  - `deferred` makes `validate` fail with `disposition.bound-and-ruled-out`.
+  - `not-business-data` un-decides the bound join columns.
+
+  The gate now uses `load_bound_relations`, the same check as the DD-164 audit, so
+  `compile` and `validate` agree on which tables are bound. Hand-written table-grain
+  `bound` rows added as a workaround are no longer needed and can be removed.
+- **`source.dbtModel` bindings count the tables their whole `ref()` chain reads (#973).**
+  Before, only the selected model's own SQL was scanned. Under the three-layer rule
+  (#949), the `int_merged__` model a binding selects reads no `source()` itself; the
+  `stg_` stages two `ref()` levels down do. Scanning one model therefore found none of
+  the tables, and all of them were reported as unbound. The chain is now followed. A
+  `ref()` that matches no model, or more than one, ends that branch without an error;
+  `compile` still reports it.
+- **A many-to-many bridge now lets a filter on its far endpoint reach the fact.** Every
+  relationship was emitted single-direction, so in Fact -> DimA <- Bridge -> DimB a slicer
+  on DimB stopped at the bridge and the model returned wrong numbers for that path. The
+  bridge's edge towards its fact-side endpoint (a fact, or the dimension a fact joins) is
+  now emitted `crossFilteringBehavior: bothDirections`, with the BPA annotation recording
+  that it was checked. When no single endpoint is on the fact side the projector does not
+  guess: it leaves the bridge single-direction and lists it under
+  `undecided_bridge_filters` in the product report. Numbers through a bridge path change,
+  from wrong to right; models without bridges are byte-identical (DD-238).
+- **Measures carry their `dataType`.** `measureDataType` was mandatory past `intent` but only
+  reached the product report. It now renders in the TMDL (`currency` as decimal,
+  `percentage` as double).
+- **A multi-line `measureExpression` no longer breaks the model.** It was written inline and
+  unescaped, so its second line was read as a property. It is now emitted as a TMDL
+  triple-backtick block, which TOM deserializes and `harvest-gold` reads back unchanged.
+- The scaffold's example measure and the acme scenario now show the best-practice form: a
+  display name and table-qualified column references (DD-238).
+- **An authored-policy failure in Gold keeps its own code.** A provisional measure missing
+  `measureDataType`, for example, surfaced as `safety.type-incompatible: projection
+  normalization failed` at the hub root. It now reports
+  `measure.incomplete-semantic-contract` with its rule, located at the domain's Gold
+  extension.
+- Descriptions drop control characters before they reach the TMDL.
+- **Perspectives are no longer empty.** A perspective was emitted as bare `perspectiveTable`
+  lines with no members, which Tabular Editor's Best Practice Analyzer, run against the acme
+  model, reported as a perspective with no objects. Each perspective now lists every column and
+  emitted measure of the tables it declares, as Desktop writes them.
+- **A relationship whose columns have different types is dropped and reported, not
+  emitted.** A fact with no surrogate key fell back to its first non-nullable column
+  (`_source_system`, a string), and an integer foreign key was joined to it as an inactive
+  relationship. Direct Lake refuses such a relationship, even inactive. It is now listed under
+  `dropped_relationships` in the product report, and the render assertion covers inactive
+  relationships too.
+- **The dataplatform deploy workflow now installs uv before running `kairos-ontology`.**
+  `deploy-powerbi-semantic-model.yml` ran `uv run kairos-ontology apply-gold-connection`
+  in a job that never installed uv or synced the locked environment, so a deploy failed
+  before publishing anything. The job now runs `astral-sh/setup-uv` (the same pinned
+  version as `pr-validate.yml`) and `uv sync --locked` first. Existing dataplatforms
+  receive the fix through `update`: the previous workflow generation is recorded, so an
+  untouched copy refreshes automatically instead of reporting "customized". (#983)
+
+### Documentation
+- **The BPA profile reaches the people who design and ship the model (DD-238).**
+  - `kairos-design-gold` gains a "best practice by design" section. For each measure it asks
+    for a display name, a description, a format string and qualified DAX. For each bridge it
+    asks which way filters flow. It gives the Direct Lake and DirectQuery differences, and
+    says which checks block, which warn and which run after deploy.
+  - `kairos-package-dataplatform`, `kairos-setup-dataplatform` and the dataplatform `CICD.md`
+    describe the advisory post-deploy run, including the manual check for a Pro workspace. Its
+    findings go back to the hub as authoring.
+  - `kairos-toolkit-ops` adds the manual release-checklist step to refresh the vendored
+    `BPARules.json` and the `semantic-link-labs` pin.
+  - The CLI reference lists the new `compile --check` and `emit-gold` codes.
+  - `BPA_PROFILE.md` now ships to hubs as `docs/toolkit/BPA_PROFILE.md`.
+
+### Decisions
+- **DD-238** — Kairos owns a curated BPA profile rather than running Tabular Editor in CI,
+  and the semantic model is best practice by design: the design skill advises, the compiler
+  and emitter enforce what they can, and the dataplatform checks what needs data after
+  deploy, without blocking it. DD-224's open question on best-practice rules now points here.
+
+### Notes
+- Bridge edges keep TOM's many-to-one default. `bridgeCardinality` describes the relation
+  between the two endpoints, not either edge, and rendering it onto an edge would declare the
+  endpoint's unique key non-unique. `relyOnReferentialIntegrity` is deliberately not emitted
+  on Databricks: a unique key does not prove every fact-side key resolves, and Silver leaves
+  an unmatched key null, which an inner join would silently drop (DD-238).
+
 ## [5.22.0rc4] — 2026-09-24
 
 Fourth release candidate for 5.22.0. It adds two things on top of rc3:
