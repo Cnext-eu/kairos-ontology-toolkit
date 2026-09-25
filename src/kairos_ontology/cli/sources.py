@@ -1240,6 +1240,11 @@ def audit_silver_samples_cmd(sources, mappings, bindings, dbt_output, output, fa
             f"{report.sampled_mapped_columns} with samples "
             f"({report.sample_coverage_ratio:.0%} coverage)"
         )
+    if report.bi_demand_columns:
+        click.echo(
+            f"   Power BI demand: {report.bi_demand_reachable} of {report.bi_demand_columns} "
+            f"column(s) reachable from Silver ({report.bi_demand_coverage_ratio:.0%})"
+        )
     click.echo(
         f"   Findings: {counts['error']} error(s), "
         f"{counts['warning']} warning(s), {counts['info']} info"

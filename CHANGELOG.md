@@ -67,6 +67,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`audit-silver-samples` reports how much of the imported Power BI demand Silver
+  carries** (#942). "Demand" means every relationship key and measure input in
+  `integration/discovery/bi/*-concept-mapping.yaml`. A column counts as reachable when its
+  normalised name matches a Silver column, a mapped source column or a mapped property.
+  - The summary gains `bi_demand_columns`, `bi_demand_reachable` and
+    `bi_demand_coverage_ratio`. They appear only when the hub has BI evidence.
+  - A new warning, `bi_demand_unreachable`, is raised once per BI table.
+
+  A hub whose headline fact cannot be built no longer audits clean.
+- **`validate` warns about a declared property a Power BI model uses but no binding
+  populates** (`bi-demand.property-unbound`, #942). Example: the category property a BI
+  fact splits on, declared in the ontology and bound by nothing. It is a name match, so it
+  is a warning only.
+
 ## [5.23.0] — 2026-09-25
 
 Relationship cardinality (DD-241, #999) and a faster hub PR gate (#998).
