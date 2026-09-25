@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The reference Silver DDL (`analyses/<domain>/<domain>-ddl.sql`) is valid SQL again**
+  (#1005). A column with a description put the separating comma after its inline `--`
+  comment, which commented the comma out, so no `CREATE TABLE` with a described column ran.
+  The comma now comes before the comment. dbt never runs `analyses/`, so no model changes;
+  the next `compile --emit` rewrites the DDL files.
+- **`compile --emit` is idempotent for the shared source catalogs** (#1009). The first emit
+  wrote `models/silver/_<source>__sources.yml` in the template's layout and every later emit
+  re-serialized it through the cross-domain union, so the PR drift gate failed on a hub
+  that committed a fresh emit. Both paths now write one canonical layout, and the
+  logical-sources note is kept as a leading comment. Labels are escaped, so a table label
+  with `"` no longer produces invalid YAML. **Expect a one-time diff** in every
+  `_<source>__sources.yml` on the next emit; after that, re-emitting an unchanged hub is
+  byte-identical.
 - **Gold terms on the extension's own `owl:Ontology` node now take effect** (#1004). The
   scaffolded `<domain>-gold-ext.ttl` declares its own `owl:Ontology`, and the docs say to
   author exceptions "on the `owl:Ontology` resource". Only the domain node was read, so a
