@@ -18,12 +18,14 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import click
 
 from .gates import escape_option
 
 from ..core.compiler import build_compile_plan
+from ..core.observability import events
 from ..core.determinism import write_text_lf
 from ..core.hub_utils import contract_diagrams_dir, find_hub_root, publish_root
 from ..core.projections.dbt.gold_connection import GOLD_CONNECTION_OVERRIDE_PATH
@@ -137,6 +139,9 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     )
 
     hub_root = find_hub_root(Path.cwd(), require_model=True)
+    from .run_log import start_run_log
+
+    start_run_log(hub_root, "emit-gold")
     # Gold ERDs and their master take their layout from kairos.yaml (#855).
     from ..core.projections.shared import configure_mermaid_layout
 
@@ -156,6 +161,9 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         plan = build_compile_plan(hub_root, member)
         if plan.blocked:
             for diagnostic in plan.diagnostics.ordered:
+                events.log_diagnostic(
+                    diagnostic, command="emit-gold", domain=member, gate="compile"
+                )
                 click.echo(diagnostic.render(), err=True)
             raise click.ClickException(f"{member}: compile plan is blocked; see diagnostics above")
         contract = plan.normalized_contract
@@ -288,6 +296,13 @@ def _report_shape_findings(logical, product) -> None:
     ]
     if not findings:
         return
+    for code, message in findings:
+        events.log_diagnostic(
+            SimpleNamespace(code=code, message=message, severity="warning"),
+            command="emit-gold",
+            product=product.name,
+            gate="gold-shape",
+        )
     click.echo(
         f"   ⚠ {len(findings)} model-shape finding(s) for {product.name!r} "
         "(docs/toolkit/practices/semantic-model.md):"

@@ -21,6 +21,8 @@ from ..core.observability.context import (
     set_operation_context,
 )
 from ..core.observability.otel import configure_otel_logging, flush_otel
+from ..core.observability import events as _events
+from . import run_log as _run_log
 from ..core.gates import EnforcementMode as _EnforcementMode
 from ..core.gates import reset_enforcement_state as _reset_enforcement_state
 from ..core.gates import set_active_mode as _set_active_mode
@@ -236,6 +238,8 @@ def cli(ctx, verbose, debug, log_file, log_format, mode):
     configure_logging(
         verbose=verbose, debug=debug, log_file=log_file, log_format=log_format
     )
+    _events.reset_run_diagnostics()
+    _run_log.reset(explicit_log_file=log_file is not None)
     # Before any subcommand parses its options, so an escape flag's parse-time callback
     # sees the resolved mode. Click invokes a group's callback ahead of building the
     # subcommand context, which is what makes that ordering hold.
@@ -249,7 +253,11 @@ def cli(ctx, verbose, debug, log_file, log_format, mode):
     _set_active_mode(mode)
     token = set_operation_context(OperationContext(operation_id=new_operation_id()))
     otel_handler = configure_otel_logging()
-    ctx.obj = {"operation_context_token": token, "otel_handler": otel_handler}
+    ctx.obj = {
+        "operation_context_token": token,
+        "otel_handler": otel_handler,
+        "command": ctx.invoked_subcommand or "",
+    }
     _warn_if_outside_venv()
     _warn_if_version_mismatch()
     _warn_if_no_skill_context(ctx.invoked_subcommand)
@@ -290,6 +298,8 @@ def _teardown_observability(ctx) -> None:  # noqa: ANN001
     obj = ctx.obj or {}
     token = obj.get("operation_context_token")
     otel_handler = obj.get("otel_handler")
+    if obj.get("command"):
+        _events.log_run_summary(obj["command"])
     if token is not None:
         reset_operation_context(token)
     flush_otel(otel_handler)

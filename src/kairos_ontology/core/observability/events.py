@@ -41,6 +41,118 @@ PROJECTION_STEP_FAILED: Final[str] = "kairos.projection.step.failed"
 COMPILE_DOMAIN_STARTED: Final[str] = "kairos.compile.domain.started"
 COMPILE_DOMAIN_COMPLETED: Final[str] = "kairos.compile.domain.completed"
 
+#: One record per diagnostic a command reports, and one summary per run (#1011). Printed
+#: diagnostics reached only the console, so once the terminal scrolled a run's findings
+#: were gone; these put every one in the run log, attributed to its task and gate.
+DIAGNOSTIC_REPORTED: Final[str] = "kairos.diagnostic.reported"
+RUN_SUMMARY: Final[str] = "kairos.run.summary"
+
+#: A record carrying this attribute set to False is for the run log only: the command
+#: already printed it, and the console handler must not print it twice.
+CONSOLE_ATTR: Final[str] = "kairos.console"
+
+_diagnostic_logger = logging.getLogger("kairos_ontology.diagnostics")
+_SEVERITY_LEVELS: Final[dict[str, int]] = {
+    "error": logging.ERROR,
+    "warning": logging.WARNING,
+    "info": logging.INFO,
+}
+#: ``(task, gate, severity, code)`` for every diagnostic logged in this invocation.
+_run_diagnostics: list[tuple[str, str, str, str]] = []
+
+
+def reset_run_diagnostics() -> None:
+    """Forget the previous invocation's diagnostics; one process may run several."""
+    _run_diagnostics.clear()
+
+
+def log_diagnostic(
+    diagnostic: object,
+    *,
+    command: str,
+    domain: str | None = None,
+    product: str | None = None,
+    gate: str = "",
+) -> None:
+    """Record one diagnostic in the run log, whatever the console verbosity (#1011).
+
+    *diagnostic* is anything with ``code``, ``message`` and ``severity`` (a
+    ``CompileDiagnostic``, or a projection ``Diagnostic``); ``location`` and
+    ``rule_id`` are carried when present. The task is the domain, or ``gold:<product>``.
+    """
+    severity = getattr(diagnostic, "severity", "error")
+    severity = str(getattr(severity, "value", severity)).lower()
+    location = getattr(diagnostic, "location", None)
+    rendered = location.render() if hasattr(location, "render") else str(location or "")
+    task = f"gold:{product}" if product else (domain or command)
+    code = str(getattr(diagnostic, "code", ""))
+    _run_diagnostics.append((task, gate, severity, code))
+    fields: dict[str, object] = {
+        "event": DIAGNOSTIC_REPORTED,
+        CONSOLE_ATTR: False,
+        "kairos.command": command,
+        "kairos.task": task,
+        "kairos.gate": gate,
+        "diagnostic.code": code,
+        "diagnostic.severity": severity,
+        "diagnostic.rule_id": str(getattr(diagnostic, "rule_id", "") or ""),
+        "diagnostic.location": rendered,
+    }
+    if domain:
+        fields["kairos.domain"] = domain
+    if product:
+        fields["kairos.product"] = product
+    # The message is the diagnostic's own one-line rendering, so a text-format log reads
+    # like the console; the JSON form also carries each part as its own field.
+    render = getattr(diagnostic, "render", None)
+    message = (
+        render() if callable(render) else f"[{severity}] {code}: {getattr(diagnostic, 'message', '')}"
+    )
+    fields["diagnostic.message"] = str(getattr(diagnostic, "message", ""))
+    _diagnostic_logger.log(_SEVERITY_LEVELS.get(severity, logging.WARNING), message, extra=fields)
+
+
+def run_summary() -> dict[str, dict[str, object]]:
+    """Per task: diagnostic counts by severity and by code, in task order."""
+    summary: dict[str, dict[str, object]] = {}
+    for task, _gate, severity, code in _run_diagnostics:
+        entry = summary.setdefault(task, {"severity": {}, "code": {}})
+        entry["severity"][severity] = entry["severity"].get(severity, 0) + 1
+        entry["code"][code] = entry["code"].get(code, 0) + 1
+    return dict(sorted(summary.items()))
+
+
+def log_run_summary(command: str) -> None:
+    """Write the run's diagnostic summary to the run log; nothing when it had none."""
+    summary = run_summary()
+    if not summary:
+        return
+    total = sum(sum(entry["severity"].values()) for entry in summary.values())
+    _diagnostic_logger.info(
+        f"{command}: {total} diagnostic(s) across {len(summary)} task(s)",
+        extra={
+            "event": RUN_SUMMARY,
+            CONSOLE_ATTR: False,
+            "kairos.command": command,
+            "kairos.summary": summary,
+        },
+    )
+
+
+def render_run_summary() -> list[str]:
+    """The summary as console lines, one per task, for a multi-task run."""
+    lines = []
+    for task, entry in run_summary().items():
+        counts = ", ".join(
+            f"{entry['severity'][name]} {name}"
+            for name in ("error", "warning", "info")
+            if entry["severity"].get(name)
+        )
+        top = sorted(entry["code"].items(), key=lambda item: (-item[1], item[0]))[:3]
+        codes = ", ".join(f"{code} x{count}" for code, count in top)
+        lines.append(f"  {task}: {counts}  ({codes})")
+    return lines
+
 
 def emit(event: str, level: int, message: str, **fields: object) -> None:
     """Emit one structured log record carrying a stable ``event`` name.

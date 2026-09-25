@@ -14,12 +14,39 @@ All commands accept these root options (before the subcommand):
 |---|---|
 | `--verbose`, `-v` | Emit INFO-level log output to the console. |
 | `--debug` | Emit DEBUG-level log output (implies verbose). |
-| `--log-file PATH` | Also write logs to `PATH` (same format as console). |
+| `--log-file PATH` | Also write logs to `PATH` (same format as console). The file receives INFO and above whatever the console level, so it holds every diagnostic. |
 | `--log-format {text,json}` | Structured log format; `text` is the default. |
 
 ```powershell
 kairos-ontology --verbose --log-format json compile party --check --format json
 ```
+
+## Run log and diagnostics (#1011)
+
+Every diagnostic a command reports is also a structured log record. The console prints
+it once, as before. The record has `event: kairos.diagnostic.reported` and these fields:
+
+- `diagnostic.code`, `diagnostic.severity`, `diagnostic.rule_id`, `diagnostic.location`,
+  `diagnostic.message`;
+- `kairos.task`: the domain, or `gold:<product>`;
+- `kairos.gate`: `compile` or `gold-shape`;
+- `kairos.operation.id`.
+
+A run ends with one `kairos.run.summary` record. It holds the counts per task, by
+severity and by code. A multi-domain `compile` in text mode also prints this summary as
+a "Diagnostics by task" table.
+
+The commands that write keep a **default run log** in JSON lines at
+`<hub>/.kairos/logs/<utc>-<command>-<operation>.jsonl`. They are `compile --emit`,
+`emit-gold` and `package-powerbi-release`.
+
+- The newest 20 run logs are kept.
+- The directory ignores itself in git.
+- The log is never written inside an emission target.
+
+`compile --check` and `--explain` keep no default run log, because they are write-free
+(DD-133/140). Pass `--log-file` to them if you want the same records. `--log-file`
+replaces the default run log, and `KAIROS_RUN_LOG=0` turns it off.
 
 ## JSON log shape
 
