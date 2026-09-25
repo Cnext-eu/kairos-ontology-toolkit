@@ -67,6 +67,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Gold terms on the extension's own `owl:Ontology` node now take effect** (#1004). The
+  scaffolded `<domain>-gold-ext.ttl` declares its own `owl:Ontology`, and the docs say to
+  author exceptions "on the `owl:Ontology` resource". Only the domain node was read, so a
+  `practiceException` or `bpaIgnoreRule` on the extension node was dropped with no message.
+  Every Gold product term (`goldExcludeColumn`, `goldHideColumn`,
+  `goldPrimaryRelationship`, `goldRelationshipCrossFilter`, `bpaIgnoreRule`,
+  `practiceException`, the profile, schema, measure, calendar and security links) is now
+  read from both nodes. A hub that authored terms on the extension node may see those
+  terms take effect on the next compile.
+
 ## [5.23.0] — 2026-09-25
 
 Relationship cardinality (DD-241, #999) and a faster hub PR gate (#998).
