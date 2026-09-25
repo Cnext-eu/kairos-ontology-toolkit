@@ -67,6 +67,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`kairos-ext:goldExcludeRelationship "Table.column -> Table.column"`** (#1012). Leaves
+  one foreign-key or bridge edge out of a Gold product, keeping the Silver relationship and
+  its column. It is the Gold term for "remove the redundant route", the remedy
+  `gold.ambiguous-path` suggests. Before, that could only be done by deleting a true
+  relationship from the binding: `goldExcludeColumn` on the key failed with
+  `gold.relationship-column-not-emitted`. The two terms now compose.
+  - Fail-closed: `gold.unknown-excluded-relationship`.
+  - Listed as `excluded_relationships` in the product report.
+  - Deferred per domain when it names another domain's table.
+
 ### Fixed
 - **A calendar role or primary relationship can name another domain's table** (#1003,
   #1012). A product's one calendar is authored in one domain, but each domain's own

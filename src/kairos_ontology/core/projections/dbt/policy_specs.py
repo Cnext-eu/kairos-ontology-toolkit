@@ -919,6 +919,9 @@ class GoldProductFact:
     #: ``kairos-ext:goldPrimaryRelationship`` values, each
     #: ``"Table.column -> Table.column"`` (#792).
     primary_relationships: AuthoredValuesFact | None = None
+    #: ``kairos-ext:goldExcludeRelationship`` values, each
+    #: ``"Table.column -> Table.column"`` (#1012).
+    excluded_relationships: AuthoredValuesFact | None = None
     #: ``kairos-ext:bpaIgnoreRule`` values, each
     #: ``"<RULE_ID> on <kind> [<target>]: <reason>"`` (DD-238).
     bpa_ignore_rules: AuthoredValuesFact | None = None
@@ -1055,6 +1058,10 @@ class GoldProductSpec:
     #: ``"Table.column -> Table.column"`` (#792). Carried verbatim: the relationship set
     #: they select from only exists once the tables have been shaped.
     primary_relationships: tuple[str, ...] = ()
+    #: ``kairos-ext:goldExcludeRelationship`` values, each
+    #: ``"Table.column -> Table.column"`` (#1012). Carried verbatim for the same reason as
+    #: ``primary_relationships``.
+    excluded_relationships: tuple[str, ...] = ()
     #: ``kairos-ext:bpaIgnoreRule`` and ``kairos-ext:practiceException`` values (DD-238,
     #: DD-240), one list: they are one mechanism under two names. Carried verbatim: the
     #: objects they name only exist once the product has been shaped.

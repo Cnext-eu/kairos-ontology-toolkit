@@ -170,7 +170,10 @@ per fact, one column per dimension. For the shape of the product, confirm:
 - **Every deactivated relationship is intended** (`semantic-model.ambiguous-path`). Only one
   filter path between two tables can be active. Keep the right one active with
   `kairos-ext:goldPrimaryRelationship`, add a `USERELATIONSHIP` measure, remove the redundant
-  route, or record why.
+  route with `kairos-ext:goldExcludeRelationship "Table.column -> Table.column"`, or record
+  why. Excluding an edge leaves the Silver relationship and its column alone; it is a product
+  decision, not a correction of Silver. A primary, exclusion or calendar role naming another
+  domain's table is checked when the product is shaped, not in that domain's own compile.
 - **Many-to-many bridges are allocated or confirmed** (`semantic-model.bridge-allocation`,
   `semantic-model.bridge-weight-used`).
 - **Measures live on facts** (`semantic-model.measures-live-on-facts`), and a balance over a
