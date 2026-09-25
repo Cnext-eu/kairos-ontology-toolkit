@@ -2,7 +2,7 @@ version: 2
 
 sources:
   - name: {{ source_name }}
-    description: "Bronze source: {{ system_label }}"
+    description: {{ ("Bronze source: " ~ system_label) | tojson }}
 {%- if database and not logical_sources_only %}
     database: {{ database }}
 {%- endif %}
@@ -16,5 +16,5 @@ sources:
     tables:
 {%- for table in tables %}
       - name: {{ table.name }}
-        description: "{{ table.label }}"
+        description: {{ table.label | tojson }}
 {%- endfor %}

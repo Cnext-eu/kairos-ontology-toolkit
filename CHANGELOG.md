@@ -73,6 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comment, which commented the comma out, so no `CREATE TABLE` with a described column ran.
   The comma now comes before the comment. dbt never runs `analyses/`, so no model changes;
   the next `compile --emit` rewrites the DDL files.
+- **`compile --emit` is idempotent for the shared source catalogs** (#1009). The first emit
+  wrote `models/silver/_<source>__sources.yml` in the template's layout and every later emit
+  re-serialized it through the cross-domain union, so the PR drift gate failed on a hub
+  that committed a fresh emit. Both paths now write one canonical layout, and the
+  logical-sources note is kept as a leading comment. Labels are escaped, so a table label
+  with `"` no longer produces invalid YAML. **Expect a one-time diff** in every
+  `_<source>__sources.yml` on the next emit; after that, re-emitting an unchanged hub is
+  byte-identical.
 
 ## [5.23.0] — 2026-09-25
 
