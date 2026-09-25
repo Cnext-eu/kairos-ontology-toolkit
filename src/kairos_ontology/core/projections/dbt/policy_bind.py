@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rdflib import BNode, Graph, Namespace, URIRef
 from rdflib.collection import Collection
-from rdflib.namespace import RDF
+from rdflib.namespace import OWL, RDF
 
 from .policy_specs import (
     AdapterSupportFact,
@@ -48,6 +48,40 @@ def _values(
         resource_uri=str(subject),
         predicate_uri=str(predicate),
         values=values,
+    )
+
+
+def _product_values(
+    graph: Graph,
+    subjects: tuple[URIRef, ...],
+    predicate: URIRef,
+) -> AuthoredValuesFact | None:
+    """Values authored on any of *subjects*, credited to the first (the domain node).
+
+    #1004: a Gold extension declares its own ``owl:Ontology``, and the docs say to author
+    product terms "on the owl:Ontology resource". Reading only the domain node dropped
+    everything written on the extension's node without a word.
+    """
+    values = tuple(
+        sorted({str(value) for subject in subjects for value in graph.objects(subject, predicate)})
+    )
+    if not values:
+        return None
+    return AuthoredValuesFact(
+        resource_uri=str(subjects[0]),
+        predicate_uri=str(predicate),
+        values=values,
+    )
+
+
+def _extension_ontologies(extension: Graph, domain: URIRef) -> tuple[URIRef, ...]:
+    """The ``owl:Ontology`` nodes the Gold extension file itself declares, domain excluded."""
+    return tuple(
+        sorted(
+            subject
+            for subject in extension.subjects(RDF.type, OWL.Ontology)
+            if isinstance(subject, URIRef) and subject != domain
+        )
     )
 
 
@@ -323,35 +357,39 @@ def bind_policy_facts(
     """Read retained extension authoring and emit graph-free immutable facts."""
     policy_graph = Graph()
     policy_graph += graph
+    ontology = URIRef(ontology_uri)
+    subjects: tuple[URIRef, ...] = (ontology,)
     if gold_extension:
         path = Path(gold_extension)
         if path.is_file():
-            policy_graph.parse(path, format="turtle")
+            extension = Graph().parse(path, format="turtle")
+            policy_graph += extension
+            subjects += _extension_ontologies(extension, ontology)
 
-    ontology = URIRef(ontology_uri)
+    def product(predicate: URIRef) -> AuthoredValuesFact | None:
+        return _product_values(policy_graph, subjects, predicate)
+
     gold = GoldProductFact(
         ontology_uri=ontology_uri,
-        profile=_values(policy_graph, ontology, EXT.goldProductProfile),
-        schema=_values(policy_graph, ontology, EXT.goldSchema),
-        measure_refs=_values(policy_graph, ontology, EXT.measure),
-        calendar_refs=_values(policy_graph, ontology, EXT.calendarProfile),
-        security_refs=_values(policy_graph, ontology, EXT.securityPolicy),
+        profile=product(EXT.goldProductProfile),
+        schema=product(EXT.goldSchema),
+        measure_refs=product(EXT.measure),
+        calendar_refs=product(EXT.calendarProfile),
+        security_refs=product(EXT.securityPolicy),
         tables=_gold_tables(policy_graph),
         measures=_measures(policy_graph),
         calendars=_calendars(policy_graph),
         security_policies=_security(policy_graph),
-        excluded_columns=_values(policy_graph, ontology, EXT.goldExcludeColumn),
-        hidden_columns=_values(policy_graph, ontology, EXT.goldHideColumn),
-        primary_relationships=_values(policy_graph, ontology, EXT.goldPrimaryRelationship),
-        bpa_ignore_rules=_values(policy_graph, ontology, EXT.bpaIgnoreRule),
-        practice_exceptions=_values(policy_graph, ontology, EXT.practiceException),
-        relationship_cross_filters=_values(
-            policy_graph, ontology, EXT.goldRelationshipCrossFilter
-        ),
+        excluded_columns=product(EXT.goldExcludeColumn),
+        hidden_columns=product(EXT.goldHideColumn),
+        primary_relationships=product(EXT.goldPrimaryRelationship),
+        bpa_ignore_rules=product(EXT.bpaIgnoreRule),
+        practice_exceptions=product(EXT.practiceException),
+        relationship_cross_filters=product(EXT.goldRelationshipCrossFilter),
     )
     return MedallionPolicyFacts(
         ontology_uri=ontology_uri,
-        naming_convention=_values(policy_graph, ontology, EXT.namingConvention),
+        naming_convention=product(EXT.namingConvention),
         identities=(),
         multi_source=(),
         incremental=(),
