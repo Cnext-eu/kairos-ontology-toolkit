@@ -106,7 +106,9 @@ def log_diagnostic(
     # like the console; the JSON form also carries each part as its own field.
     render = getattr(diagnostic, "render", None)
     message = (
-        render() if callable(render) else f"[{severity}] {code}: {getattr(diagnostic, 'message', '')}"
+        render()
+        if callable(render)
+        else f"[{severity}] {code}: {getattr(diagnostic, 'message', '')}"
     )
     fields["diagnostic.message"] = str(getattr(diagnostic, "message", ""))
     _diagnostic_logger.log(_SEVERITY_LEVELS.get(severity, logging.WARNING), message, extra=fields)

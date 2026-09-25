@@ -75,7 +75,8 @@ class TestLogFile:
 class TestDefaultRunLog:
     def _emit(self, *args: str):
         return CliRunner().invoke(
-            cli, [*args, "compile", "--all", "--emit", "--confirm-emit"],
+            cli,
+            [*args, "compile", "--all", "--emit", "--confirm-emit"],
             env={"KAIROS_SKILL_CONTEXT": "1"},
         )
 
