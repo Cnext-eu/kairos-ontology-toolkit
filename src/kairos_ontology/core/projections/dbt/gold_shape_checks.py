@@ -158,9 +158,7 @@ def second_route(
         for origin in origins:
             for end in ends:
                 existing = (
-                    active_route(relationships, origin, end, directed=True)
-                    if origin != end
-                    else []
+                    active_route(relationships, origin, end, directed=True) if origin != end else []
                 )
                 if origin != end and not existing:
                     continue
