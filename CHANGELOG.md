@@ -68,6 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The reference Silver DDL (`analyses/<domain>/<domain>-ddl.sql`) is valid SQL again**
+  (#1005). A column with a description put the separating comma after its inline `--`
+  comment, which commented the comma out, so no `CREATE TABLE` with a described column ran.
+  The comma now comes before the comment. dbt never runs `analyses/`, so no model changes;
+  the next `compile --emit` rewrites the DDL files.
 - **`compile --emit` is idempotent for the shared source catalogs** (#1009). The first emit
   wrote `models/silver/_<source>__sources.yml` in the template's layout and every later emit
   re-serialized it through the cross-domain union, so the PR drift gate failed on a hub
