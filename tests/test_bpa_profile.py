@@ -321,6 +321,62 @@ class TestEmission:
         assert "bpa_exceptions" not in harness._report(invoice_gold, "invoice")
 
 
+class TestAuthoredOnTheExtensionNode:
+    """#1004: the scaffold gives the Gold extension its own ``owl:Ontology``; terms on it count."""
+
+    _EXTENSION_NODE = (
+        "\n<https://acme.example/ontology/invoice-gold-ext> a owl:Ontology ;\n"
+        "    owl:imports <https://acme.example/ontology/invoice> ;\n"
+        "    kairos-ext:bpaIgnoreRule "
+        '"ENSURE_TABLES_HAVE_RELATIONSHIPS on table fact_invoice: standalone by design" ;\n'
+        "    kairos-ext:practiceException "
+        '"AVOID_EXCESSIVE_BI-DIRECTIONAL_OR_MANY-TO-MANY_RELATIONSHIPS on model: reviewed" .\n'
+    )
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def artifacts(cls, tmp_path_factory):
+        path = harness._write_gold(
+            tmp_path_factory.mktemp("bpa-ext-node"),
+            "invoice",
+            harness._gold_text("invoice") + cls._EXTENSION_NODE,
+        )
+        return harness._generate("invoice", gold_path=path)
+
+    def test_both_exception_terms_take_effect(self, artifacts):
+        assert {item["rule"] for item in harness._report(artifacts, "invoice")["bpa_exceptions"]} == {
+            "ENSURE_TABLES_HAVE_RELATIONSHIPS",
+            "AVOID_EXCESSIVE_BI-DIRECTIONAL_OR_MANY-TO-MANY_RELATIONSHIPS",
+        }
+
+    def test_every_product_term_is_read_from_the_extension_node(self, tmp_path):
+        from rdflib import Graph
+
+        from kairos_ontology.core.projections.dbt.policy_bind import bind_policy_facts
+
+        path = tmp_path / "invoice-gold-ext.ttl"
+        path.write_text(
+            "@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .\n"
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://acme.example/ontology/invoice-gold-ext> a owl:Ontology ;\n"
+            '    kairos-ext:goldExcludeColumn "fact_invoice.note" ;\n'
+            '    kairos-ext:goldPrimaryRelationship "fact_invoice.customer_sk -> dim_customer.customer_sk" .\n'
+            "<https://acme.example/ontology/invoice> a owl:Ontology ;\n"
+            '    kairos-ext:goldExcludeColumn "fact_invoice.memo" .\n',
+            encoding="utf-8",
+        )
+        facts = bind_policy_facts(
+            Graph(),
+            ontology_uri="https://acme.example/ontology/invoice",
+            gold_extension=str(path),
+        )
+        assert facts.gold.excluded_columns.values == ("fact_invoice.memo", "fact_invoice.note")
+        assert facts.gold.excluded_columns.resource_uri == "https://acme.example/ontology/invoice"
+        assert facts.gold.primary_relationships.values == (
+            "fact_invoice.customer_sk -> dim_customer.customer_sk",
+        )
+
+
 @pytest.fixture(scope="module")
 def invoice_gold():
     return harness._generate("invoice")

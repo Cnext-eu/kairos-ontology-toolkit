@@ -136,6 +136,33 @@ def test_schema_yaml_uses_spec_columns_physical_types_nullability_and_defaults()
     assert "type_label VARCHAR(50) DEFAULT 'UNKNOWN' NOT NULL" in ddl
 
 
+def _create_table_column_lines(ddl: str) -> list[list[str]]:
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in ddl.splitlines():
+        if line.startswith("CREATE TABLE"):
+            current = []
+        elif current is not None and line.startswith(")"):
+            blocks.append(current)
+            current = None
+        elif current is not None:
+            current.append(line)
+    return blocks
+
+
+def test_column_separators_are_not_swallowed_by_column_comments():
+    """#1005: a comma after an inline ``--`` comment is part of the comment."""
+    _, _, plan, artifacts = _run()
+    blocks = _create_table_column_lines(artifacts[plan.silver.ddl_artifact_path])
+
+    assert blocks
+    assert any(" -- " in line for block in blocks for line in block)
+    for block in blocks:
+        code = [line.split(" -- ", 1)[0].rstrip() for line in block]
+        assert all(line.endswith(",") for line in code[:-1]), block
+        assert not code[-1].endswith(","), block
+
+
 def test_constraints_are_unenforced_collision_safe_and_adapter_bounded():
     _, _, plan, artifacts = _run()
     metadata = json.loads(artifacts[plan.silver.constraint_artifact_path])
