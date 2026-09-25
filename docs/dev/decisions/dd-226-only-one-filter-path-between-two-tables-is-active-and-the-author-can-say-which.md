@@ -40,6 +40,23 @@ undirected relationship graph, in a fixed priority order. Cycle is an over-appro
 ambiguity in general, but every edge emitted here is single-direction many-to-one, and for
 those the two coincide.
 
+> **Superseded (#1012).** They do not coincide. Two facts related many-to-one to the same
+> two dimensions form an undirected cycle, yet a filter only flows from a dimension to a
+> fact, so no table reaches another by two routes and Power BI loads all four edges. This
+> is the ordinary bus matrix, and the forest deactivated one edge of every such square.
+> On a multi-fact product it cut the core fact off its main dimensions. An edge is now
+> deactivated only if it would give some table a second *directed* filter route to
+> another table, or a route back to itself. A filter crosses an edge from its one side to
+> its many side, and also back when the edge filters both ways. Edges are still taken in
+> the priority order below. Bridge directions depend on which edges are active, so the
+> product resolves once, decides the bridge directions (DD-238), and then resolves again
+> with them. A default two-way filter on an edge that ends up inactive is cleared. The
+> `gold.ambiguous-path` message names the table that would reach another twice and both
+> routes. **Consequence:** a hub with a bus-matrix square gets edges re-activated in
+> `relationships.tmdl`. The "byte-identical" promise below still holds for a hub whose
+> ambiguity was only same-pair duplicates, snowflake shortcuts or date roles on one fact,
+> and for every scenario fixture.
+
 **The priority order is: authored primary, then ordinary foreign-key and bridge edges, then
 calendar roles.** Keeping role edges last means a business relationship is never deactivated
 in favour of a date role. Within a group the existing deterministic sort applies.

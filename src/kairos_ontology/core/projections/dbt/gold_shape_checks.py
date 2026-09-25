@@ -92,18 +92,24 @@ def edge_label(item: GoldRelationshipSpec) -> str:
 
 
 def active_route(
-    relationships: tuple[GoldRelationshipSpec, ...], start: str, end: str
+    relationships: tuple[GoldRelationshipSpec, ...],
+    start: str,
+    end: str,
+    *,
+    directed: bool = False,
 ) -> list[str]:
-    """The tables on the active path from *start* to *end*, or ``[]`` when none.
+    """The tables on the shortest active path from *start* to *end*, or ``[]`` when none.
 
-    The active edges form a forest (``_resolve_ambiguous_paths``), so there is at most
-    one such path; a breadth-first search over the undirected active graph finds it.
+    *directed* follows filter direction only -- one side to many side, and back where an
+    edge filters both ways -- which is the route a filter on *start* actually takes. The
+    undirected search finds how two tables are connected at all.
     """
     neighbours: dict[str, list[str]] = {}
     for item in relationships:
         if item.is_active:
-            neighbours.setdefault(item.source_table, []).append(item.target_table)
             neighbours.setdefault(item.target_table, []).append(item.source_table)
+            if not directed or item.bidirectional:
+                neighbours.setdefault(item.source_table, []).append(item.target_table)
     previous: dict[str, str] = {start: start}
     queue = deque([start])
     while queue:
@@ -118,6 +124,50 @@ def active_route(
                 previous[other] = node
                 queue.append(other)
     return []
+
+
+def second_route(
+    relationships: tuple[GoldRelationshipSpec, ...], item: GoldRelationshipSpec
+) -> tuple[list[str], list[str]] | None:
+    """Why *item* is ambiguous: the active filter route it duplicates, and its own.
+
+    Returns ``(existing, added)``, two routes between the same two tables: one over the
+    active edges, one that would cross *item*. The origin is not always *item*'s own one
+    side -- in ``fact -> job -> branch`` next to ``fact -> branch``, it is ``branch``
+    that would reach ``fact`` twice, not ``job`` (#1012). None when no active route
+    explains it, which a caller reports generically.
+    """
+    arcs = [(item.target_table, item.source_table)]
+    if item.bidirectional:
+        arcs.append((item.source_table, item.target_table))
+    tables = sorted(
+        {other.source_table for other in relationships}
+        | {other.target_table for other in relationships}
+    )
+    for tail, head in arcs:
+        origins = [
+            name
+            for name in tables
+            if name == tail or active_route(relationships, name, tail, directed=True)
+        ]
+        ends = [
+            name
+            for name in tables
+            if name == head or active_route(relationships, head, name, directed=True)
+        ]
+        for origin in origins:
+            for end in ends:
+                existing = (
+                    active_route(relationships, origin, end, directed=True)
+                    if origin != end
+                    else []
+                )
+                if origin != end and not existing:
+                    continue
+                into = active_route(relationships, origin, tail, directed=True) or [tail]
+                out = active_route(relationships, head, end, directed=True) or [head]
+                return existing or [origin], into + out
+    return None
 
 
 def activated_edges(measures: tuple[GoldMeasureSpec, ...]) -> set[frozenset[tuple[str, str]]]:
@@ -228,8 +278,19 @@ def check_model_shape(
                 ),
             )
             continue
-        route = active_route(relationships, item.source_table, item.target_table)
-        via = " -> ".join(route) if route else "another active path"
+        routes = second_route(relationships, item)
+        if routes is not None and routes[0][0] == item.target_table:
+            already = f"{item.target_table} already filters {routes[0][-1]} through "
+            via = " -> ".join(routes[0])
+        elif routes is not None:
+            already = (
+                f"a filter on {routes[0][0]} would reach {routes[0][-1]} twice, "
+                f"through {' -> '.join(routes[1])} and through "
+            )
+            via = " -> ".join(routes[0])
+        else:
+            already = f"{item.target_table} already reaches {item.source_table} through "
+            via = "another active path"
         role_note = (
             f" None of the {len(siblings)} edges from {item.source_table} to "
             f"{item.target_table} is active."
@@ -240,8 +301,7 @@ def check_model_shape(
             AMBIGUOUS_PATH,
             item,
             (
-                f"{edge_label(item)} is inactive (ambiguous-path): {item.target_table} "
-                f"already filters {item.source_table} through {via}, and no measure "
+                f"{edge_label(item)} is inactive (ambiguous-path): {already}{via}, and no measure "
                 f"activates it with USERELATIONSHIP, so it filters nothing.{role_note} Keep "
                 "it active with kairos-ext:goldPrimaryRelationship, remove the redundant "
                 "route with kairos-ext:goldExcludeRelationship, add a USERELATIONSHIP "

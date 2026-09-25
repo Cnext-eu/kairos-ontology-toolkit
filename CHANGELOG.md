@@ -67,6 +67,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Only a genuinely ambiguous relationship is deactivated** (#1012, amends DD-226). The
+  projector treated relationships as undirected and kept a spanning forest. That
+  deactivated one edge of every bus-matrix square (two facts sharing two dimensions)
+  although Power BI loads it, because a filter only flows from a dimension to a fact. So a
+  fixed number of edges was always inactive, and fixing `gold.fact-without-date` on a
+  second fact created a new `gold.ambiguous-path`. An edge is now deactivated only if it
+  would give a filter a second directed route. Bridge edges that filter both ways are
+  taken into account. `gold.ambiguous-path` names the table that would reach another
+  twice, and both routes.
+
+  **Expect a diff in `relationships.tmdl`** where a product has two facts sharing
+  dimensions: edges that were `isActive: false` become active. Review
+  `deactivated_relationships` in the product report. A fact-to-fact detour is still
+  ambiguous; choose with `goldPrimaryRelationship` or `goldExcludeRelationship`.
+
 ### Added
 - **`kairos-ext:goldExcludeRelationship "Table.column -> Table.column"`** (#1012). Leaves
   one foreign-key or bridge edge out of a Gold product, keeping the Silver relationship and

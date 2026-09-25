@@ -93,8 +93,12 @@ class TestSpanningForest:
         assert len(_active(resolved)) == 2
         assert len(_inactive(resolved)) == 1
 
-    def test_active_edges_never_exceed_nodes_minus_components(self):
-        """The invariant the issue asks the emit gate to enforce."""
+    def test_a_single_star_with_roles_keeps_one_edge_per_pair(self):
+        """One fact, so every surplus edge is a same-pair duplicate or a shortcut.
+
+        With one fact the directed rule and the old spanning forest agree; the node count
+        stops being a bound once two facts share dimensions (see TestDirectedPaths).
+        """
         edges = (
             _edge("fact_a", "d1", CALENDAR_TABLE, CALENDAR_COLUMN, role_name="Ordered"),
             _edge("fact_a", "d2", CALENDAR_TABLE, CALENDAR_COLUMN, role_name="Shipped"),
@@ -139,6 +143,91 @@ class TestSpanningForest:
         assert _active(_resolve_ambiguous_paths(edges, frozenset())) == _active(
             _resolve_ambiguous_paths(tuple(reversed(edges)), frozenset())
         )
+
+
+class TestDirectedPaths:
+    """#1012: a path is ambiguous only if a *filter* can take two routes."""
+
+    def test_two_facts_sharing_two_dimensions_keep_every_edge(self):
+        """The bus matrix. An undirected cycle, but filters only flow dimension -> fact."""
+        edges = (
+            _edge("fact_a", "x_sk", "dim_x"),
+            _edge("fact_a", "y_sk", "dim_y"),
+            _edge("fact_b", "x_sk", "dim_x"),
+            _edge("fact_b", "y_sk", "dim_y"),
+        )
+        assert _inactive(_resolve_ambiguous_paths(edges, frozenset())) == []
+
+    def test_a_date_role_on_a_second_fact_stays_active(self):
+        """Fixing gold.fact-without-date must not create a gold.ambiguous-path."""
+        edges = (
+            _edge("fact_a", "job_sk", "dim_job"),
+            _edge("fact_b", "job_sk", "dim_job"),
+            _edge("fact_a", "d", CALENDAR_TABLE, CALENDAR_COLUMN, role_name="Shipped"),
+            _edge("fact_b", "d", CALENDAR_TABLE, CALENDAR_COLUMN, role_name="Charged"),
+        )
+        assert _inactive(_resolve_ambiguous_paths(edges, frozenset())) == []
+
+    def test_a_fact_to_fact_detour_is_still_ambiguous(self):
+        """`dim_job` reaches `fact_b` directly and through `fact_a`: a real second route."""
+        edges = (
+            _edge("fact_a", "job_sk", "dim_job"),
+            _edge("fact_b", "a_sk", "fact_a"),
+            _edge("fact_b", "job_sk", "dim_job"),
+        )
+        resolved = _resolve_ambiguous_paths(edges, frozenset())
+        assert len(_inactive(resolved)) == 1
+
+    def test_a_primary_decides_which_route_of_a_detour_survives(self):
+        edges = (
+            _edge("fact_a", "job_sk", "dim_job"),
+            _edge("fact_b", "a_sk", "fact_a"),
+            _edge("fact_b", "job_sk", "dim_job"),
+        )
+        declared = frozenset({("fact_b", "job_sk", "dim_job", "id")})
+        assert "fact_b_job_sk" in _active(_resolve_ambiguous_paths(edges, declared))
+
+    def test_a_two_way_edge_can_make_a_route_ambiguous(self):
+        """Both ways, `dim_group` reaches the fact directly and via customer."""
+        customer_edge = _edge("bridge_cg", "customer_sk", "dim_customer")
+        edges = (
+            replace(customer_edge, bidirectional=True),
+            _edge("bridge_cg", "group_sk", "dim_group"),
+            _edge("fact_invoice", "customer_sk", "dim_customer"),
+            _edge("fact_invoice", "group_sk", "dim_group"),
+        )
+        resolved = _resolve_ambiguous_paths(edges, frozenset())
+        assert _inactive(resolved) == ["fact_invoice_group_sk"]
+        # One way only, the bridge stops a group filter, and nothing is ambiguous.
+        one_way = (customer_edge, *edges[1:])
+        assert _inactive(_resolve_ambiguous_paths(one_way, frozenset())) == []
+
+    def test_a_two_way_edge_is_not_ambiguous_with_itself(self):
+        edges = (
+            replace(_edge("bridge_ci", "invoice_sk", "fact_invoice"), bidirectional=True),
+            _edge("bridge_ci", "customer_sk", "dim_customer"),
+        )
+        assert _inactive(_resolve_ambiguous_paths(edges, frozenset())) == []
+
+    def test_resolving_twice_reconsiders_earlier_deactivations(self):
+        """The product resolves before and after deciding bridge directions."""
+        edges = (
+            _edge("fact_a", "ship_to_sk", "dim_b"),
+            _edge("fact_a", "bill_to_sk", "dim_b"),
+        )
+        once = _resolve_ambiguous_paths(edges, frozenset())
+        declared = frozenset({("fact_a", "ship_to_sk", "dim_b", "id")})
+        assert _active(_resolve_ambiguous_paths(once, declared)) == ["fact_a_ship_to_sk"]
+
+    def test_an_unproven_edge_stays_out(self):
+        """#794 deactivations are not ambiguity and are never reconsidered."""
+        edges = (
+            replace(
+                _edge("fact_a", "b_sk", "dim_b"), is_active=False, inactive_reason="unproven-key"
+            ),
+        )
+        (item,) = _resolve_ambiguous_paths(edges, frozenset())
+        assert not item.is_active and item.inactive_reason == "unproven-key"
 
 
 class TestTheAuthoredOverrideDecidesWhichPathSurvives:
