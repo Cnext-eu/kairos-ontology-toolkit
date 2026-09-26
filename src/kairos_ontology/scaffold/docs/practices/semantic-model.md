@@ -12,7 +12,7 @@ Enforcement: **blocking** fails the stage; **warning** is reported and never blo
 
 Between any two tables of a semantic model there is one active filter path; a relationship that would add a second one is deactivated, and the author decides whether that is the right edge to lose.
 
-- **Why:** Power BI refuses to load a model with two active paths, so the projector keeps a spanning forest and deactivates the rest (#792). A deactivated edge filters nothing unless a measure calls USERELATIONSHIP: on the Fracht hub `fact_consignment -> dim_job` was inactive, so "consignments by job type" showed the grand total on every row, and nothing reported it. Declare the edge that must stay active with kairos-ext:goldPrimaryRelationship, remove the redundant route with kairos-ext:goldExcludeRelationship, or record why the deactivation is intended.
+- **Why:** Power BI refuses to load a model with two active filter paths, so the projector deactivates each edge that would add a second route a filter can take (#792, #1012); two facts sharing two dimensions are not ambiguous and keep every edge. A deactivated edge filters nothing unless a measure calls USERELATIONSHIP: on one hub `fact_consignment -> dim_job` was inactive, so "consignments by job type" showed the grand total on every row, and nothing reported it. Declare the edge that must stay active with kairos-ext:goldPrimaryRelationship, remove the redundant route with kairos-ext:goldExcludeRelationship, or record why the deactivation is intended.
 - **Enforcement:** warning, at `compile --check`
 - **Check:** `gold.ambiguous-path`
 - **Source:** DD-226,

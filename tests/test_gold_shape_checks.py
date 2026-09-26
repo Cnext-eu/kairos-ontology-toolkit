@@ -26,6 +26,7 @@ from kairos_ontology.core.projections.dbt.gold_shape_checks import (
     active_route,
     bus_matrix,
     check_model_shape,
+    second_route,
 )
 from kairos_ontology.core.projections.dbt.gold_specs import (
     GoldContractError,
@@ -154,9 +155,16 @@ class TestSnowflakeChainAndAmbiguousPath:
         tables, relationships = self._model()
         inactive = next(item for item in relationships if not item.is_active)
         (finding,) = _only(check_model_shape(tables, relationships, ()), "gold.ambiguous-path")
-        route = active_route(relationships, inactive.source_table, inactive.target_table)
-        assert len(route) == 3
-        assert " -> ".join(route) in finding.message
+        # In filter direction, from the table that would reach another twice (#1012).
+        existing, added = second_route(relationships, inactive)
+        assert existing[0] == added[0] and existing[-1] == added[-1]
+        assert existing != added
+        assert " -> ".join(existing) in finding.message
+        assert " -> ".join(added) in finding.message
+        assert all(
+            active_route(relationships, a, b, directed=True) == [a, b]
+            for a, b in zip(existing, existing[1:])
+        )
 
     def test_an_edge_a_measure_activates_is_intended(self):
         """DD-240 amends DD-226: only a deactivated edge nothing activates is reported."""

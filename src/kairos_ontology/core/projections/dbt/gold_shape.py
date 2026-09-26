@@ -1340,26 +1340,38 @@ def _primary_relationship_keys(
     return frozenset(keys)
 
 
+def _filter_arcs(item: GoldRelationshipSpec) -> tuple[tuple[str, str], ...]:
+    """The directions a filter crosses *item* in: one-side to many-side, and back if both."""
+    arcs = ((item.target_table, item.source_table),)
+    if item.bidirectional:
+        arcs += ((item.source_table, item.target_table),)
+    return arcs
+
+
 def _resolve_ambiguous_paths(
     relationships: tuple[GoldRelationshipSpec, ...],
     primary: frozenset[tuple[str, str, str, str]],
 ) -> tuple[GoldRelationshipSpec, ...]:
-    """Deactivate every relationship beyond a spanning forest (#792).
+    """Deactivate every relationship that would add a second filter path (#792, #1012).
 
-    Power BI allows one *active* filter path between any two tables. Treating the emitted
-    relationships as an undirected graph, every edge beyond a spanning forest closes a
-    cycle and so creates a second path; the engine refuses to load the model, reporting
-    one offending pair per attempt. On the product that surfaced this, 21 of 50 edges
-    closed a cycle -- 21 round trips to discover by publishing, one pass to compute here.
+    Power BI allows one *active* filter path between any two tables, and refuses to load
+    a model with two, reporting one offending pair per attempt. On the product that
+    surfaced this, 21 of 50 edges were ambiguous -- 21 round trips to discover by
+    publishing, one pass to compute here.
 
-    Cycle is an over-approximation of ambiguity in general, but every edge emitted here is
-    single-direction many-to-one, and for those the two coincide.
+    A path is *directed*: a filter crosses a many-to-one edge from its one side to its
+    many side, and back only when the edge filters both ways. An edge is kept unless,
+    with it, some table would reach another along two routes (or reach itself). The
+    first version treated the edges as undirected and kept a spanning forest, which
+    deactivated the ordinary bus matrix -- two facts sharing two dimensions form an
+    undirected cycle, yet no filter reaches any table twice (#1012).
 
     Edges are considered in a fixed priority order so the choice is deterministic and
     reviewable: whatever the author declared primary, then the ordinary foreign-key and
     bridge edges, then the calendar roles. Within a group the existing sort order applies.
     Keeping role edges last means a business relationship is never deactivated in favour
-    of a date role.
+    of a date role. An edge this function deactivated before is a candidate again, so the
+    product can resolve twice: once to decide the bridge directions, once with them.
     """
 
     def priority(item: GoldRelationshipSpec) -> tuple[int, str, str, str]:
@@ -1377,34 +1389,73 @@ def _resolve_ambiguous_paths(
             rank = 2
         return (rank, item.source_table, item.source_column, item.target_table)
 
-    parent: dict[str, str] = {}
+    successors: dict[str, set[str]] = {}
+    predecessors: dict[str, set[str]] = {}
 
-    def find(node: str) -> str:
-        parent.setdefault(node, node)
-        while parent[node] != node:
-            parent[node] = parent[parent[node]]
-            node = parent[node]
-        return node
+    def closure(start: str, graph: dict[str, set[str]]) -> set[str]:
+        seen = {start}
+        stack = [start]
+        while stack:
+            for other in graph.get(stack.pop(), ()):
+                if other not in seen:
+                    seen.add(other)
+                    stack.append(other)
+        return seen
+
+    def reaches(start: str) -> set[str]:
+        """Every table a filter on *start* reaches over at least one edge."""
+        seen: set[str] = set()
+        stack = list(successors.get(start, ()))
+        while stack:
+            node = stack.pop()
+            if node not in seen:
+                seen.add(node)
+                stack.extend(successors.get(node, ()))
+        return seen
+
+    def ambiguous(tail: str, head: str) -> bool:
+        # A new route from every table that reaches `tail` to every table `head`
+        # reaches. It is a second route wherever the first already existed.
+        heads = closure(head, successors)
+        return any(
+            origin in heads or not heads.isdisjoint(reaches(origin))
+            for origin in closure(tail, predecessors)
+        )
 
     active: set[int] = set()
     for item in sorted(relationships, key=priority):
         # An edge already deactivated for its own reason (#794: the one side carries
-        # no declared unique key) must not claim a place in the forest, or a sound
-        # relationship would be deactivated in favour of an unsound one.
-        if not item.is_active:
+        # no declared unique key) must not claim a path, or a sound relationship would
+        # be deactivated in favour of an unsound one.
+        if not item.is_active and item.inactive_reason != "ambiguous-path":
             continue
-        left, right = find(item.source_table), find(item.target_table)
-        if left == right:
+        arcs = _filter_arcs(item)
+        # Both arcs of a two-way edge are tested before either is added: together they
+        # are one edge, and a filter crossing it and straight back is not a second route.
+        if any(ambiguous(tail, head) for tail, head in arcs):
             continue
-        parent[left] = right
+        for tail, head in arcs:
+            successors.setdefault(tail, set()).add(head)
+            predecessors.setdefault(head, set()).add(tail)
         active.add(id(item))
     return tuple(
-        item
+        (
+            replace(item, is_active=True, inactive_reason="")
+            if item.inactive_reason == "ambiguous-path"
+            else item
+        )
         if id(item) in active
         else replace(
             item,
             is_active=False,
             inactive_reason=item.inactive_reason or "ambiguous-path",
+            # A default two-way filter on an edge that carries no filter is noise in the
+            # report; an authored one is kept as authored.
+            **(
+                {"bidirectional": False, "cross_filter_reason": ""}
+                if item.cross_filter_reason == "bridge-default"
+                else {}
+            ),
         )
         for item in relationships
     )
@@ -1812,8 +1863,9 @@ def _bridge_cross_filters(
     on a single-domain compile (*defer*), where the edge may join another domain's table
     and is checked at product level instead (#763).
 
-    Every active relationship set is a spanning forest (#792), so no direction choice can
-    make a path ambiguous: there is no second path for a filter to take.
+    A direction chosen here can make a route ambiguous that was not -- a filter crossing
+    the bridge both ways reaches further -- so the product resolves the paths again once
+    the directions are decided (#1012).
     """
     by_name = {table.name: table for table in tables}
     facts = {table.name for table in tables if table.role is GoldTableRole.FACT}
@@ -2065,8 +2117,8 @@ def _shape_dimensional_product(
         models.update({model.identity.model_name: model for model in member.silver_models})
         descriptors.extend(member.foreign_keys.descriptors)
     # The calendar is shaped *before* the relationships it contributes edges to: each
-    # role-playing date is a path between its fact and `dim_date`, and the spanning
-    # forest below cannot resolve ambiguity it cannot see (#792).
+    # role-playing date is a path between its fact and `dim_date`, and the path
+    # resolution below cannot resolve ambiguity it cannot see (#792).
     # What this single-domain compile could not check because it names another domain's
     # table; checked for real when the product is shaped (#763, #1003, #1012).
     deferred: list[tuple[str, str]] | None = [] if defer_bridges else None
@@ -2110,6 +2162,9 @@ def _shape_dimensional_product(
     relationships, undecided_bridge_filters = _bridge_cross_filters(
         members, ordered, relationships, defer=defer_bridges, deferred=deferred
     )
+    # Again with the directions just decided: an edge that filters both ways reaches
+    # further, so it can make a route ambiguous that was not before (#1012).
+    relationships = _resolve_ambiguous_paths(relationships, declared_primary)
     security_owner = _sole(
         members,
         lambda member: member.policy.gold.security,

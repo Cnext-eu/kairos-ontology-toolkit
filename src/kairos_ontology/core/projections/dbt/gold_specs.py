@@ -128,10 +128,11 @@ class GoldRelationshipSpec:
     cardinality: str
     version_binding: DimensionVersionBinding | None
     role_name: str = ""
-    #: False for a relationship Power BI must not filter through (#792). Only one path
-    #: between any two tables may be active, so every edge beyond a spanning forest --
-    #: the surplus date roles on a fact, a snowflake shortcut duplicating a two-hop path
-    #: -- is emitted `isActive: false`. It stays in the model and DAX can still traverse
+    #: False for a relationship Power BI must not filter through (#792). Only one filter
+    #: path between any two tables may be active, so an edge that would add a second --
+    #: a surplus date role on a fact, a snowflake shortcut duplicating a two-hop path --
+    #: is emitted `isActive: false`. Paths are directed (#1012): two facts sharing two
+    #: dimensions keep every edge. It stays in the model and DAX can still traverse
     #: it with USERELATIONSHIP.
     is_active: bool = True
     #: Overrides the seed the emitted TMDL relationship name is derived from. Calendar
@@ -140,7 +141,7 @@ class GoldRelationshipSpec:
     #: identities stable, and in Fabric a renamed relationship is a *new* one.
     guid_seed: str = ""
     #: Why this relationship is inactive, for the product report. "ambiguous-path" when
-    #: it closed a cycle (#792); "unproven-key" when the one side has no declared unique
+    #: it would add a second filter route between two tables (#792, #1012); "unproven-key" when the one side has no declared unique
     #: key to back the cardinality (#794). Empty for an active relationship.
     inactive_reason: str = ""
     #: True when Power BI filters both ways across this edge (DD-238). Only a bridge's
