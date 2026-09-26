@@ -55,7 +55,7 @@ refuses to overwrite a file it does not own.
 
 ## Review what the emit reported
 
-The emit's last line names its run log, a JSON-lines file under `.kairos/logs/` that holds
+The emit's last line names its run log, a JSON-lines file under the repository root's `.kairos/logs/` that holds
 every diagnostic the run printed, attributed to its domain and gate, plus how long each step
 took. Read it back instead of scrolling:
 
