@@ -130,6 +130,21 @@ def build_server(hub: Path | None = None):
         }
 
     @server.tool()
+    def find_term(
+        name: str, domain: str, limit: int = 5, min_score: float = 0.0
+    ) -> dict[str, Any]:
+        """The properties in the domain's owl:imports closure whose name or label
+        resembles `name` (exact, or a token-subset near match), with their owning
+        classes. Run this before proposing a new property: a hub-local property that
+        duplicates one the domain already imports is the defect it prevents (DD-248).
+        `min_score` 0.8 is what `validate` warns on; 0 lists every admissible match."""
+        from ..core.find_term import find_term as _find_term
+
+        root = _hub(hub)
+        _domain_path(root, domain)
+        return _find_term(root, name=name, domains=[domain], limit=limit, min_score=min_score)
+
+    @server.tool()
     def resolve_ontology(domain: str) -> dict[str, Any]:
         """The domain's resolved owl:imports closure: every module loaded, at what depth,
         from where, and whether the closure is complete."""
@@ -199,8 +214,8 @@ def mcp_serve_cmd(hub: Path | None) -> None:
 
     Register it once in the hub (`.mcp.json` for Claude Code, `.vscode/mcp.json` for
     Copilot; the scaffold ships both) and the IDE starts it from the hub's environment.
-    Tools: show_class_inventory, list_class_properties, explain_term, resolve_ontology,
-    compile_check, compile_explain, logs_show. Needs the `[mcp]` extra.
+    Tools: show_class_inventory, list_class_properties, explain_term, find_term,
+    resolve_ontology, compile_check, compile_explain, logs_show. Needs the `[mcp]` extra.
     """
     try:
         server = build_server(hub)

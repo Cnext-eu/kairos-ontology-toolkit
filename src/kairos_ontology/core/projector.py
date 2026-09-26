@@ -794,16 +794,14 @@ def run_projections(
     # `owl:imports` would be mis-flagged as claim/projection drift by the authority gate.
     # Collect every intra-hub `owl:Ontology` base from the full ontologies directory
     # (independent of `--ontology` scoping) so peer imports are recognised as intra-hub.
-    from .ontology_scope import collect_hub_domain_bases
+    from .hub_namespace import hub_ontology_namespaces
 
-    try:
-        for base in collect_hub_domain_bases(ontology_root):
-            hub_domain_namespaces.add(base)
-            hub_domain_namespaces.add(base + "#")
-            hub_domain_namespaces.add(base + "/")
-    except ValueError as exc:
-        # A malformed peer .ttl must not abort projection of the selected domain.
-        _logger.warning("Could not collect hub domain bases: %s", exc)
+    # DD-248: the one reader of the hub's ontology IRIs; a malformed peer .ttl is
+    # skipped there rather than aborting projection of the selected domain.
+    for base in hub_ontology_namespaces(Path(ontology_root).parent.parent):
+        hub_domain_namespaces.add(base)
+        hub_domain_namespaces.add(base + "#")
+        hub_domain_namespaces.add(base + "/")
     # Create output directories
     if not check_only:
         output_path.mkdir(parents=True, exist_ok=True)

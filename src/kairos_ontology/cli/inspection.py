@@ -837,6 +837,74 @@ def explain_term_cmd(iri, ontology, domain, catalog, profile):
     )
 
 
+@click.command(name="find-term")
+@click.argument("name")
+@click.option("--domain", default=None, help="Hub domain whose import closure to search.")
+@click.option(
+    "--all-domains", is_flag=True, default=False, help="Search every domain's closure."
+)
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--limit", type=int, default=5, show_default=True, help="Candidates per domain.")
+@click.option(
+    "--min-score",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.0,
+    show_default=True,
+    help="Floor for a near match; 0.8 is what `validate` warns on.",
+)
+@click.option(
+    "--format", "output_format", type=click.Choice(["text", "json"]), default="text"
+)
+def find_term_cmd(name, domain, all_domains, catalog, limit, min_score, output_format):
+    """List the import-closure properties whose name or label resembles NAME (DD-248).
+
+    Run this before proposing a property: a hub-local property that duplicates one the
+    domain already imports is the defect this lookup exists to prevent. Exact matches
+    score 1.0; a near match shares the name's tokens (``documentTypeCode`` finds
+    ``documentType``). Generic names such as ``code`` match exactly only.
+    """
+    from ..core.find_term import find_term
+    from ..core.hub_utils import find_hub_root, is_domain_ontology_stem
+
+    if not domain and not all_domains:
+        raise click.UsageError("Provide --domain or --all-domains.")
+    hub = find_hub_root(Path.cwd(), require_model=True)
+    if hub is None:
+        raise click.ClickException("Cannot locate a hub for --domain.")
+    if all_domains:
+        domains = sorted(
+            path.stem
+            for path in (hub / "model" / "ontologies").glob("*.ttl")
+            if is_domain_ontology_stem(path.stem)
+        )
+    else:
+        domains = [domain]
+    try:
+        result = find_term(
+            hub,
+            name=name,
+            domains=domains,
+            catalog_path=Path(catalog) if catalog else None,
+            limit=limit,
+            min_score=min_score,
+        )
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_format == "json":
+        click.echo(json.dumps(result, indent=2, sort_keys=True))
+        return
+    click.echo(f"find-term {name!r} (normalised: {result['normalised']!r})")
+    for entry in result["domains"]:
+        note = "" if entry["import_complete"] else "  (closure incomplete)"
+        click.echo(f"\n{entry['domain']}{note}")
+        if not entry["candidates"]:
+            click.echo("  no closure property resembles this name")
+            continue
+        for c in entry["candidates"]:
+            owners = ", ".join(u.rsplit("#", 1)[-1].rsplit("/", 1)[-1] for u in c["class_uris"])
+            click.echo(f"  {c['score']:.2f}  {c['match']:<5} {c['uri']}  [{owners or '-'}]")
+
+
 def _closure_miss_message(loaded, iri: str, path: Path) -> str:
     """Say *why* an IRI the closure mentions is still not an explainable term (#759).
 

@@ -19,11 +19,11 @@ Match rules:
 - **exact**: the normalised column name (or label) equals the property's normalised name
   or label. Score 1.0.
 - **near**: after dropping structural tokens (``has``, ``of`` ...), one token set is a
-  subset of the other with at most two extra tokens on the longer side --
-  ``documentTypeCode`` and ``documentType``, ``estimatedDepartureDateTime`` and
-  ``estimatedDeparture``. The score is the string similarity, reported for ranking and
-  never used as the gate: bare similarity alone accepts ``eventReference`` for
-  ``agentReference``.
+  subset of the other with at most two extra tokens on the longer side, and the shorter
+  side supplies at least half the tokens -- ``documentTypeCode`` and ``documentType``,
+  ``estimatedDepartureDateTime`` and ``estimatedDeparture``. The score is the string
+  similarity, reported for ranking and never used as the gate: bare similarity alone
+  accepts ``eventReference`` for ``agentReference``.
 - **generic guard**: a name made only of generic tokens (``code``, ``typeCode``,
   ``statusCode`` ...) on either side matches exactly or not at all.
 """
@@ -39,6 +39,7 @@ from typing import Any, Iterable, Mapping
 __all__ = [
     "ABBREVIATIONS",
     "GENERIC_NAMES",
+    "PRECISION_MIN_SCORE",
     "STOP_TOKENS",
     "ClosureCandidate",
     "ClosureTermIndex",
@@ -78,6 +79,11 @@ ABBREVIATIONS: Mapping[str, str] = {
 MAX_EXTRA_TOKENS = 2
 
 DEFAULT_LIMIT = 5
+
+#: Score floor for a consumer that acts on a match without a reviewer in between (an
+#: integrity warning, a skipped render). Measured on a 15-domain hub: every real
+#: near-duplicate scored 0.84 or more; the noise scored 0.78 or less.
+PRECISION_MIN_SCORE = 0.8
 
 # The column-name tokeniser ``draft-gap-decisions`` uses to form families, moved here so
 # the lookup and the sheet split a name the same way (``gap_decisions`` imports it back).
@@ -261,10 +267,15 @@ def find_candidates(
     label: str = "",
     limit: int = DEFAULT_LIMIT,
     strip_prefixes: Iterable[str] = (),
+    min_score: float = 0.0,
 ) -> list[ClosureCandidate]:
     """Closure properties whose name or label resembles *column_name*, best first.
 
     Ordered by ``(-score, uri)`` and cut at *limit*; an empty list when nothing matches.
+    *min_score* drops near matches below it (exact ones are 1.0 and always kept): the
+    alignment pass and the gap sheet want recall, a reviewer reads them; an integrity
+    warning or a skipped render wants precision, and 0.8 is where the real duplicates
+    measured on a live hub sit (0.84 and up) and the noise stops (0.78 and down).
     """
     queries: list[str] = []
     for text in (normalise_term(column_name, strip_prefixes=strip_prefixes), normalise_term(label)):
@@ -291,6 +302,8 @@ def find_candidates(
                 if _is_generic(term_tokens) or not _near(query_tokens, term_tokens):
                     continue
                 score = SequenceMatcher(None, query, norm).ratio()
+                if score < min_score:
+                    continue
                 if score > best.get(position, (0.0, ""))[0]:
                     best[position] = (score, "near")
     candidates = [
@@ -317,8 +330,19 @@ def _is_generic(tokens: frozenset[str]) -> bool:
 
 
 def _near(a: frozenset[str], b: frozenset[str]) -> bool:
+    """Subset with at most two extra tokens, and the shorter side at least half the longer.
+
+    The second clause stops one token claiming a three-token name: ``document`` (from
+    ``hasDocument``) is not a candidate for ``documentTypeCode``, while ``documentType``
+    still is.
+    """
     small, big = (a, b) if len(a) <= len(b) else (b, a)
-    return bool(small) and small <= big and len(big) - len(small) <= MAX_EXTRA_TOKENS
+    return (
+        bool(small)
+        and small <= big
+        and len(big) - len(small) <= MAX_EXTRA_TOKENS
+        and 2 * len(small) >= len(big)
+    )
 
 
 def _local(uri: str) -> str:

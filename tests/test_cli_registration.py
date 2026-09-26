@@ -36,6 +36,7 @@ RETAINED_COMMANDS = {
     "domain-coverage",
     "draft-model-report",
     "explain-term",
+    "find-term",
     "extract-schema",
     "feedback",
     "field-mapping-report",

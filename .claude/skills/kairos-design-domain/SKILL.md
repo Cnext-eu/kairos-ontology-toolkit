@@ -295,6 +295,16 @@ reference models are present: `missing_managed_import` errors are blocking
 (degradable only via `--degraded`), so a domain missing a blueprint-required
 managed `owl:imports` fails this gate rather than surfacing later.
 
+`validate` also reports two DD-248 integrity codes.
+`integrity.local-property-resembles-reference-property` is a warning: a closure
+property matches the local name or label (exact, or a token-subset near match such as
+`documentTypeCode` beside `documentType`) and the local property carries no
+`rdfs:subPropertyOf` / `owl:equivalentProperty` link — resolve it as §5 says.
+`integrity.property-outside-hub-namespace` is an error (degradable) for a property this
+file declares under a reference model's namespace, and a warning for a sibling
+domain's. A hub file declares terms only as `:<name>` under its own `owl:Ontology` IRI;
+never mint into a reference model's or a sibling domain's namespace.
+
 The `REUSABLE — no rdfs:domain by design` marker alone only silences the
 naming check; it does not make the property bindable anywhere. A property
 genuinely meant to be shared across more than one sibling class must ALSO
@@ -360,6 +370,7 @@ as text — a `.ttl` carries only its own triples; the parents, inherited proper
 uv run kairos-ontology show-class-inventory --domain <domain>          # every class in the closure, with ancestors
 uv run kairos-ontology list-class-properties <IRI> --domain <domain>   # direct and inherited properties, with origin
 uv run kairos-ontology explain-term <IRI> --domain <domain>            # one term: label, comment, links
+uv run kairos-ontology find-term <name> --domain <domain>              # closure properties whose name or label resembles <name>
 ```
 
 Surface the specialization tree,
@@ -401,6 +412,19 @@ Present:
 - terms deliberately excluded from this slice;
 - unresolved questions and confidence.
 
+Before proposing any property, run `find-term <name> --domain <domain>` (or
+`list-class-properties` on the owning class). The lookup is deterministic and cheap;
+the closure is large, and a local property that duplicates an inherited one is the
+commonest defect in a hub (DD-248). Then do exactly one of:
+
+- **reuse** the closure property, and say so in the proposal;
+- **specialise** it: declare the local property `rdfs:subPropertyOf` the closure
+  property, with the one-line reason in its `rdfs:comment`;
+- **record** in the evidence matrix why no candidate fits.
+
+A local property with none of these is caught by Gate 5
+(`integrity.local-property-resembles-reference-property`).
+
 If more than one bounded-slice option is viable, present an options comparison
 instead of a bare list. Explain the meaning and trade-offs of each option, cite
 the evidence matrix, and include a concrete example: preferably a small Mermaid
@@ -413,6 +437,9 @@ grain, load policy, expressions, and relationship failure actions belong in the
 v5 EntityBinding authored by **kairos-design-mapping**.
 
 ### 6. Review naming and structure
+
+A renamed property is looked up again: the `find-term` rule in §5 applies to the
+final name, not only the first proposal.
 
 Before finalising property and relationship names, consult the reference-models
 **pattern library** — sector-neutral naming conventions and anti-patterns
@@ -720,6 +747,8 @@ diff review, and ontology integrity still apply.
 - Reading a raw ontology serialization (`.ttl`/`.rdf`/`.owl`) as text; use
   `resolve-ontology`, `show-class-inventory`, `list-class-properties`, or
   `explain-term` instead — a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure.
+- Declaring a local property without a `find-term` lookup, or minting one under a
+  reference-model or sibling-domain namespace (DD-248).
 
 ## Related skills
 

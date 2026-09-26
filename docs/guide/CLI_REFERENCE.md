@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-104 commands.
+105 commands.
 
 ## Index
 
@@ -68,6 +68,7 @@ not reasoning.
 | [`feedback resolve`](#feedback-resolve) | Mark a modeling-feedback record resolved and record the resolution note. |
 | [`feedback sync-index`](#feedback-sync-index) | Regenerate ``index.md`` from the records currently on disk. |
 | [`field-mapping-report`](#field-mapping-report) | Generate a field-mapping Excel report: ontology fields x one source system. |
+| [`find-term`](#find-term) | List the import-closure properties whose name or label resembles NAME (DD-248). |
 | [`fit-report`](#fit-report) | Advisory set-difference between a class's full property universe and what is populated. |
 | [`gates`](#gates) | List every gate, the evidence it reads, and the flag that bypasses it (DD-234). |
 | [`generate-bindings`](#generate-bindings) | Generate first-draft EntityBindings from the design sheet (DD-191, no LLM). |
@@ -856,6 +857,28 @@ kairos-ontology field-mapping-report [OPTIONS]
 | `--output`, `-o` |  | Output .xlsx path (default: ontology-hub-publish/reports/field-mapping-<source-system>.xlsx). |
 
 
+## find-term
+
+List the import-closure properties whose name or label resembles NAME (DD-248). Run this before proposing a property: a hub-local property that duplicates one the domain already imports is the defect this lookup exists to prevent. Exact matches score 1.0; a near match shares the name's tokens (``documentTypeCode`` finds ``documentType``). Generic names such as ``code`` match exactly only.
+
+```
+kairos-ontology find-term [OPTIONS] NAME
+```
+
+| Argument | Arity |
+|---|---|
+| `NAME` | required |
+
+| Option | Default | Description |
+|---|---|---|
+| `--domain` |  | Hub domain whose import closure to search. |
+| `--all-domains` |  | Search every domain's closure. |
+| `--catalog` |  |  |
+| `--limit` | `5` | Candidates per domain. |
+| `--min-score` |  | Floor for a near match; 0.8 is what `validate` warns on. |
+| `--format` | `text` |  |
+
+
 ## fit-report
 
 Advisory set-difference between a class's full property universe and what is populated. fit-report is advisory input to design, not a completeness check (DD-144). It answers, deterministically and without any LLM call: of everything an accelerator already models for --class, which properties does a binding's fields: (or --source's propose-alignment evidence) already populate, which are still empty, and which source columns don't map anywhere. Evidence priority: --binding (or an unambiguous auto-detected binding under integration/bindings/) first, then --source's propose-alignment output.  Examples: kairos-ontology fit-report --class acc:TradeParty --domain party kairos-ontology fit-report --class acc:TradeParty --source crm.organisations kairos-ontology fit-report --class acc:TradeParty --binding integration/bindings/x.binding.yaml --format json
@@ -1150,7 +1173,7 @@ kairos-ontology mcp [OPTIONS] COMMAND [ARGS]...
 
 ## mcp serve
 
-Start the Kairos MCP server on stdio. Register it once in the hub (`.mcp.json` for Claude Code, `.vscode/mcp.json` for Copilot; the scaffold ships both) and the IDE starts it from the hub's environment. Tools: show_class_inventory, list_class_properties, explain_term, resolve_ontology, compile_check, compile_explain, logs_show. Needs the `[mcp]` extra.
+Start the Kairos MCP server on stdio. Register it once in the hub (`.mcp.json` for Claude Code, `.vscode/mcp.json` for Copilot; the scaffold ships both) and the IDE starts it from the hub's environment. Tools: show_class_inventory, list_class_properties, explain_term, find_term, resolve_ontology, compile_check, compile_explain, logs_show. Needs the `[mcp]` extra.
 
 ```
 kairos-ontology mcp serve [OPTIONS]
@@ -1507,7 +1530,7 @@ kairos-ontology scaffold-domain [OPTIONS]
 
 ## scaffold-extensions
 
-Draft OWL properties from the accepted ``registered-extension`` decisions. Every property rendered was already decided — this reads the disposition ledger and writes what is recorded there, with the name, range and owning class the aligner proposed. It makes no judgement of its own. That matters because the decisions had no consumer. ``registered-extension``'s own definition points at ``register-concept``, which registers a *class* the archetype catalog lacks; these are *columns* wanting *properties* on classes that already exist. An operator who closed the gate column by column ended up re-deriving every property by hand from a second file. Output is a DRAFT written outside ``model/ontologies/`` so the validator does not load it, the same contract ``suggest-shapes`` uses (DD-076): review it as a diff and move what you accept into the owning domain's ontology. Skipped and reported, never guessed: a non-datatype range (an object property needs a target class and a relationship decision), a name that is not camelCase, and a name accepted with two different class or range readings. Examples: kairos-ontology scaffold-extensions --domain roro --dry-run kairos-ontology scaffold-extensions --domain roro
+Draft OWL properties from the accepted ``registered-extension`` decisions. Every property rendered was already decided — this reads the disposition ledger and writes what is recorded there, with the name, range and owning class the aligner proposed. It makes no judgement of its own, with one exception (DD-248): a property the owning class's import closure already offers under a similar name is skipped and listed, because a local copy of an inherited property is the defect this command must not manufacture. ``--force`` renders it anyway. That matters because the decisions had no consumer. ``registered-extension``'s own definition points at ``register-concept``, which registers a *class* the archetype catalog lacks; these are *columns* wanting *properties* on classes that already exist. An operator who closed the gate column by column ended up re-deriving every property by hand from a second file. Output is a DRAFT written outside ``model/ontologies/`` so the validator does not load it, the same contract ``suggest-shapes`` uses (DD-076): review it as a diff and move what you accept into the owning domain's ontology. Skipped and reported, never guessed: a non-datatype range (an object property needs a target class and a relationship decision), a name that is not camelCase, and a name accepted with two different class or range readings. Examples: kairos-ontology scaffold-extensions --domain roro --dry-run kairos-ontology scaffold-extensions --domain roro
 
 ```
 kairos-ontology scaffold-extensions [OPTIONS]
@@ -1517,7 +1540,8 @@ kairos-ontology scaffold-extensions [OPTIONS]
 |---|---|---|
 | `--domain` | **required** | Hub data domain to render extensions for. |
 | `-o`, `--out` |  | Output draft TTL path (default: <repo>/ontology-hub-publish/extensions-draft/<domain>.ttl). |
-| `--namespace` |  | Property namespace (default: the domain ontology's own, from catalog-v001.xml). |
+| `--namespace` |  | Property namespace (default: the domain ontology's own owl:Ontology IRI plus '#'). Must be a namespace this hub authors (DD-248). |
+| `--force` |  | Render a property even when the owning class's import closure already has one of a similar name (DD-248). Without it such a property is skipped and listed. |
 | `--dry-run` |  | Print the draft, write nothing. |
 
 

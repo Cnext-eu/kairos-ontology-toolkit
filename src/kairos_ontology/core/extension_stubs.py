@@ -38,7 +38,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,9 @@ class ExtensionStubReport:
     properties: list[ExtensionProperty] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
     decisions_seen: int = 0
+    #: DD-248: properties the owning class's closure already offers under a similar
+    #: name, as ``{"property", "on_class", "candidates": [{uri, name, match, score}]}``.
+    closure_candidates: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def classes(self) -> dict[str, int]:
@@ -370,7 +373,6 @@ def unresolvable_classes(hub_root: Path, domain: str, class_uris: dict[str, str]
     if not class_uris:
         return set()
     try:
-        from .generate_bindings import hub_local_properties  # noqa: F401
         from .ontology_loader import load_ontology
 
         master = Path(hub_root) / "model" / "ontologies" / "_master.ttl"
@@ -385,14 +387,98 @@ def unresolvable_classes(hub_root: Path, domain: str, class_uris: dict[str, str]
     return {uri for uri in class_uris.values() if uri and uri not in known}
 
 
+def closure_candidates_for(
+    hub_root: Path,
+    domain: str,
+    properties: Iterable[ExtensionProperty],
+    *,
+    catalog_path: Optional[Path] = None,
+    limit: int = 3,
+) -> dict[str, list[dict[str, Any]]]:
+    """``{property name: [candidate entries]}`` the owning class's closure already offers.
+
+    The DD-248 rule at the last exit: a ``registered-extension`` decision that duplicates
+    a property the class inherits should not be rendered as a new one. Looked up through
+    the shared matcher against the properties ``list-class-properties`` would show for
+    ``on_class`` (direct and inherited) plus the closure's domainless ones. Advisory: an
+    unloadable closure yields ``{}`` and the render proceeds, as ``unresolvable_classes``
+    does.
+    """
+    props = list(properties)
+    if not props:
+        return {}
+    try:
+        from .closure_lookup import PRECISION_MIN_SCORE, find_candidates, terms_from_index
+        from .ontology_loader import SemanticProfile, load_ontology
+
+        path = Path(hub_root) / "model" / "ontologies" / f"{domain}.ttl"
+        catalog = catalog_path or (Path(hub_root) / "catalog-v001.xml")
+        if not path.is_file():
+            return {}
+        loaded = load_ontology(
+            path,
+            catalog_path=catalog if catalog.is_file() else None,
+            profile=SemanticProfile.KAIROS_DESIGN,
+            degraded=True,
+        )
+        index = loaded.semantic_index
+        if index is None:
+            return {}
+        terms = terms_from_index(index)
+    except Exception:  # noqa: BLE001 - advisory only; never fail a render on this
+        return {}
+    found: dict[str, list[dict[str, Any]]] = {}
+    for prop in props:
+        on_class = {
+            str(row.get("property_uri") or "") for row in index.class_properties(prop.on_class)
+        }
+        hits = [
+            c.to_entry()
+            for c in find_candidates(
+                terms, prop.name, limit=limit + 5, min_score=PRECISION_MIN_SCORE
+            )
+            if c.uri in on_class or not c.class_uris
+        ][:limit]
+        if hits:
+            found[prop.name] = hits
+    return found
+
+
 def build_extension_stubs(
-    hub_root: Path, *, domain: str, namespace: str
+    hub_root: Path, *, domain: str, namespace: str, force: bool = False
 ) -> tuple[str, ExtensionStubReport]:
-    """Collect and render one domain's accepted extension properties."""
+    """Collect and render one domain's accepted extension properties.
+
+    A property the owning class's closure already offers under a similar name is skipped
+    and listed under ``closure_candidates`` (DD-248); *force* renders it anyway.
+    """
     hub_root = Path(hub_root)
     analysis = hub_root / "integration" / "sources" / "_analysis"
     classes = anchor_classes_for_domain(analysis, domain, hub_root=hub_root)
     report = collect_extension_properties(
         hub_root, class_uris=classes, unresolvable=unresolvable_classes(hub_root, domain, classes)
     )
+    candidates = closure_candidates_for(hub_root, domain, report.properties)
+    if candidates:
+        kept: list[ExtensionProperty] = []
+        for prop in report.properties:
+            hits = candidates.get(prop.name)
+            if not hits:
+                kept.append(prop)
+                continue
+            report.closure_candidates.append(
+                {"property": prop.name, "on_class": prop.on_class, "candidates": hits}
+            )
+            if force:
+                kept.append(prop)
+            else:
+                best = hits[0]
+                _skip(
+                    report,
+                    prop.name,
+                    f"closure-candidate: <{best['uri']}> ({best['match']}, "
+                    f"{best['score']}) is already a property of the class; reuse it, or "
+                    "render anyway with --force",
+                )
+        report.properties = kept
     return render_extension_ttl(report, namespace=namespace, domain=domain), report
