@@ -68,6 +68,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Every diagnostic is a structured log record, and writing commands keep a run log**
+  (#1011).
+  - `compile`, `emit-gold` and `package-powerbi-release` log each diagnostic they report
+    as `kairos.diagnostic.reported`, attributed to its task (domain or
+    `gold:<product>`) and gate. Each run ends with a `kairos.run.summary`.
+  - `--log-file` now receives INFO and above whatever the console level, so it is no
+    longer empty at the default level.
+  - `compile --emit`, `emit-gold` and `package-powerbi-release` also write
+    `<hub>/.kairos/logs/<utc>-<command>-<operation>.jsonl` by default. The newest 20 are
+    kept, and the directory ignores itself in git.
+  - `compile --check` and `--explain` stay write-free (DD-133/140). Use `--log-file` for
+    them. `KAIROS_RUN_LOG=0` turns the default off.
+  - A multi-domain `compile` prints a "Diagnostics by task" table.
+  - See `docs/guide/OBSERVABILITY.md`. OTel spans per task are a follow-up.
+- **`audit-silver-samples` reports how much of the imported Power BI demand Silver
+  carries** (#942). "Demand" means every relationship key and measure input in
+  `integration/discovery/bi/*-concept-mapping.yaml`. A column counts as reachable when its
+  normalised name matches a Silver column, a mapped source column or a mapped property.
+  - The summary gains `bi_demand_columns`, `bi_demand_reachable` and
+    `bi_demand_coverage_ratio`. They appear only when the hub has BI evidence.
+  - A new warning, `bi_demand_unreachable`, is raised once per BI table.
+
+  A hub whose headline fact cannot be built no longer audits clean.
+- **`validate` warns about a declared property a Power BI model uses but no binding
+  populates** (`bi-demand.property-unbound`, #942). Example: the category property a BI
+  fact splits on, declared in the ontology and bound by nothing. It is a name match, so it
+  is a warning only.
 - **`kairos-ext:goldExcludeRelationship "Table.column -> Table.column"`** (#1012). Leaves
   one foreign-key or bridge edge out of a Gold product, keeping the Silver relationship and
   its column. It is the Gold term for "remove the redundant route", the remedy

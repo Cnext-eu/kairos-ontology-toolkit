@@ -151,3 +151,57 @@ class TestTheAutoRule:
         assert any(
             "Power BI model depends on it" in c["conflict"] for c in stats["conflicts"]
         )
+
+
+class TestDeclaredButUnboundProperty:
+    """#942 suggestion 4: a property a BI model splits on, declared but bound by nothing."""
+
+    @staticmethod
+    def _hub(tmp_path):
+        import shutil
+        from pathlib import Path
+
+        hub = tmp_path / "hub"
+        shutil.copytree(Path(__file__).parent / "scenarios" / "v5-product-hub", hub)
+        billing = hub / "model" / "ontologies" / "billing.ttl"
+        billing.write_text(
+            billing.read_text(encoding="utf-8")
+            + "\nbilling:cargo_category a owl:DatatypeProperty ;\n"
+            "  rdfs:domain billing:Invoice ; rdfs:range xsd:string .\n",
+            encoding="utf-8",
+        )
+        bi = hub / "integration" / "discovery" / "bi"
+        bi.mkdir(parents=True)
+        (bi / "Volumes-concept-mapping.yaml").write_text(
+            yaml.safe_dump({
+                "model_name": "Volumes",
+                "tables": [{"tmdl_name": "f_Volume", "columns": ["CargoCategory", "SignedUpOn"]}],
+            }),
+            encoding="utf-8",
+        )
+        return hub
+
+    def test_the_unbound_property_is_named_with_its_bi_reference(self, tmp_path):
+        from kairos_ontology.core.bi_demand import unbound_demanded_properties
+
+        (item,) = unbound_demanded_properties(self._hub(tmp_path))
+        assert item.property_iri == "https://example.test/ontology/billing#cargo_category"
+        assert item.domain == "billing"
+        assert "Volumes: f_Volume[CargoCategory]" in item.message
+
+    def test_a_bound_property_is_not_reported(self, tmp_path):
+        """`party:signed_up_on` is bound by the customer binding."""
+        from kairos_ontology.core.bi_demand import unbound_demanded_properties
+
+        assert "signed_up_on" not in {
+            item.local_name for item in unbound_demanded_properties(self._hub(tmp_path))
+        }
+
+    def test_a_hub_without_bi_evidence_reports_nothing(self, tmp_path):
+        from kairos_ontology.core.bi_demand import unbound_demanded_properties
+
+        hub = self._hub(tmp_path)
+        import shutil
+
+        shutil.rmtree(hub / "integration" / "discovery" / "bi")
+        assert unbound_demanded_properties(hub) == []

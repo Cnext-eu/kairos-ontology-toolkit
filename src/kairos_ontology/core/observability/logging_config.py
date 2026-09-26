@@ -91,6 +91,11 @@ def _strip_owned_handlers(logger: logging.Logger) -> None:
             handler.close()
 
 
+def _console_only_if_allowed(record: logging.LogRecord) -> bool:
+    """Drop a record meant for the run log only: the command already printed it."""
+    return getattr(record, "kairos.console", True) is not False
+
+
 def configure_logging(
     *,
     verbose: bool = False,
@@ -101,8 +106,9 @@ def configure_logging(
     """Install console (and optional file) handlers on the ``kairos_ontology`` logger.
 
     Parameters are the CLI options. ``log_format`` is ``"text"`` (default) or
-    ``"json"``. Returns the configured logger so callers can attach tests or
-    extra handlers if needed.
+    ``"json"``. The file receives INFO and above whatever the console level, so every
+    diagnostic of a run is in it (#1011). Returns the configured logger so callers can
+    attach tests or extra handlers if needed.
     """
     if log_format not in _VALID_FORMATS:
         raise ValueError(f"unsupported log_format {log_format!r}; choose text or json")
@@ -120,20 +126,35 @@ def configure_logging(
     console.setLevel(level)
     console.setFormatter(formatter)
     console.addFilter(redaction)
+    console.addFilter(_console_only_if_allowed)
     setattr(console, _HANDLER_MARK, True)
     logger.addHandler(console)
 
     if log_file is not None:
-        path = Path(log_file)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(path, encoding="utf-8")
-        file_handler.setLevel(level)
-        file_handler.setFormatter(formatter)
-        file_handler.addFilter(redaction)
-        setattr(file_handler, _HANDLER_MARK, True)
-        logger.addHandler(file_handler)
+        _add_file_handler(logger, Path(log_file), formatter)
 
     return logger
+
+
+def _add_file_handler(logger: logging.Logger, path: Path, formatter: logging.Formatter) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(path, encoding="utf-8")
+    file_level = min(logger.level or logging.WARNING, logging.INFO)
+    file_handler.setLevel(file_level)
+    file_handler.setFormatter(formatter)
+    file_handler.addFilter(RedactionFilter())
+    setattr(file_handler, _HANDLER_MARK, True)
+    logger.addHandler(file_handler)
+    # The console handler keeps its own level; only the file sees the extra INFO.
+    logger.setLevel(min(logger.level or logging.WARNING, file_level))
+
+
+def attach_run_log(path: str | Path) -> None:
+    """Add a JSON-lines file handler for the default run log of a writing command (#1011).
+
+    Closed with every other owned handler by :func:`reset_logging`.
+    """
+    _add_file_handler(logging.getLogger(_LOGGER_PREFIX), Path(path), JsonFormatter())
 
 
 def reset_logging() -> None:
@@ -148,4 +169,4 @@ def reset_logging() -> None:
     logger.propagate = True
 
 
-__all__ = ["configure_logging", "reset_logging"]
+__all__ = ["attach_run_log", "configure_logging", "reset_logging"]

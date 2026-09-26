@@ -93,6 +93,18 @@ class SilverSampleAuditReport:
     sampled_mapped_columns: int
     findings: list[AuditFinding] = field(default_factory=list)
     bindings_dir: str = ""
+    #: Distinct columns an imported Power BI model structurally depends on -- a
+    #: relationship key or a column a measure reads -- and how many of them Silver
+    #: carries (#942). Both 0 when the hub has no ``integration/discovery/bi/`` evidence.
+    bi_demand_columns: int = 0
+    bi_demand_reachable: int = 0
+
+    @property
+    def bi_demand_coverage_ratio(self) -> float | None:
+        """Share of the BI model's structural columns Silver carries, ``None`` without BI."""
+        if self.bi_demand_columns == 0:
+            return None
+        return round(self.bi_demand_reachable / self.bi_demand_columns, 4)
 
     @property
     def counts(self) -> dict[str, int]:
@@ -328,6 +340,15 @@ def _to_dict(report: SilverSampleAuditReport) -> dict[str, Any]:
             "mapped_columns": report.mapped_columns,
             "sampled_mapped_columns": report.sampled_mapped_columns,
             "sample_coverage_ratio": report.sample_coverage_ratio,
+            **(
+                {
+                    "bi_demand_columns": report.bi_demand_columns,
+                    "bi_demand_reachable": report.bi_demand_reachable,
+                    "bi_demand_coverage_ratio": report.bi_demand_coverage_ratio,
+                }
+                if report.bi_demand_columns
+                else {}
+            ),
             "findings": report.counts,
         },
         "findings": [
@@ -362,6 +383,14 @@ def render_markdown(report: SilverSampleAuditReport) -> str:
         f"- Mapped columns: {report.mapped_columns}",
         f"- Mapped columns with samples: {report.sampled_mapped_columns}",
         f"- Sample coverage: {_coverage_text(report.sample_coverage_ratio)}",
+        *(
+            [
+                f"- Power BI demand reachable from Silver: {report.bi_demand_reachable} of "
+                f"{report.bi_demand_columns} ({report.bi_demand_coverage_ratio:.0%})"
+            ]
+            if report.bi_demand_columns
+            else []
+        ),
         f"- Errors: {report.counts[SEVERITY_ERROR]}",
         f"- Warnings: {report.counts[SEVERITY_WARNING]}",
         f"- Info: {report.counts[SEVERITY_INFO]}",
@@ -644,6 +673,77 @@ def _no_mapping_surface_finding(mappings_dir: Path, bindings_dir: Path | None) -
     )
 
 
+def _silver_column_names(dbt_output_dir: Path) -> set[str]:
+    """Every column name the emitted Silver models declare, from their properties YAML."""
+    names: set[str] = set()
+    silver = Path(dbt_output_dir) / "models" / "silver"
+    if not silver.is_dir():
+        return names
+    for path in sorted(silver.rglob("*.yml")):
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        for model in document.get("models") or []:
+            for column in (model or {}).get("columns") or []:
+                if isinstance(column, dict) and column.get("name"):
+                    names.add(str(column["name"]))
+    return names
+
+
+def _bi_demand_coverage(
+    hub_root: Path | None, reachable: set[str]
+) -> tuple[int, int, list[AuditFinding]]:
+    """How much of the imported Power BI models' structural demand Silver carries (#942).
+
+    Structural demand is a relationship key or a column a measure reads: the columns a
+    fact cannot be built without. A column merely present in a BI table is weaker
+    evidence and is not counted. Matching is by normalised name, like the gap sheet, so a
+    miss is evidence for a human -- the column may exist under another name -- and is a
+    warning, never an error. It is reported per BI table, so a model with one unbuildable
+    fact produces one finding rather than a line per column.
+    """
+    if hub_root is None:
+        return 0, 0, []
+    from .bi_demand import KIND_COLUMN, load_bi_demand, normalise
+
+    demand = load_bi_demand(hub_root)
+    if not demand:
+        return 0, 0, []
+    keys = {normalise(name) for name in reachable}
+    structural = {
+        key: [ref for ref in demand.references_for(key) if ref.kind != KIND_COLUMN]
+        for key in sorted(demand.by_column)
+    }
+    structural = {key: refs for key, refs in structural.items() if refs}
+    missing = {key: refs for key, refs in structural.items() if key not in keys}
+
+    by_table: dict[tuple[str, str], list] = {}
+    for refs in missing.values():
+        for ref in refs:
+            by_table.setdefault((ref.model, ref.table), []).append(ref)
+    findings = [
+        AuditFinding(
+            severity=SEVERITY_WARNING,
+            code="bi_demand_unreachable",
+            message=(
+                f"The imported Power BI model {model!r} depends on "
+                f"{len({ref.column for ref in refs})} column(s) of {table or 'a measure'} "
+                "that no Silver column or mapped source column carries: "
+                + ", ".join(sorted({ref.column for ref in refs}))
+                + ". The report built on it cannot be produced from Silver. Bind the "
+                "source column, or record why the report does not need it."
+            ),
+            table=f"{model}: {table}" if table else model,
+            evidence={"references": sorted({ref.describe() for ref in refs})},
+        )
+        for (model, table), refs in sorted(by_table.items())
+    ]
+    return len(structural), len(structural) - len(missing), findings
+
+
 def run_silver_sample_audit(
     *,
     sources_dir: Path,
@@ -688,10 +788,18 @@ def run_silver_sample_audit(
     seen_mapping_triples: set[tuple[str, str, str]] = set()
     duplicate_mappings = 0
 
+    # Names a BI model may know a column by, if Silver carries it (#942).
+    reachable: set[str] = _silver_column_names(dbt_output_dir)
     for col_uri, col_maps in column_maps.items():
         column = _resolve_source_column(col_uri, source_columns, by_table_and_name)
+        if column is not None:
+            reachable.add(column.name)
+        elif col_uri in virtual_outputs:
+            reachable.add(virtual_outputs[col_uri].output_column)
         for col_map in col_maps:
             target = col_map.get("target_uri", "")
+            if target:
+                reachable.add(extract_local_name(target))
             if column is not None:
                 # The same physical source column can legitimately be declared under both
                 # authoring surfaces during a v4-to-v5 migration; count it once per distinct
@@ -832,6 +940,9 @@ def run_silver_sample_audit(
     if mapped_columns == 0:
         findings.append(_no_mapping_surface_finding(mappings_dir, bindings_dir))
 
+    bi_demand_columns, bi_demand_reachable, bi_findings = _bi_demand_coverage(hub_root, reachable)
+    findings.extend(bi_findings)
+
     report = SilverSampleAuditReport(
         generated_at=datetime.now(timezone.utc).isoformat(),
         sources_dir=str(sources_dir),
@@ -841,6 +952,8 @@ def run_silver_sample_audit(
         mapped_columns=mapped_columns,
         sampled_mapped_columns=sampled_mapped_columns,
         findings=findings,
+        bi_demand_columns=bi_demand_columns,
+        bi_demand_reachable=bi_demand_reachable,
     )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
