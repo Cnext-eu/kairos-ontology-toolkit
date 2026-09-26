@@ -926,6 +926,46 @@ class TestUpdateDataplatform:
         assert not (skills_dir / "kairos-design-domain").exists()
         assert not (skills_dir / "kairos-execute-project").exists()
 
+    @staticmethod
+    def _update(tmp_path, *args):
+        (tmp_path / "dbt_project.yml").write_text("name: test\n", encoding="utf-8")
+        (tmp_path / ".github").mkdir(exist_ok=True)
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            return CliRunner().invoke(cli, ["update", *args])
+        finally:
+            os.chdir(old_cwd)
+
+    def test_update_installs_no_hub_only_agent_files(self, tmp_path):
+        """#1033: the settings deny-list, read hooks and MCP server serve a hub's ontology."""
+        result = self._update(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert not (tmp_path / ".claude" / "settings.json").exists()
+        assert not (tmp_path / ".mcp.json").exists()
+        assert not (tmp_path / ".vscode" / "mcp.json").exists()
+        assert "MCP server registration" not in result.output
+
+    def test_update_check_does_not_ask_for_claude_settings(self, tmp_path):
+        result = self._update(tmp_path, "--check")
+
+        assert ".claude/settings.json" not in result.output
+
+    def test_update_leaves_hub_only_files_a_dataplatform_already_has(self, tmp_path):
+        """Files an earlier `update` installed may have been extended; they are not removed."""
+        settings = tmp_path / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"permissions": {"deny": []}}\n', encoding="utf-8")
+        mcp = tmp_path / ".mcp.json"
+        mcp.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+
+        result = self._update(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert settings.read_text(encoding="utf-8") == '{"permissions": {"deny": []}}\n'
+        assert mcp.read_text(encoding="utf-8") == '{"mcpServers": {}}\n'
+
 
 class TestUpdateModelsCustomMigration:
     """Tests for the idempotent models/custom/ -> models/downstream_only/ migration

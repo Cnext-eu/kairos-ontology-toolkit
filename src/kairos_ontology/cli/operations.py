@@ -878,7 +878,9 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
     claude_settings_src = _SCAFFOLD_DIR / "claude-settings.json"
     claude_settings_dst = repo_root / ".claude" / "settings.json"
     claude_settings_rel = ".claude/settings.json"
-    if claude_settings_src.is_file():
+    # Hub-only (#1033): the deny rules guard ontology-hub/ paths and the read hooks explain a
+    # domain .ttl; a dataplatform has neither, and init-dataplatform never installs the file.
+    if claude_settings_src.is_file() and not is_dataplatform:
         if not claude_settings_dst.is_file():
             claude_settings_status = "missing"
             if not check:
@@ -910,10 +912,12 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
 
     # --- MCP server registrations (DD-245) ---------------------------------
     # Created when absent, never overwritten, never a --check failure: the files are the
-    # operator's to extend with other servers.
+    # operator's to extend with other servers. Hub-only (#1033): the server serves a hub's
+    # ontology, and a dataplatform has none to serve.
     from .setup import MCP_REGISTRATIONS
 
-    for source_name, destination in MCP_REGISTRATIONS.items():
+    hub_registrations = {} if is_dataplatform else MCP_REGISTRATIONS
+    for source_name, destination in hub_registrations.items():
         source = _SCAFFOLD_DIR / source_name
         target = repo_root / destination
         if source.is_file() and not target.exists() and not check:
