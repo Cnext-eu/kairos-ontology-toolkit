@@ -48,9 +48,13 @@ REASON_VENDOR_SLOT = "vendor-slot"
 REASON_NO_EVIDENCE = "no-sample-evidence"
 REASON_LOW_CONFIDENCE = "low-confidence-suggestion"
 REASON_NO_REFERENCE_PROPERTY = "no-reference-property"
+#: DD-248 (#1051): the aligner saw a bounded pool; a deterministic lookup found a property
+#: of this name in the import closure that the prompt never listed.
+REASON_CLOSURE_CANDIDATE = "closure-candidate-not-shown"
 
 #: Ordered worst-last so a report reads from "needs a decision" down to "expected".
 REASON_ORDER: tuple[str, ...] = (
+    REASON_CLOSURE_CANDIDATE,
     REASON_NO_REFERENCE_PROPERTY,
     REASON_LOW_CONFIDENCE,
     REASON_NO_EVIDENCE,
@@ -60,6 +64,11 @@ REASON_ORDER: tuple[str, ...] = (
 
 #: Human-facing explanation and the action each bucket implies.
 REASON_GUIDANCE: dict[str, str] = {
+    REASON_CLOSURE_CANDIDATE: (
+        "A property with this name or label exists in the domain's import closure but was "
+        "not offered to the aligner (prompt-pool cut). Cheapest gap of all: confirm the "
+        "candidate and map it, or say why it does not fit, before modelling anything new."
+    ),
     REASON_NO_REFERENCE_PROPERTY: (
         "Real business data with no reference-model property. Close the gap: model it "
         "in the owning domain, register it with 'register-concept', or record it as a "
@@ -81,7 +90,9 @@ REASON_GUIDANCE: dict[str, str] = {
 }
 
 #: Buckets that represent a genuine hole in the domain model.
-GAP_REASONS: frozenset[str] = frozenset({REASON_NO_REFERENCE_PROPERTY, REASON_LOW_CONFIDENCE})
+GAP_REASONS: frozenset[str] = frozenset(
+    {REASON_CLOSURE_CANDIDATE, REASON_NO_REFERENCE_PROPERTY, REASON_LOW_CONFIDENCE}
+)
 
 
 @dataclass(frozen=True)
@@ -103,6 +114,9 @@ class UnmappedColumn:
     #: DD-179 role token when this column is one member of a role group (#938), e.g.
     #: ``consignee`` for ``CONSIGNEE_ZIP``. Empty when alignment found no group.
     role_group: str = ""
+    #: DD-248: closure properties whose name resembles the column, found after the
+    #: aligner answered from its bounded pool (``{uri, name, class, score, match}``).
+    closure_candidates: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +129,11 @@ class UnmappedColumn:
             "recommended_disposition": self.recommended_disposition,
             "proposed_local_property": self.proposal or None,
             **({"role_group": self.role_group} if self.role_group else {}),
+            **(
+                {"closure_candidates": [dict(c) for c in self.closure_candidates]}
+                if self.closure_candidates
+                else {}
+            ),
         }
 
 
@@ -301,6 +320,9 @@ def classify_unmapped(
     ``None`` means the source was not consulted, in which case the default is the gap:
     the column reached ``custom_columns`` precisely because the aligner assessed it and
     found no property, and silence about evidence is not evidence of silence.
+
+    A closure candidate (DD-248) outranks missing evidence: the candidate is a named
+    property to confirm or refuse, which a reviewer can do from the name alone.
     """
     from .propose_alignment import _is_operational_column, is_generic_vendor_slot
 
@@ -312,6 +334,8 @@ def classify_unmapped(
         return REASON_VENDOR_SLOT
     if entry.get("suggested_property"):
         return REASON_LOW_CONFIDENCE
+    if entry.get("closure_candidates"):
+        return REASON_CLOSURE_CANDIDATE
     if has_samples is False:
         return REASON_NO_EVIDENCE
     return REASON_NO_REFERENCE_PROPERTY
@@ -786,6 +810,11 @@ def _build_alignment_report_uncached(
                         recommended_disposition=str(entry.get("recommended_disposition") or ""),
                         proposal=dict(entry.get("proposed_local_property") or {}),
                         role_group=str(entry.get("role_group") or ""),
+                        closure_candidates=tuple(
+                            dict(c)
+                            for c in (entry.get("closure_candidates") or ())
+                            if isinstance(c, dict)
+                        ),
                     )
                 )
         report.domains.append(coverage)
@@ -1052,6 +1081,24 @@ class GapGroup:
                 seen.setdefault(str(occurrence.proposal.get("name") or ""), occurrence.proposal)
         return [p for _, p in sorted(seen.items())]
 
+    @property
+    def closure_candidates(self) -> list[dict[str, Any]]:
+        """Closure properties named like this column (DD-248), best first, at most five.
+
+        The union across occurrences, one entry per property URI keeping the best score:
+        the same column in ten tables was looked up ten times against the same closure.
+        """
+        best: dict[str, dict[str, Any]] = {}
+        for occurrence in self.occurrences:
+            for candidate in occurrence.closure_candidates:
+                uri = str(candidate.get("uri") or "")
+                if uri and float(candidate.get("score") or 0.0) > float(
+                    best.get(uri, {}).get("score") or -1.0
+                ):
+                    best[uri] = dict(candidate)
+        ranked = sorted(best.values(), key=lambda c: (-float(c.get("score") or 0.0), c["uri"]))
+        return ranked[:5]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "column": self.column,
@@ -1060,6 +1107,11 @@ class GapGroup:
             "data_types": self.data_types,
             "reasons": sorted({o.reason for o in self.occurrences}),
             "proposals": self.proposals,
+            **(
+                {"closure_candidates": self.closure_candidates}
+                if self.closure_candidates
+                else {}
+            ),
         }
 
 
@@ -1103,8 +1155,16 @@ def render_gap_groups_markdown(report: AlignmentReport, *, limit: int = 60) -> s
             "review and accept rather than author from scratch."
         )
         lines.append("")
-    lines.append("| Column | Tables | Types | Proposed property | Appears in |")
-    lines.append("|---|---:|---|---|---|")
+    with_candidates = [g for g in groups if g.closure_candidates]
+    if with_candidates:
+        lines.append(
+            f"{len(with_candidates):,} of them have a property of that name in the import "
+            "closure already (the aligner was not shown it) — check those first, before "
+            "any of them becomes a local property."
+        )
+        lines.append("")
+    lines.append("| Column | Tables | Types | Closure candidate | Proposed property | Appears in |")
+    lines.append("|---|---:|---|---|---|---|")
     for group in groups[:limit]:
         shown = ", ".join(group.tables[:3])
         if len(group.tables) > 3:
@@ -1113,9 +1173,13 @@ def render_gap_groups_markdown(report: AlignmentReport, *, limit: int = 60) -> s
             f"`{p.get('name')}`" + (f" on {p['on_class']}" if p.get("on_class") else "")
             for p in group.proposals
         )
+        candidate = " / ".join(
+            f"`{c.get('class')}.{c.get('name')}` ({c.get('match')})"
+            for c in group.closure_candidates[:2]
+        )
         lines.append(
             f"| `{group.column}` | {group.count} | {', '.join(group.data_types) or '—'} "
-            f"| {proposal or '—'} | {shown} |"
+            f"| {candidate or '—'} | {proposal or '—'} | {shown} |"
         )
     if len(groups) > limit:
         lines.append("")

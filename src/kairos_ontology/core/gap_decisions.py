@@ -46,6 +46,8 @@ from typing import Any
 import yaml
 
 from . import analysis_paths
+from .closure_lookup import name_tokens as _name_tokens
+from .prompt_context import render_closure_candidates
 from .alignment_report import (
     REASON_OPERATIONAL,
     REASON_VENDOR_SLOT,
@@ -150,6 +152,9 @@ class GapProposal:
     bi_demand: list[str] = field(default_factory=list)
     #: DD-179 role tokens this name belongs to across its tables (#938).
     role_groups: list[str] = field(default_factory=list)
+    #: DD-248: closure properties whose name resembles this column, which the aligner
+    #: was never shown. Present, the name is a mapping question before it is a gap.
+    closure_candidates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_entry(self) -> dict[str, Any]:
         return {
@@ -164,6 +169,8 @@ class GapProposal:
             "data_types": self.data_types,
             **({"suggested_properties": self.suggested_properties}
                if self.suggested_properties else {}),
+            **({"closure_candidates": self.closure_candidates}
+               if self.closure_candidates else {}),
             **({"bi_demand": self.bi_demand} if self.bi_demand else {}),
             **(
                 {"role_groups": self.role_groups, "governing_pattern": ROLE_PATTERN}
@@ -246,6 +253,7 @@ def _rule_proposal(group: GapGroup, domain: str = "") -> GapProposal:
     # *other*, sibling field on the alignment entry) silently produced an empty list
     # for every group, so the drafted property never reached the sheet (#880).
     suggested = [p for p in group.proposals if p.get("name")]
+    candidates = group.closure_candidates
 
     if _JSON_BLOB_RE.search(name) or any("json" in t.lower() for t in types):
         return GapProposal(
@@ -253,7 +261,7 @@ def _rule_proposal(group: GapGroup, domain: str = "") -> GapProposal:
             "Semi-structured blob (JSON/custom fields). Its contents may carry real "
             "signal but the column itself is not one concept; defer until the blob is "
             "unpacked into columns that can be judged.",
-            suggested,
+            suggested, closure_candidates=candidates,
         )
     if _FREETEXT_RE.search(name):
         return GapProposal(
@@ -261,7 +269,24 @@ def _rule_proposal(group: GapGroup, domain: str = "") -> GapProposal:
             "Free-text note/comment field. Real content, but unstructured prose has no "
             "canonical property; carry to Silver as passthrough unless the business "
             "reads it as governed data.",
-            suggested,
+            suggested, closure_candidates=candidates,
+        )
+    if candidates:
+        # DD-248 (#1051): a closure property of this name exists; the aligner was shown
+        # a bounded pool and never saw it. Every rule below asserts "no reference-model
+        # property", which the candidate contradicts, so none of them may draft here.
+        named = ", ".join(
+            f"{c.get('class')}.{c.get('name')} ({c.get('match')}"
+            + ("" if c.get("match") == "exact" else f" {float(c.get('score') or 0):.2f}")
+            + ")"
+            for c in candidates
+        )
+        return GapProposal(
+            name, domain, group.count, group.tables, types, "", "low",
+            f"The import closure already has a property named like this column: {named}. "
+            "It was not in the pool the aligner saw. Map the column to that property, or "
+            "state why it does not fit, before registering an extension.",
+            suggested, closure_candidates=candidates,
         )
     if _IDENTIFIER_RE.search(name) and group.count >= 3:
         return GapProposal(
@@ -329,25 +354,6 @@ _NON_FAMILY_TOKENS = frozenset(
     }
 )
 
-_FAMILY_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
-#: A lower-to-upper step, or the last capital of an acronym run before a capitalised word:
-#: ``ETLLoadDate`` splits to ``ETL``, ``Load``, ``Date`` rather than ``ETLLoad``, ``Date``,
-#: which no vocabulary can match. The substring matcher this replaced caught it by accident.
-_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
-#: The index of a numbered repeating group, where nothing separates it from the stem.
-#:
-#: ``ADDRESS_1``/``ADDRESS_2`` already tokenise as ``address`` + ``1``, so they group;
-#: ``EQUIPMENTTYPE1``..``EQUIPMENTTYPE14`` did not, and became fourteen separate
-#: decisions about one concept. A trailing digit run is an index, and an unseparated
-#: repeating group is the most common denormalisation in a legacy schema (#882).
-#:
-#: Deliberately narrow, because a false family is worse than a missed one. Only a digit
-#: run at the END of a segment counts, so ``CO2EMISSIONS`` keeps its digits; and it must
-#: follow at least four letters, so a standard's number (``ISO6346``) or a short code
-#: (``A1``) is not split into a prefix that would gather unrelated columns.
-_TRAILING_INDEX_RE = re.compile(r"(?<=[A-Za-z]{4})(?=\d+(?:\s|$))")
-
-
 def family_of(column_name: str) -> str:
     """Leading token of a column name (``pickup_location_city`` -> ``pickup``)."""
     tokens = _name_tokens(column_name)
@@ -403,6 +409,18 @@ def group_into_families(
                     if any(m.bi_demand for m in coherent)
                     else {}
                 ),
+                # DD-248: the closure properties any member resembles, so a family is
+                # not ruled an extension while one of its names already has a home.
+                **(
+                    {
+                        "closure_candidates": _union_candidates(coherent),
+                        "members_with_closure_candidates": sorted(
+                            m.column for m in coherent if m.closure_candidates
+                        ),
+                    }
+                    if any(m.closure_candidates for m in coherent)
+                    else {}
+                ),
                 # #938: a family that is a role group is one party in a role, and a
                 # normative pattern says how to model it.
                 **(
@@ -418,6 +436,20 @@ def group_into_families(
     families.sort(key=lambda f: (-f["source_columns"], f["domain"], f["family"]))
     loose.sort(key=lambda p: (-p.occurrences, p.column))
     return families, loose
+
+
+def _union_candidates(members: list[GapProposal], *, limit: int = 8) -> list[dict[str, Any]]:
+    """One entry per closure property across *members*, best score first (DD-248)."""
+    best: dict[str, dict[str, Any]] = {}
+    for member in members:
+        for candidate in member.closure_candidates:
+            uri = str(candidate.get("uri") or "")
+            if uri and float(candidate.get("score") or 0.0) > float(
+                best.get(uri, {}).get("score") or -1.0
+            ):
+                best[uri] = dict(candidate)
+    ranked = sorted(best.values(), key=lambda c: (-float(c.get("score") or 0.0), c["uri"]))
+    return ranked[:limit]
 
 
 def _semantically_coherent(
@@ -438,11 +470,6 @@ def _semantically_coherent(
         meaningful = [t for t in rest if t not in _NON_FAMILY_TOKENS]
         (coherent if rest and meaningful else rejected).append(member)
     return coherent, rejected
-
-
-def _name_tokens(column_name: str) -> list[str]:
-    text = _CAMEL_BOUNDARY_RE.sub(" ", _FAMILY_SPLIT_RE.sub(" ", str(column_name or "")))
-    return _TRAILING_INDEX_RE.sub(" ", text).lower().split()
 
 
 #: Alignment confidence at or above which a mapped column counts as business data.
@@ -920,6 +947,9 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             # Names an imported Power BI model uses (#942): held out of
             # --accept-proposals, and never drafted as deferred or not-business-data.
             "with_bi_demand": sum(1 for p in proposals if p.bi_demand),
+            # DD-248: names a same-named closure property exists for; never drafted as
+            # registered-extension and held out of --accept-proposals.
+            "with_closure_candidates": sum(1 for p in proposals if p.closure_candidates),
             "auto_disposition_conflicts": len(conflicts),
             "conflicts_already_recorded": sum(1 for c in conflicts if c.recorded_disposition),
             "schema_catalogue_tables_excluded": len(excluded_tables),
@@ -932,7 +962,10 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             "'kairos-ontology draft-gap-decisions --apply'. Leave blank to decide "
             "later. 'proposed_disposition' is a draft and is never applied on its own; "
             "note that 'blueprint-gap' asserts a reference-model defect to file "
-            "upstream, so it is proposed sparingly and never assumed. The 'conflicts' "
+            "upstream, so it is proposed sparingly and never assumed. An entry carrying "
+            "'closure_candidates' names a property of the import closure the aligner was "
+            "never shown: map the column to it (or record why it does not fit) before "
+            "registering an extension; --accept-proposals holds such entries. The 'conflicts' "
             "block is not part of this workflow: those columns were withheld from the "
             "auto-disposition rule because alignment disagreed with it, and each needs "
             "a per-column answer via 'kairos-ontology source-disposition set'. Any "
@@ -1028,6 +1061,14 @@ def suggest_loose_dispositions(
                 f"types: {', '.join(entry.get('data_types') or []) or 'unknown'}"
                 + (f"; aligner drafted property: {', '.join(drafted)}" if drafted else "")
                 + (f"; domain anchors: {', '.join(anchor_names)}" if anchor_names else "")
+                # DD-248: the closure properties this name resembles, rendered through
+                # the shared prompt helper so the model sees what the aligner did not.
+                + (
+                    "; CLOSURE CANDIDATES: "
+                    + render_closure_candidates(entry["closure_candidates"])
+                    if entry.get("closure_candidates")
+                    else ""
+                )
                 # #942: a report depends on it, so deferring or discarding it is the
                 # one answer the evidence already rules out.
                 + (
@@ -1057,6 +1098,11 @@ Give a one-sentence 'reasoning' naming the concept you think the column holds. W
 aligner already drafted a property for it, that is strong evidence the column is real
 business data. Prefer 'registered-extension' or 'deferred' over 'blueprint-gap' unless
 the concept is clearly one the reference model ought to have had.
+
+When a line lists CLOSURE CANDIDATES, a property of that name exists in the reference
+closure and the aligner did not see it. Do not answer registered-extension for that
+column unless 'reasoning' states why the candidate does not fit; prefer leaving the
+disposition empty so a human maps the column to the candidate.
 
 Answer under the exact key shown at the start of each line (domain::column).
 {glossary_block}
@@ -1217,6 +1263,12 @@ def suggest_family_dispositions(
                 if family.get("bi_demand_members")
                 else ""
             )
+            + (
+                "; CLOSURE CANDIDATES: "
+                + render_closure_candidates(family["closure_candidates"])
+                if family.get("closure_candidates")
+                else ""
+            )
         )
 
     glossary_block = _glossary_prompt_block(hub_root, subject="family")
@@ -1241,6 +1293,11 @@ things.
 Give a one-sentence 'reasoning' naming the concept you think the family represents.
 Prefer 'registered-extension' or 'deferred' over 'blueprint-gap' unless the concept is
 clearly one the reference model ought to have had.
+
+When a line lists CLOSURE CANDIDATES, a property named like one of the members exists
+in the reference closure and the aligner did not see it. Do not answer
+registered-extension for that family unless 'reasoning' states why the candidates do not
+fit; prefer leaving the disposition empty so a human maps those members.
 
 Answer under the exact key shown at the start of each line (domain::family).
 {glossary_block}
@@ -1331,6 +1388,11 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
     A decision a human already typed is never overwritten, and an entry a Power BI
     model depends on is left for one (#942): accepting blanket answers is exactly how a
     report's grain column was deferred. Those are counted as ``held-for-bi-demand``.
+
+    An entry with closure candidates (DD-248) is held too, unless its proposal is a
+    disposition other than ``registered-extension``: a same-named property exists in the
+    closure, so registering an extension duplicates it, and the *deferred* fallback would
+    bury a one-line mapping answer. Counted as ``held-for-closure-candidate``.
     """
     counts: dict[str, int] = {}
     for entry in list(sheet.get("families") or []) + list(sheet.get("decisions") or []):
@@ -1339,7 +1401,11 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
         if entry.get("bi_demand") or entry.get("bi_demand_members"):
             counts["held-for-bi-demand"] = counts.get("held-for-bi-demand", 0) + 1
             continue
-        decision = str(entry.get("proposed_disposition") or "").strip() or fallback
+        proposed = str(entry.get("proposed_disposition") or "").strip()
+        if entry.get("closure_candidates") and proposed in ("", "registered-extension"):
+            counts["held-for-closure-candidate"] = counts.get("held-for-closure-candidate", 0) + 1
+            continue
+        decision = proposed or fallback
         entry["decision"] = decision
         entry["decided_by"] = "autopilot"
         counts[decision] = counts.get(decision, 0) + 1

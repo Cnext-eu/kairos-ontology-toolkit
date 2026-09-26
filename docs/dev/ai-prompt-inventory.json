@@ -42,15 +42,13 @@
       "module": "core/gap_decisions.py",
       "function": "suggest_family_dispositions",
       "ontology_terms": true,
-      "known_gap": "DD-244",
-      "note": "wording no longer asserts absence from the reference model (DD-244); the candidate class's properties are not yet rendered -- needs the closure in scope"
+      "note": "closure candidates per column/family rendered through prompt_context.render_closure_candidates (DD-248, #1051); the candidate class's full property list is still not rendered"
     },
     {
       "module": "core/gap_decisions.py",
       "function": "suggest_loose_dispositions",
       "ontology_terms": true,
-      "known_gap": "DD-244",
-      "note": "wording no longer asserts absence from the reference model (DD-244); the candidate class's properties are not yet rendered -- needs the closure in scope"
+      "note": "closure candidates per column/family rendered through prompt_context.render_closure_candidates (DD-248, #1051); the candidate class's full property list is still not rendered"
     },
     {
       "module": "core/propose_alignment.py",

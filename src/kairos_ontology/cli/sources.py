@@ -4555,6 +4555,14 @@ def draft_gap_decisions_cmd(
                 "(see 'bi_demand' on each entry); never drafted as deferred or "
                 "not-business-data, and left for a human by --accept-proposals"
             )
+        if s.get("with_closure_candidates"):
+            # DD-248 (#1051): a same-named property exists in the import closure; the
+            # aligner was never shown it, so this is a mapping question, not a gap.
+            click.echo(
+                f"   🔎 {s['with_closure_candidates']} name(s) already have a same-named "
+                "property in the import closure (see 'closure_candidates' on each entry); "
+                "never drafted as registered-extension, and held by --accept-proposals"
+            )
         if s["auto_disposition_conflicts"]:
             click.echo(
                 f"   ⚠ {s['auto_disposition_conflicts']} auto-disposition conflict(s) "

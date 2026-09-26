@@ -69,7 +69,7 @@ class TestAlignmentPrompt:
         assert alignments[1]["ref_property"] == "p001"
 
     def test_the_pool_contract_moved(self):
-        assert pa.ALIGNMENT_POOL_CONTRACT == 3
+        assert pa.ALIGNMENT_POOL_CONTRACT == 4
 
 
 class TestClassification:

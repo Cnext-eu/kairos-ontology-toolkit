@@ -14,7 +14,7 @@ the model can act on. ``tests/test_prompt_context_contract.py`` holds builders t
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .semantic_index import ClassRecord, SemanticIndex
 
@@ -125,6 +125,26 @@ def render_class_context(
     )
 
 
+def render_closure_candidates(candidates: Iterable[Mapping[str, Any]], *, limit: int = 5) -> str:
+    """One line naming the closure properties a column name resembles (DD-248).
+
+    ``TradeParty.legalName (exact) <uri>; Address.postalCode (near 0.84) <uri>``. Order is
+    the caller's (score-ranked); the model reads the class, the name and the IRI it can
+    answer with, and how sure the lookup was.
+    """
+    parts: list[str] = []
+    for candidate in list(candidates)[:limit]:
+        owner = str(candidate.get("class") or "")
+        name = str(candidate.get("name") or "")
+        match = str(candidate.get("match") or "")
+        if match == "near":
+            match = f"near {float(candidate.get('score') or 0.0):.2f}"
+        qualified = f"{owner}.{name}" if owner else name
+        uri = str(candidate.get("uri") or "")
+        parts.append(f"{qualified} ({match})" + (f" <{uri}>" if uri else ""))
+    return "; ".join(parts)
+
+
 def _owner_name(index: SemanticIndex, record: ClassRecord, property_uri: str) -> str:
     """The nearest ancestor that declares *property_uri* directly, by name."""
     for ancestor in sorted(record.ancestors, key=lambda link: link.distance):
@@ -143,5 +163,6 @@ __all__ = [
     "RenderedClassContext",
     "disclosure_line",
     "render_class_context",
+    "render_closure_candidates",
     "truncate_class_pool",
 ]

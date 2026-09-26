@@ -66,6 +66,12 @@ from .analyse_sources import (
     parse_source_vocabulary,
     parse_reference_model,
 )
+from .closure_lookup import (
+    ClosureTermIndex,
+    find_candidates,
+    infer_column_prefix,
+    terms_from_ref_classes,
+)
 from .prompt_context import disclosure_line, truncate_class_pool
 from .ai_provider import (
     ROLE_ALIGNMENT,
@@ -1471,7 +1477,10 @@ def _score_ref_class(
     score += len(cls_tokens & indicative_tokens) * 1.5
     score += len(cls_tokens & likely_entity_tokens) * 2.2
 
-    for p in ref_class.get("properties", [])[:MAX_REF_PROPERTIES_PER_PROMPT]:
+    # Every property counts. The cut at MAX_REF_PROPERTIES_PER_PROMPT belongs to the prompt
+    # renderer; applied here it hid a class whose only match was an inherited property past
+    # the sixtieth, so the class never reached the shortlist at all (#1051).
+    for p in ref_class.get("properties", []):
         prop_tokens = _tokenize_text(f"{p.get('name', '')} {p.get('label', '')}")
         score += len(prop_tokens & column_tokens) * 1.0
         score += len(prop_tokens & indicative_tokens) * 1.2
@@ -1965,6 +1974,7 @@ def build_alignment_prompt(
     glossary_records: list[dict[str, str]] | None = None,
     anchor_override: str | None = None,
     qualified_properties: bool = False,
+    omitted_classes: int = 0,
 ) -> str:
     """Build the alignment prompt for one source table.
 
@@ -2103,11 +2113,14 @@ def build_alignment_prompt(
 
     ref_inventory = _format_ref_inventory(ref_classes)
     # DD-244: one actionable line when a class was cut, so "no listed property fits" is
-    # not read as "the reference model lacks it".
+    # not read as "the reference model lacks it". *omitted_classes* is what the shortlist
+    # left out of the pool; the caller knows, this function only sees what survived.
     _, omitted_properties = truncate_class_pool(
         ref_classes, max_properties=MAX_REF_PROPERTIES_PER_PROMPT
     )
-    disclosure = disclosure_line(omitted_properties=omitted_properties)
+    disclosure = disclosure_line(
+        omitted_classes=max(0, int(omitted_classes)), omitted_properties=omitted_properties
+    )
     if disclosure:
         ref_inventory = f"{ref_inventory}\n\n{disclosure}"
     source_cols = _format_source_columns(columns)
@@ -2285,7 +2298,10 @@ ALIGNMENT_KINDS = ("exact", "semantic", "partial", "custom")
 #: Bump whenever the pool or the pair check changes.
 #: 3: DD-244 -- the response schema and the pair check see the shown pool, not the
 #: whole one, and a cut class is disclosed in the prompt.
-ALIGNMENT_POOL_CONTRACT = 3
+#: 4: DD-248 (#1051) -- the shortlist scorer sees every property, the disclosure counts
+#: the classes cut as well as the properties, and a custom column carries the closure
+#: properties whose name resembles it.
+ALIGNMENT_POOL_CONTRACT = 4
 
 
 def _shown_pool(ref_classes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2603,6 +2619,7 @@ def align_table(
     glossary_terms: list[str] | None = None,
     glossary_records: list[dict[str, str]] | None = None,
     trace_session_id: str = "",
+    omitted_classes: int = 0,
 ) -> dict[str, Any]:
     """Align one source table, splitting across calls when it is too wide.
 
@@ -2637,6 +2654,7 @@ def align_table(
             glossary_terms=glossary_terms,
             glossary_records=glossary_records,
             trace_session_id=trace_session_id,
+            omitted_classes=omitted_classes,
         )
 
     chunks = [columns[i : i + chunk_size] for i in range(0, len(columns), chunk_size)]
@@ -2662,6 +2680,7 @@ def align_table(
         glossary_terms=glossary_terms,
         glossary_records=glossary_records,
         trace_session_id=trace_session_id,
+        omitted_classes=omitted_classes,
     )
     pinned = anchor_override or merged.get("ref_class")
     for chunk in chunks[1:]:
@@ -2680,6 +2699,7 @@ def align_table(
             glossary_terms=glossary_terms,
             glossary_records=glossary_records,
             trace_session_id=trace_session_id,
+            omitted_classes=omitted_classes,
         )
         merged["column_alignments"].extend(part.get("column_alignments") or [])
         # A failure in any chunk is a failure for the table: the alternative is
@@ -2706,6 +2726,7 @@ def _align_table_once(
     glossary_terms: list[str] | None = None,
     glossary_records: list[dict[str, str]] | None = None,
     trace_session_id: str = "",
+    omitted_classes: int = 0,
 ) -> dict[str, Any]:
     """Run LLM alignment for one source table against reference model classes.
 
@@ -2771,6 +2792,7 @@ def _align_table_once(
         glossary_records=glossary_records,
         anchor_override=anchor_override,
         qualified_properties=schema_uses_qualified_properties(response_format),
+        omitted_classes=omitted_classes,
     )
 
     generation_outcome = OUTCOME_SEMANTIC_SUCCESS
@@ -2956,11 +2978,6 @@ def _clamp_confidence(val: Any) -> float:
     return max(0.0, min(1.0, f))
 
 
-def _normalize_property_token(name: str) -> str:
-    """Lower-cased alphanumeric token of a property/column name for similarity."""
-    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
-
-
 def _source_column_digest(columns: list[dict[str, Any]]) -> tuple[int, str]:
     """Return ``(count, sha256)`` for a table's full source column set (F6).
 
@@ -3112,11 +3129,49 @@ def _build_object_property_candidate(
     }
 
 
+def closure_candidates_for_result(
+    result: dict[str, Any],
+    index: ClosureTermIndex,
+    *,
+    shown_pool: list[dict[str, Any]],
+    columns: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """``{column: [candidate entries]}`` for the custom columns of one table (DD-248).
+
+    A candidate is a closure property whose name resembles the column and that the
+    prompt did **not** list: a property the model was shown and declined is a verdict,
+    not a pool artefact, so it is left out. The vendor prefix most of the table's
+    columns share (CargoWise ``XX_``) is stripped before the lookup. Pure and
+    deterministic, so the result is safe to cache alongside the model's answer.
+    """
+    if not index.terms:
+        return {}
+    shown = {
+        str(p.get("uri") or "")
+        for cls in _shown_pool(shown_pool)
+        for p in (cls.get("properties") or ())
+    }
+    strip = (infer_column_prefix(str(c.get("name") or "") for c in columns),)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for ca in result.get("column_alignments") or []:
+        if ca.get("alignment") != "custom" or not ca.get("column"):
+            continue
+        found = [
+            c.to_entry()
+            for c in find_candidates(index, str(ca["column"]), strip_prefixes=strip)
+            if c.uri not in shown
+        ]
+        if found:
+            out[str(ca["column"])] = found
+    return out
+
+
 def _build_custom_column(
     ca: dict[str, Any],
     col_data_type: str,
     *,
     confidence_floor: float,
+    closure_candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one canonical *custom* (unmatched) column entry (issue #182).
 
@@ -3125,6 +3180,11 @@ def _build_custom_column(
     ``confidence_floor`` the suggestion is dropped (``suggested_property: None``)
     rather than emitting a confident-but-wrong guess (Problem 1). ``disposition``
     is left ``None`` for the Checkpoint-3b triage (issue #164).
+
+    *closure_candidates* (DD-248, #1051) are the closure properties whose name resembles
+    the column, found deterministically after the model answered: the model saw a bounded
+    pool, so "custom" means "nothing shown fitted", not "nothing exists". Written only
+    when non-empty, so a column with none serialises exactly as before.
     """
     confidence = _clamp_confidence(ca.get("confidence", 0.0))
     suggested = str(ca.get("ref_property", "") or "").strip() or None
@@ -3155,6 +3215,8 @@ def _build_custom_column(
     proposal = normalize_local_proposal(ca.get("proposed_local_property"))
     if proposal:
         entry["proposed_local_property"] = proposal
+    if closure_candidates:
+        entry["closure_candidates"] = list(closure_candidates)
     return entry
 
 
@@ -3181,10 +3243,8 @@ def _downgrade_catch_all_suggestions(
 
     downgraded = 0
     for suggested, members in groups.items():
-        token = _normalize_property_token(suggested)
-        dissimilar = [
-            cc for cc in members if _normalize_property_token(cc.get("column", "")) != token
-        ]
+        token = _compact_name(suggested)
+        dissimilar = [cc for cc in members if _compact_name(cc.get("column", "")) != token]
         if len(dissimilar) >= min_columns:
             for cc in dissimilar:
                 cc["suggested_property"] = None
@@ -3859,9 +3919,9 @@ def _lookup_property_label(
     return idx.get((None, ref_property), "")
 
 
-def _compact_name(value: str) -> str:
-    """Lowercased alphanumeric-only form of a name (deterministic)."""
-    return re.sub(r"[^a-z0-9]", "", value.lower())
+def _compact_name(value: str | None) -> str:
+    """Lowercased alphanumeric-only form of a name (deterministic); ``None`` is ``""``."""
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
 def _is_projection_part_column(column_name: str, projections: Sequence[EntityProjection]) -> bool:
@@ -4893,6 +4953,11 @@ def _propose_alignments(
             property_ref_classes = ref_classes
             class_meta = {}
 
+        # DD-248 (#1051): every property the domain can see, indexed once, so a column the
+        # model left `custom` is checked against the whole closure and not only against
+        # the bounded slice the prompt showed. Immutable, so the worker threads share it.
+        closure_index = terms_from_ref_classes(property_ref_classes)
+
         # DD-045: property-range index for deterministic transform hints.
         # F3 (toolkit-optimizations): also consumed by the object-property target
         # resolver, so it is built unconditionally (cheap, deterministic).
@@ -5152,6 +5217,7 @@ def _propose_alignments(
                 ),
                 "",
             )
+            pool_used: list[dict[str, Any]] = []
             try:
                 if cross_module:
                     # DD-070: STEP 1 stays home-scoped; STEP 2 uses the widened
@@ -5183,7 +5249,9 @@ def _propose_alignments(
                         glossary_terms=glossary_terms,
                         glossary_records=glossary_records,
                         trace_session_id=trace_session_id,
+                        omitted_classes=len(property_ref_classes) - len(prop_pool),
                     )
+                    pool_used = prop_pool
                 else:
                     value_objects = expand_value_object_pool(
                         shortlist_classes,
@@ -5208,7 +5276,12 @@ def _propose_alignments(
                         glossary_terms=glossary_terms,
                         glossary_records=glossary_records,
                         trace_session_id=trace_session_id,
+                        # DD-248: the shortlist cut these classes; the prompt says so.
+                        omitted_classes=(
+                            len(ref_classes) - len(shortlist_classes) - len(value_objects)
+                        ),
                     )
+                    pool_used = shortlist_classes + value_objects
                     # An anchored table is never widened to the full inventory. The
                     # retry exists because a lexical shortlist is unreliable; when the
                     # class is already decided, widening cannot improve STEP 1 and
@@ -5241,6 +5314,16 @@ def _propose_alignments(
                             full_result, len(columns)
                         ) >= _alignment_result_score(result, len(columns)):
                             result = full_result
+                            pool_used = ref_classes
+                # DD-248 (#1051): "custom" means nothing in the *shown* pool fitted. Look
+                # each such column up in the whole closure, minus what the prompt listed,
+                # so a property past the cut is a candidate on the column rather than a
+                # "no reference property" gap that becomes a local extension. Stored on
+                # the result so a cached table carries the same candidates as a fresh one.
+                if result.get("generation_outcome") == OUTCOME_SEMANTIC_SUCCESS:
+                    result["closure_candidates"] = closure_candidates_for_result(
+                        result, closure_index, shown_pool=pool_used, columns=columns
+                    )
             except Exception as exc:  # noqa: BLE001 — isolate a single table failure
                 logger.warning("Alignment failed for %s.%s: %s", system, table, exc)
                 result = {
@@ -5367,6 +5450,12 @@ def _propose_alignments(
                             ca,
                             col_data_type,
                             confidence_floor=custom_confidence_floor,
+                            # DD-248: computed in the worker against the pool the model
+                            # actually saw, and cached with the result (see
+                            # closure_candidates_for_result).
+                            closure_candidates=(result.get("closure_candidates") or {}).get(
+                                ca["column"]
+                            ),
                         )
                     )
                 else:
@@ -5695,6 +5784,19 @@ def _propose_alignments(
             report(
                 f"     🧹 Suppressed {downgraded} catch-all custom suggestion(s)",
                 level="verbose",
+            )
+        # DD-248: how much of this domain's custom bucket is a prompt-pool artefact.
+        with_candidates = [
+            (ta.table, cc["column"])
+            for ta in alignment.tables
+            for cc in ta.custom_columns
+            if cc.get("closure_candidates")
+        ]
+        if with_candidates:
+            report(
+                f"     🔎 closure candidates: {len(with_candidates)} custom column(s) in "
+                f"{len({t for t, _ in with_candidates})} table(s) have a same-named "
+                "property in the import closure that the prompt did not show"
             )
 
         # Build reference rollup (home-domain classes only — DD-070 keeps cross-

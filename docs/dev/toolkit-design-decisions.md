@@ -310,5 +310,6 @@ during cleanup.
 | [DD-245](decisions/dd-245-ontology-semantics-are-served-through-one-interface-and-a-raw-read-corrects-itself.md) | Ontology semantics are served through one interface, and a raw read corrects itself | Accepted | 2026-09-26 |
 | [DD-246](decisions/dd-246-agentsmd-carries-the-agent-instructions-for-the-toolkit-hubs-and-dataplatforms-copilot.md) | AGENTS.md carries the agent instructions for the toolkit, hubs and dataplatforms; copilot-instructions.md is a pointer | Accepted | 2026-09-26 |
 | [DD-247](decisions/dd-247-a-shared-owner-tie-is-broken-on-evidence-not-on-domain-order.md) | A shared-owner tie is broken on evidence, not on domain order | Accepted | 2026-09-26 |
+| [DD-248](decisions/dd-248-a-hub-local-property-is-declared-only-after-a-closure-lookup-finds-no-candidate.md) | A hub-local property is declared only after a closure lookup finds no candidate | Accepted | 2026-09-26 |
 
 ---

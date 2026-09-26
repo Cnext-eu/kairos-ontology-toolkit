@@ -11,6 +11,7 @@ import yaml
 
 from kairos_ontology.core.alignment_report import (
     GAP_REASONS,
+    REASON_CLOSURE_CANDIDATE,
     REASON_LOW_CONFIDENCE,
     REASON_NO_EVIDENCE,
     REASON_NO_REFERENCE_PROPERTY,
@@ -102,20 +103,106 @@ def test_operational_wins_over_missing_evidence() -> None:
 
 
 def test_only_actionable_buckets_count_as_gaps() -> None:
-    assert GAP_REASONS == {REASON_NO_REFERENCE_PROPERTY, REASON_LOW_CONFIDENCE}
+    assert GAP_REASONS == {
+        REASON_CLOSURE_CANDIDATE,
+        REASON_NO_REFERENCE_PROPERTY,
+        REASON_LOW_CONFIDENCE,
+    }
     assert REASON_OPERATIONAL not in GAP_REASONS
     assert REASON_VENDOR_SLOT not in GAP_REASONS
 
 
 def test_every_reason_has_a_place_in_the_ordering() -> None:
     assert set(REASON_ORDER) == {
+        REASON_CLOSURE_CANDIDATE,
         REASON_NO_REFERENCE_PROPERTY,
         REASON_LOW_CONFIDENCE,
         REASON_NO_EVIDENCE,
         REASON_VENDOR_SLOT,
         REASON_OPERATIONAL,
     }
-    assert REASON_ORDER[0] == REASON_NO_REFERENCE_PROPERTY
+    # The cheapest decision reads first: a named property to confirm or refuse.
+    assert REASON_ORDER[:2] == (REASON_CLOSURE_CANDIDATE, REASON_NO_REFERENCE_PROPERTY)
+
+
+# ---------------------------------------------------------------------------
+# DD-248 (#1051): a closure property the prompt never showed is its own reason
+# ---------------------------------------------------------------------------
+
+_CANDIDATE = {
+    "uri": "https://x/#legalName", "name": "legalName", "class": "Party",
+    "score": 1.0, "match": "exact",
+}
+
+
+def test_a_closure_candidate_is_its_own_reason() -> None:
+    entry = {"closure_candidates": [_CANDIDATE]}
+    assert classify_unmapped(entry, "LEGAL_NAME") == REASON_CLOSURE_CANDIDATE
+    # It outranks missing evidence: the candidate is a name a reviewer can judge.
+    assert classify_unmapped(entry, "LEGAL_NAME", has_samples=False) == REASON_CLOSURE_CANDIDATE
+
+
+def test_a_model_suggestion_and_operational_still_win_over_a_candidate() -> None:
+    assert (
+        classify_unmapped({"closure_candidates": [_CANDIDATE], "suggested_property": "x"}, "n")
+        == REASON_LOW_CONFIDENCE
+    )
+    assert classify_unmapped({"closure_candidates": [_CANDIDATE]}, "updated_by") == (
+        REASON_OPERATIONAL
+    )
+
+
+def test_candidates_reach_the_report_the_groups_and_the_rendering(tmp_path: Path) -> None:
+    from kairos_ontology.core.alignment_report import (
+        group_gaps_by_column,
+        render_gap_groups_markdown,
+    )
+
+    weaker = {**_CANDIDATE, "score": 0.85, "match": "near"}
+    other = {
+        "uri": "https://x/#tradingName", "name": "tradingName", "class": "Party",
+        "score": 0.81, "match": "near",
+    }
+    _write_domain(
+        tmp_path,
+        "party",
+        [
+            _table(
+                table="companies",
+                custom=[{"column": "LEGAL_NAME", "closure_candidates": [weaker, other]}],
+            ),
+            _table(
+                table="carriers",
+                custom=[{"column": "LEGAL_NAME", "closure_candidates": [_CANDIDATE]}],
+            ),
+            _table(table="ports", custom=[{"column": "quay", "example_values": ["ZEE"]}]),
+        ],
+    )
+
+    report = build_alignment_report(tmp_path)
+
+    assert report.reason_counts() == {
+        REASON_CLOSURE_CANDIDATE: 2,
+        REASON_NO_REFERENCE_PROPERTY: 1,
+    }
+    column = next(c for c in report.gap_columns if c.column == "LEGAL_NAME")
+    assert column.to_dict()["closure_candidates"]
+    assert "closure_candidates" not in next(
+        c for c in report.gap_columns if c.column == "quay"
+    ).to_dict()
+
+    [legal, _quay] = group_gaps_by_column(report)
+    # One entry per URI, the best score kept, best first.
+    assert [(c["uri"], c["score"]) for c in legal.closure_candidates] == [
+        ("https://x/#legalName", 1.0),
+        ("https://x/#tradingName", 0.81),
+    ]
+    assert legal.to_dict()["closure_candidates"] == legal.closure_candidates
+
+    rendered = render_gap_groups_markdown(report)
+    assert "`Party.legalName` (exact)" in rendered
+    assert "have a property of that name in the import closure" in rendered
+    assert f"`{REASON_CLOSURE_CANDIDATE}`" in render_markdown(report)
 
 
 # ---------------------------------------------------------------------------
