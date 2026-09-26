@@ -109,16 +109,37 @@ def _deferred_bridges(result) -> list[dict[str, str]]:
     return [{"bridge": bridge, "endpoint": endpoint} for bridge, endpoint in unresolved]
 
 
+def _deferred_references(result) -> list[dict[str, str]]:
+    """Gold references to another domain's table, left to the product check (#1003, #1012).
+
+    The same contract as `_deferred_bridges`: a calendar role, primary relationship,
+    cross-filter or exception naming a table this domain does not shape is not an error
+    here, but `emit-gold` checks it fail-closed, so the author is told now.
+    """
+    shaped = result.plan.shaped_project if result.plan is not None else None
+    product = getattr(shaped, "gold_product", None)
+    deferred = getattr(product, "deferred_references", ()) or ()
+    return [{"term": term, "value": value} for term, value in deferred]
+
+
 def _report_deferred_bridges(domain: str, result) -> None:
     deferred = _deferred_bridges(result)
-    if not deferred:
-        return
-    click.echo(
-        f"  ⚠ {domain}: {len(deferred)} bridge endpoint(s) are outside this domain's scope; "
-        "the bridge compiles here but emit-gold needs the owning domain in the same product:"
-    )
-    for item in deferred:
-        click.echo(f"      {item['bridge']} -> {item['endpoint']}")
+    if deferred:
+        click.echo(
+            f"  ⚠ {domain}: {len(deferred)} bridge endpoint(s) are outside this domain's "
+            "scope; the bridge compiles here but emit-gold needs the owning domain in the "
+            "same product:"
+        )
+        for item in deferred:
+            click.echo(f"      {item['bridge']} -> {item['endpoint']}")
+    references = _deferred_references(result)
+    if references:
+        click.echo(
+            f"  ℹ {domain}: {len(references)} Gold reference(s) name another domain's table; "
+            "they are checked when the product is shaped (compile --all --check, emit-gold):"
+        )
+        for item in references:
+            click.echo(f"      {item['term']} {item['value']}")
 
 
 def _gold_product_checks(hub: Path, plans: dict[str, Any]) -> list[tuple[str, list, str]]:
@@ -257,6 +278,7 @@ def _payload(result) -> dict:
         "explain": asdict(result.explain) if result.explain is not None else None,
         "artifacts": [path for path, _ in result.artifacts],
         "unresolved_bridges": _deferred_bridges(result),
+        "deferred_references": _deferred_references(result),
     }
 
 

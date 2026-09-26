@@ -131,3 +131,51 @@ def test_merge_dbt_artifacts_raises_on_real_collision():
     dest = {path: "SELECT 1"}
     with pytest.raises(RuntimeError, match="Generated dbt artifact collisions"):
         _merge_dbt_artifacts(dest, {path: "SELECT 2"}, context="Generated dbt artifact collisions")
+
+
+def _rendered_catalog(tables: tuple[str, ...], *, logical: bool = False, label: str = "") -> str:
+    from kairos_ontology.core.projections.dbt.render import _render_source, _template_environment
+    from kairos_ontology.core.projections.dbt.specs import SourceCatalogSpec, SourceTableSpec
+    from tests.test_dbt_phases import TEMPLATE_DIR
+
+    spec = SourceCatalogSpec(
+        artifact_path="models/silver/_tms__sources.yml",
+        source_name="tms",
+        system_label="Acme TMS",
+        database="acme",
+        schema="bronze",
+        tables=tuple(SourceTableSpec(name=t, label=label or t) for t in tables),
+        logical_sources_only=logical,
+    )
+    return _render_source(spec, _template_environment(str(TEMPLATE_DIR)))
+
+
+@pytest.mark.parametrize("logical", (False, True))
+def test_a_rendered_catalog_is_already_in_union_layout(logical):
+    """#1009: union with its own previous output must not change a single byte."""
+    rendered = _rendered_catalog(("booking", "leg"), logical=logical)
+    assert _union_sources_yaml(rendered, rendered) == rendered
+    assert _union_sources_yaml("", rendered) == rendered
+
+
+def test_the_union_of_two_rendered_catalogs_is_order_independent_and_stable():
+    a = _rendered_catalog(("booking",))
+    b = _rendered_catalog(("leg",))
+    merged = _union_sources_yaml(a, b)
+    assert merged == _union_sources_yaml(b, a)
+    assert _union_sources_yaml(merged, a) == merged
+    assert _union_sources_yaml(merged, b) == merged
+
+
+def test_the_logical_sources_note_survives_the_union():
+    rendered = _rendered_catalog(("booking",), logical=True)
+    merged = _union_sources_yaml(rendered, _rendered_catalog(("leg",), logical=True))
+    assert merged.startswith("# Physical database/schema binding is defined")
+    assert "database:" not in merged
+
+
+def test_a_label_with_quotes_or_accents_renders_valid_yaml():
+    rendered = _rendered_catalog(("booking",), label='Boeking "export" — é')
+    table = yaml.safe_load(rendered)["sources"][0]["tables"][0]
+    assert table["description"] == 'Boeking "export" — é'
+    assert "é" in rendered

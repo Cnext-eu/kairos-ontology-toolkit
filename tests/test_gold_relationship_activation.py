@@ -267,17 +267,36 @@ class TestEndToEnd:
         )
         assert "isActive: false" not in calendar_block
 
-    def test_an_override_naming_no_relationship_fails_closed(self, tmp_path):
-        """Mirrors `goldExcludeColumn`: a stale value must not read as success."""
-        text = harness._gold_text("invoice").replace(
+    @staticmethod
+    def _with_primary(value: str) -> str:
+        return harness._gold_text("invoice").replace(
             '    kairos-ext:goldSchema "gold" ;',
-            '    kairos-ext:goldSchema "gold" ;\n'
-            '    kairos-ext:goldPrimaryRelationship "fact_nowhere.x -> dim_date.full_date" ;',
+            f'    kairos-ext:goldSchema "gold" ;\n    kairos-ext:goldPrimaryRelationship "{value}" ;',
             1,
         )
+
+    def test_an_override_naming_no_relationship_fails_closed(self, tmp_path):
+        """Mirrors `goldExcludeColumn`: a stale value must not read as success.
+
+        Both tables are in this shaping, so the edge could exist here and does not.
+        """
+        text = self._with_primary("fact_invoice.nowhere -> dim_date.full_date")
         with pytest.raises(GoldContractError) as excinfo:
             harness._generate("invoice", gold_path=harness._write_gold(tmp_path, "invoice", text))
         assert excinfo.value.code == "gold.unknown-primary-relationship"
+
+    def test_an_override_to_another_domains_table_is_deferred_and_reported(self, tmp_path):
+        """#1012: the edge only exists once the product is shaped, so the domain compiles."""
+        text = self._with_primary("fact_invoice.carrier_sk -> dim_carrier.carrier_sk")
+        artifacts = harness._generate(
+            "invoice", gold_path=harness._write_gold(tmp_path, "invoice", text)
+        )
+        assert harness._report(artifacts, "invoice")["deferred_references"] == [
+            {
+                "term": "goldPrimaryRelationship",
+                "value": "fact_invoice.carrier_sk -> dim_carrier.carrier_sk",
+            }
+        ]
 
 
 def test_the_vocabulary_declares_the_term():

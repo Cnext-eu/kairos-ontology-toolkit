@@ -626,13 +626,24 @@ def _table_aliases(tables: tuple[GoldTableSpec, ...]) -> dict[str, GoldTableSpec
 def _shape_calendar(
     policy: MedallionPolicySpec,
     tables: tuple[GoldTableSpec, ...],
+    *,
+    deferred: list[tuple[str, str]] | None = None,
 ) -> GoldCalendarSpec | None:
+    """Shape the product calendar and its role-playing dates (DD-113).
+
+    A product has one calendar, authored in one of its domains, and a role may bind a fact
+    from any of them (#1003). On a single-domain compile (*deferred* is a list) a role
+    whose table is not in this shaping is recorded there and skipped, the way a bridge
+    endpoint is (#763); at product level it fails. A role whose table *is* here but whose
+    column is not still fails on both paths. Every such role is named, not just the first.
+    """
     source = policy.gold.calendar
     if source is None:
         return None
     aliases = _table_aliases(tables)
     roles: list[GoldCalendarRoleSpec] = []
     names: set[str] = set()
+    missing: list[str] = []
     for value in source.role_playing_dates.value:
         match = _CALENDAR_ROLE.fullmatch(value)
         if match is None:
@@ -652,6 +663,9 @@ def _shape_calendar(
             )
         names.add(role_name.casefold())
         table = aliases.get(match.group("table").casefold())
+        if table is None and deferred is not None:
+            deferred.append(("rolePlayingDate", value))
+            continue
         column_name = match.group("column")
         column = (
             next(
@@ -662,12 +676,8 @@ def _shape_calendar(
             else None
         )
         if column is None:
-            _fail(
-                "calendar.missing-role-column",
-                f"calendar role {value!r} does not bind an emitted Gold column",
-                rule_id="DD-113-calendar",
-                resource_uri=source.resource_uri,
-            )
+            missing.append(value)
+            continue
         if column.canonical_type.kind not in {
             CanonicalTypeKind.DATE,
             CanonicalTypeKind.TIMESTAMP,
@@ -679,6 +689,18 @@ def _shape_calendar(
                 resource_uri=source.resource_uri,
             )
         roles.append(GoldCalendarRoleSpec(role_name, table.name, column_name))
+    if missing:
+        listed = ", ".join(repr(value) for value in missing)
+        _fail(
+            "calendar.missing-role-column",
+            (
+                f"calendar role {listed} does not bind an emitted Gold column"
+                if len(missing) == 1
+                else f"{len(missing)} calendar roles do not bind an emitted Gold column: {listed}"
+            ),
+            rule_id="DD-113-calendar",
+            resource_uri=source.resource_uri,
+        )
     return GoldCalendarSpec(
         resource_uri=source.resource_uri,
         start_date=source.start_date.value,
@@ -1146,11 +1168,19 @@ def _calendar_relationships(
 def _primary_relationship_keys(
     policy: MedallionPolicySpec,
     relationships: tuple[GoldRelationshipSpec, ...],
+    *,
+    table_names: frozenset[str] = frozenset(),
+    deferred: list[tuple[str, str]] | None = None,
 ) -> frozenset[tuple[str, str, str, str]]:
     """Return the endpoints the author declared primary, failing closed on a stale one.
 
     Mirrors `goldExcludeColumn` (DD-217): the whole value of the term is that a specific
     relationship stays active, so a value matching nothing must not read as success.
+
+    On a single-domain compile (*deferred* is a list) an edge with an endpoint table
+    outside this shaping -- a dimension of another domain, or a bridge whose far end is
+    deferred -- cannot exist yet, so it is recorded and checked at product level (#1012).
+    An edge between two tables of this shaping that names nothing still fails here.
     """
     declared = tuple(getattr(policy.gold, "primary_relationships", ()) or ())
     if not declared:
@@ -1181,6 +1211,9 @@ def _primary_relationship_keys(
             match.group("to_column").casefold(),
         )
         if key not in available:
+            if deferred is not None and not {key[0], key[2]} <= table_names:
+                deferred.append(("goldPrimaryRelationship", value))
+                continue
             _fail(
                 "gold.unknown-primary-relationship",
                 f"goldPrimaryRelationship {value!r} names no emitted relationship",
@@ -1647,6 +1680,7 @@ def _bridge_cross_filters(
     relationships: tuple[GoldRelationshipSpec, ...],
     *,
     defer: bool = False,
+    deferred: list[tuple[str, str]] | None = None,
 ) -> tuple[tuple[GoldRelationshipSpec, ...], tuple[str, ...]]:
     """Decide which edges filter both ways, and name the bridges left undecided (DD-238).
 
@@ -1719,6 +1753,8 @@ def _bridge_cross_filters(
             )
             if target is None:
                 if defer:
+                    if deferred is not None:
+                        deferred.append(("goldRelationshipCrossFilter", value))
                     continue
                 _fail(
                     "gold.unknown-relationship-cross-filter",
@@ -1755,6 +1791,7 @@ def _shape_bpa_ignores(
     *,
     has_calendar: bool,
     defer: bool,
+    deferred: list[tuple[str, str]] | None = None,
 ) -> tuple[BpaIgnore, ...]:
     """Resolve every authored ``bpaIgnoreRule`` to an emitted object (DD-238).
 
@@ -1816,6 +1853,8 @@ def _shape_bpa_ignores(
                 )
             if target is None:
                 if defer:
+                    if deferred is not None:
+                        deferred.append(("bpaIgnoreRule", value))
                     continue
                 _fail(
                     "gold.bpa-ignore-unknown-target",
@@ -1912,8 +1951,15 @@ def _shape_dimensional_product(
     # The calendar is shaped *before* the relationships it contributes edges to: each
     # role-playing date is a path between its fact and `dim_date`, and the spanning
     # forest below cannot resolve ambiguity it cannot see (#792).
+    # What this single-domain compile could not check because it names another domain's
+    # table; checked for real when the product is shaped (#763, #1003, #1012).
+    deferred: list[tuple[str, str]] | None = [] if defer_bridges else None
     calendar_policy, contributing = _product_calendar(members)
-    calendar = _shape_calendar(calendar_policy, ordered) if calendar_policy is not None else None
+    calendar = (
+        _shape_calendar(calendar_policy, ordered, deferred=deferred)
+        if calendar_policy is not None
+        else None
+    )
     if calendar is not None and contributing:
         calendar = replace(calendar, contributing_profiles=contributing)
 
@@ -1921,12 +1967,20 @@ def _shape_dimensional_product(
         ordered, tuple(descriptors), models
     )
     relationships = relationships + _calendar_relationships(calendar)
+    shaped_table_names = frozenset(table.name.casefold() for table in ordered) | (
+        {CALENDAR_TABLE.casefold()} if calendar is not None else frozenset()
+    )
     declared_primary: frozenset[tuple[str, str, str, str]] = frozenset()
     for member in members:
-        declared_primary |= _primary_relationship_keys(member.policy, relationships)
+        declared_primary |= _primary_relationship_keys(
+            member.policy,
+            relationships,
+            table_names=shaped_table_names,
+            deferred=deferred,
+        )
     relationships = _resolve_ambiguous_paths(relationships, declared_primary)
     relationships, undecided_bridge_filters = _bridge_cross_filters(
-        members, ordered, relationships, defer=defer_bridges
+        members, ordered, relationships, defer=defer_bridges, deferred=deferred
     )
     security_owner = _sole(
         members,
@@ -1994,6 +2048,7 @@ def _shape_dimensional_product(
         relationships,
         has_calendar=calendar is not None and calendar.approved,
         defer=defer_bridges,
+        deferred=deferred,
     )
     advisories = check_product(ordered, ordered_measures, bpa_ignores)
     if not defer_bridges:
@@ -2030,6 +2085,7 @@ def _shape_dimensional_product(
         domains=tuple(member.ontology_name for member in members),
         unresolved_relationships=unresolved,
         unresolved_bridges=tuple(sorted(set(unresolved_bridges))),
+        deferred_references=tuple(sorted(set(deferred or ()))),
         bpa_ignores=bpa_ignores,
         undecided_bridge_filters=undecided_bridge_filters,
         advisories=tuple((item.code, item.message, item.resource_uri) for item in advisories),

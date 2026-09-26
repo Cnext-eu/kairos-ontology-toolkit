@@ -190,7 +190,7 @@ Review the product's bus matrix (<product>-bus-matrix.md) with the business: whi
 
 ## Exceptions
 
-Record an exception to an excusable rule in the Gold extension, on the `owl:Ontology` resource:
+Record an exception to an excusable rule in the Gold extension, on an `owl:Ontology` resource: the domain's, or the extension file's own. Both are read:
 ```turtle
 <ontology> kairos-ext:practiceException "semantic-model.fact-to-fact on relationship fact_charge.consignment_id -> fact_consignment.consignment_id: charges are analysed per consignment by design" .
 ```

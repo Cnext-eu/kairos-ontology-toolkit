@@ -48,6 +48,7 @@ from .quality_renderers import (
     render_dq_runtime_contract,
     render_dq_test,
 )
+from .sources_catalog import canonical_sources_yaml
 from .specs import CoverageSpec, ModelOutcome, SchemaKind, SilverModelKind, SourceCatalogSpec
 
 logger = logging.getLogger(__name__)
@@ -153,13 +154,16 @@ def _mapping_expression_data(expression: MappingExpression) -> dict[str, object]
 
 
 def _render_source(spec: SourceCatalogSpec, env: Environment) -> str:
-    return env.get_template("sources.yml.jinja2").render(
-        source_name=spec.source_name,
-        system_label=spec.system_label,
-        database=spec.database,
-        schema=spec.schema,
-        tables=[{"name": table.name, "label": table.label} for table in spec.tables],
-        logical_sources_only=spec.logical_sources_only,
+    # Canonical from the first emit on, so a later union with this file is a no-op (#1009).
+    return canonical_sources_yaml(
+        env.get_template("sources.yml.jinja2").render(
+            source_name=spec.source_name,
+            system_label=spec.system_label,
+            database=spec.database,
+            schema=spec.schema,
+            tables=[{"name": table.name, "label": table.label} for table in spec.tables],
+            logical_sources_only=spec.logical_sources_only,
+        )
     )
 
 

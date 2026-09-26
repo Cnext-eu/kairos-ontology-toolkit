@@ -257,6 +257,13 @@ class DimensionalGoldSpec:
     #: compile applied a union-only rule to a union of one (#763). At product level
     #: the union is real and an endpoint outside it still fails.
     unresolved_bridges: tuple[tuple[str, str], ...] = ()
+    #: ``(term, value)`` for each authored reference a single-domain compile could not
+    #: check because it names a table of another domain of the product: a
+    #: ``rolePlayingDate``, ``goldPrimaryRelationship``, ``goldRelationshipCrossFilter``
+    #: or ``bpaIgnoreRule`` (#1003, #1012). Same contract as ``unresolved_bridges``:
+    #: reported here, checked fail-closed when the product is shaped. Always empty at
+    #: product level.
+    deferred_references: tuple[tuple[str, str], ...] = ()
     #: Authored ``kairos-ext:bpaIgnoreRule`` exceptions (DD-238), each resolved to an
     #: object this product emits, with the target spelled as the emitted name.
     bpa_ignores: tuple[BpaIgnore, ...] = ()
