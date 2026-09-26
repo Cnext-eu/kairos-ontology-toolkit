@@ -87,6 +87,9 @@ project under `ontology-hub-publish/powerbi/<product>/`. Read two things in the 
 - **Insight coverage.** Which confirmed insights the product cannot answer yet, and what is
   missing. A warning, not a failure: this is a backlog.
 
+Both, and every model-shape finding, are also in the run log the command names as its
+last line; `kairos-ontology logs show --group-by code` lists them with counts.
+
 `<product>-insight-brief.md` lands beside the model, grouped by persona.
 
 ## 5. Hand off

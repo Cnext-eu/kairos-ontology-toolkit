@@ -103,7 +103,9 @@ Stage 5 (`validate-dbt`, `audit-silver-samples` against real data, not just `com
 --emit` succeeding) was skipped in both of this repo's dogfood runs so far — treat
 "emit succeeded" as necessary, not sufficient, evidence that the silver layer is
 correct; a session that reaches Stage 4 should say explicitly whether Stage 5's real-
-data checks ran, not just that emit exited 0.
+data checks ran, not just that emit exited 0. Each emit's run log (`logs show`,
+`--group-by code`) is the evidence to attach to a finding: which gate, which domain,
+how long it took.
 
 ## Fleet-mode execution rules
 

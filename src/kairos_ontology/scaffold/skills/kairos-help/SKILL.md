@@ -90,6 +90,7 @@ Never read a raw `.ttl`/`.rdf`/`.owl` file as text; use `resolve-ontology`, `sho
 kairos-ontology compile <domain> --check --format json
 kairos-ontology compile <domain> --explain --format json
 kairos-ontology compile <domain> --emit --confirm-emit
+kairos-ontology logs show
 kairos-ontology decision new
 kairos-ontology validate
 kairos-ontology validate --ddd
@@ -106,6 +107,11 @@ ubiquitous language and the class ledger — `project --target ddd` writes the c
 `kairos-toolkit-ops` for managed files, versions, and reference models. Use
 `kairos-ontology decision new` for material ontology-decision rationale; `validate` lints an
 existing Decision Log bundle.
+
+Every writing command (`compile --emit`, `emit-gold`, `package-powerbi-release`, `project`)
+keeps a run log under `.kairos/logs/` and names it as its last line; `logs show` reads it
+back as the domains, products and gates of the run with each diagnostic under the one that
+reported it. `--check` writes nothing, so it keeps no log unless given `--log-file`.
 
 A successful compile means the selected inputs can produce a CompilePlan. Run downstream dbt,
 adapter, deployment, and data tests separately.

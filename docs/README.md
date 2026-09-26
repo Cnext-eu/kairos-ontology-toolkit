@@ -21,7 +21,7 @@ it is, `dev/`.
 | [How-to guides](guide/how-to/README.md) | Task recipes: create a hub, import a source, bind an entity, compile, consume downstream |
 | [CLI reference](guide/CLI_REFERENCE.md) | Every command, generated from the command tree |
 | [CompilePlan consumption](guide/CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
-| [Logging & observability](guide/OBSERVABILITY.md) | Verbosity flags, JSON logs, optional OpenTelemetry bridge (DD-151) |
+| [Logging & observability](guide/OBSERVABILITY.md) | The run log and `logs show`, spans per task, JSON logs, the opt-in OpenTelemetry export (DD-151, DD-242) |
 | [Demonstration guide](guide/demo.md) | A 45-minute walkthrough of the v5 contract |
 | [Practitioner guides](guide/practitioner/) | Context-engineer and data-engineer methodology, and [how the two work together](guide/practitioner/context-and-data-engineer-workflow.md) |
 

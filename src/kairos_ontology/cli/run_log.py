@@ -38,6 +38,11 @@ def reset(*, explicit_log_file: bool) -> None:
     _started = None
 
 
+def started_path() -> Path | None:
+    """The run log this invocation attached, or None."""
+    return _started
+
+
 def run_log_directory(hub: Path) -> Path:
     return Path(hub) / ".kairos" / "logs"
 

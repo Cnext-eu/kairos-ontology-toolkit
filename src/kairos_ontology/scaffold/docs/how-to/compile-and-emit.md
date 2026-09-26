@@ -53,6 +53,20 @@ and not configurable. Emission is manifest-owned and atomic: `.kairos-compile-ma
 records every file the compiler owns, so a re-emit prunes what is no longer generated and
 refuses to overwrite a file it does not own.
 
+## Review what the emit reported
+
+The emit's last line names its run log, a JSON-lines file under `.kairos/logs/` that holds
+every diagnostic the run printed, attributed to its domain and gate, plus how long each step
+took. Read it back instead of scrolling:
+
+```bash
+kairos-ontology logs show                    # the run as domains and gates, with durations
+kairos-ontology logs show --group-by code    # every finding, grouped and counted
+```
+
+After a failed emit, the first view shows which domain and gate refused and why. The newest
+20 logs are kept, and the directory ignores itself in git.
+
 ## Check what produced the output
 
 Each emit writes `metadata/<domain>.provenance.json` (DD-218): toolkit version, adapter,

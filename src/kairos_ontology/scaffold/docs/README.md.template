@@ -17,6 +17,7 @@ somewhere else under `docs/`.
 | [Semantic-model practices](practices/semantic-model.md) | Gold model-shape rules, their checks, and how to record an exception |
 | [DDD practices](practices/ddd.md) | Strategic and tactical DDD rules reported by `validate --ddd` |
 | [BPA profile](BPA_PROFILE.md) | Each Power BI Best Practice Analyzer rule's disposition per storage mode |
+| [Logging & observability](OBSERVABILITY.md) | The run log, `logs show`, spans per task, and the OpenTelemetry export |
 
 ## Start here
 
@@ -25,6 +26,7 @@ somewhere else under `docs/`.
 | Understand the whole lifecycle in order | [User guide](USER_GUIDE.md) |
 | Do one specific task | [How-to guides](how-to/README.md) |
 | Look up a command's flags | [CLI reference](CLI_REFERENCE.md) |
+| See what the last emit reported | `kairos-ontology logs show` ([Logging & observability](OBSERVABILITY.md)) |
 | Move this hub to a newer toolkit | [Upgrade the toolkit](how-to/upgrade-the-toolkit.md) |
 
 ## Not shipped here

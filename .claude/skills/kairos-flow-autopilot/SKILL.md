@@ -295,7 +295,10 @@ not watching can act on without re-deriving anything:
 
 - The declared contract (scope, stopping stage, toolkit version, input sources) as
   actually honored — flag any deviation explicitly, including overruns.
-- Stage-by-stage status against the ladder, each with its exit-gate result.
+- Stage-by-stage status against the ladder, each with its exit-gate result. For a stage
+  that emitted, cite its run log (the `Run log:` line, or `logs show --format json`):
+  outcome, exit code and findings per domain and gate, recorded by the toolkit rather
+  than summarized from a sub-agent's report.
 - Every Decision Log entry created this run, summarized in one line each, with a
   link/path to the full record.
 - Every guardrail escalation raised, how it was resolved, and by whom.

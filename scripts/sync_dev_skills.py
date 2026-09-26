@@ -50,6 +50,9 @@ _USER_DOCS = (
     # DD-238: the BPA rule table the design skill points authors at. Generated, and
     # link-free, so it reads the same in a hub's docs/toolkit/.
     "BPA_PROFILE.md",
+    # #1011: the run log, `logs show`, spans and the OpenTelemetry export. Links outside
+    # this list are absolute URLs.
+    "OBSERVABILITY.md",
 )
 
 # Skill directories under .claude/skills/ that are contributor-workflow skills

@@ -46,6 +46,17 @@ Use `compile` directly; do not add orchestration around it.
    `--confirm-emit` is required alongside `--emit` — this is the one skill that
    legitimately passes it.
 6. Verify the command succeeded and report emitted paths from the current result.
+7. Review what the emit reported from its run log, not from scrolled console output. The
+   command's last line names it (`Run log: .kairos/logs/<utc>-compile-<id>.jsonl`):
+
+   ```powershell
+   uv run kairos-ontology logs show --group-by code   # every finding, with counts
+   uv run kairos-ontology logs show                   # per domain and gate, with durations
+   ```
+
+   After a failed emit, the default view shows which domain and which gate refused
+   (`refused`) or failed (`error`), with the diagnostics under it. Quote those codes; do
+   not re-run the emit to see them again.
 
 ## Diagram and documentation targets (`project`)
 
@@ -58,7 +69,8 @@ uv run kairos-ontology project --target contract-erd       # declared Silver con
 ```
 
 `--target` repeats: one run with several targets parses every ontology once, which is why CI
-runs `erd` and `ddd` together.
+runs `erd` and `ddd` together. `project` also keeps a run log: a target that fails for one
+domain is reported there as `projection.domain-failed` (`logs show`).
 
 `erd` and `ddd` write under `ontology-hub-publish/architecture/`, a **tracked, drift-gated**
 lane: CI regenerates both and diffs them, so run them after any ontology, overlay, contract or

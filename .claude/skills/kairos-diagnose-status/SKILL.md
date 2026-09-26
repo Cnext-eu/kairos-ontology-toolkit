@@ -47,6 +47,18 @@ $env:KAIROS_SKILL_CONTEXT = "1"
 uv run kairos-ontology compile <domain> --check --format json
 ```
 
+What the last *writing* command reported (`compile --emit`, `emit-gold`,
+`package-powerbi-release`, `project`) is in its run log. Read it when the user asks how the last
+emit went, or why it failed:
+
+```powershell
+uv run kairos-ontology logs show              # outcome, domains and gates with durations
+uv run kairos-ontology logs show --group-by code
+```
+
+A run log describes that run; the check above describes the inputs now. Say which one you
+are quoting.
+
 End with the proposal's recommended next action verbatim; do not compute your own.
 A clean report means only that current authored inputs pass the compiler check.
 

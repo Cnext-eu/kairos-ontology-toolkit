@@ -43,6 +43,7 @@ Canonical commands:
 kairos-ontology compile <domain> --check --format json
 kairos-ontology compile <domain> --explain --format json
 kairos-ontology compile <domain> --emit --confirm-emit
+kairos-ontology logs show    # what the last writing command reported
 ```
 
 Passing compilation does not replace downstream dbt, adapter, deployment, security, or data tests.
