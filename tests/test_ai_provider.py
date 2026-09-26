@@ -754,6 +754,119 @@ class TestCreateChatCompletion:
         create_chat_completion(client, model="other", messages=[], temperature=0.1)
         assert client.chat.completions.create.call_args_list[-1].kwargs["temperature"] == 0.1
 
+    @staticmethod
+    def _rejecting_client(rejections: list[dict]):
+        """A thread-safe fake that rejects `temperature` slowly enough to overlap calls."""
+        import threading
+        import time
+
+        lock = threading.Lock()
+        client = MagicMock()
+
+        def create(**kwargs):
+            time.sleep(0.02)
+            if "temperature" in kwargs:
+                with lock:
+                    rejections.append(kwargs)
+                raise RuntimeError(
+                    "Error code: 400 - {'error': {'message': \"Unsupported value: "
+                    "'temperature' does not support 0.1 with this model.\", "
+                    "'param': 'temperature'}}"
+                )
+            return "ok"
+
+        client.chat.completions.create.side_effect = create
+        return client
+
+    def test_concurrent_calls_learn_a_rejection_from_one_request(self, caplog):
+        """#1041: 16 workers in flight used to send 16 rejected requests per run."""
+        import logging
+
+        from kairos_ontology.core._concurrency import map_concurrent
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        rejections: list[dict] = []
+        client = self._rejecting_client(rejections)
+        with caplog.at_level(logging.DEBUG, logger="kairos_ontology.core.ai_provider"):
+            results = map_concurrent(
+                lambda _i: create_chat_completion(
+                    client, model="gpt-5.5", messages=[], temperature=0.1
+                ),
+                range(16),
+                max_workers=16,
+            )
+        assert results == ["ok"] * 16
+        assert len(rejections) == 1
+        handled = [r for r in caplog.records if "handled" in r.getMessage()]
+        assert len(handled) == 1 and handled[0].levelno == logging.WARNING
+
+    def test_a_failed_first_call_does_not_block_the_pool(self):
+        """The gate opens on any failure, not only on success or a handled rejection."""
+        from kairos_ontology.core._concurrency import map_concurrent
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        calls = iter([RuntimeError("network timeout")])
+        client = MagicMock()
+
+        def create(**_kwargs):
+            err = next(calls, None)
+            if err is not None:
+                raise err
+            return "ok"
+
+        client.chat.completions.create.side_effect = create
+
+        def one(_i):
+            try:
+                return create_chat_completion(client, model="m", messages=[])
+            except RuntimeError:
+                return "failed"
+
+        results = map_concurrent(one, range(4), max_workers=4)
+        assert sorted(results) == ["failed", "ok", "ok", "ok"]
+
+
+class TestTracingWrapperRejectionEcho:
+    """#1041: the Langfuse wrapper logs each provider exception on a handler-less logger,
+    so Python's last-resort handler printed a bare 'Error code: 400' per rejected call."""
+
+    def _record(self, message):
+        import logging
+
+        return logging.LogRecord("langfuse", logging.WARNING, __file__, 1, message, None, None)
+
+    def test_a_named_parameter_rejection_is_dropped(self):
+        from kairos_ontology.core.ai_provider import _HandledParamRejectionFilter
+
+        record = self._record(
+            RuntimeError("Error code: 400 - Unsupported value: 'temperature' does not support")
+        )
+        assert _HandledParamRejectionFilter().filter(record) is False
+
+    def test_any_other_wrapper_warning_passes(self):
+        from kairos_ontology.core.ai_provider import _HandledParamRejectionFilter
+
+        record = self._record(RuntimeError("Error code: 401 - invalid api key"))
+        assert _HandledParamRejectionFilter().filter(record) is True
+
+    def test_the_filter_is_installed_once_with_the_traced_client(self):
+        import logging
+
+        from kairos_ontology.core import ai_provider
+
+        langfuse_logger = logging.getLogger("langfuse")
+        before = list(langfuse_logger.filters)
+        try:
+            ai_provider._quiet_handled_param_rejections()
+            ai_provider._quiet_handled_param_rejections()
+            installed = [
+                f for f in langfuse_logger.filters
+                if isinstance(f, ai_provider._HandledParamRejectionFilter)
+            ]
+            assert len(installed) == 1
+        finally:
+            langfuse_logger.filters[:] = before
+
 
 class TestResolveAISeed:
     """DD-174: seeding is the only variance lever the reasoning tier accepts."""
