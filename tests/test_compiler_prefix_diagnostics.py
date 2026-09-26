@@ -171,3 +171,27 @@ class TestDeclaredPrefixesIsCached:
         assert _declared_prefixes("") == {}
         assert _declared_prefixes(str(tmp_path / "absent.ttl")) == {}
         assert _declared_prefixes(str(_write(tmp_path / "d.txt", "@prefix ex: <x> ."))) == {}
+
+
+def test_safe_bindings_are_built_once_per_loaded_closure(tmp_path, monkeypatch):
+    """#598 -- labelling 2,204 owners rebuilt one closure's prefix map 2,204 times."""
+    from kairos_ontology.core.compiler import kernel
+
+    root = _write(tmp_path / "root.ttl", "@prefix party: <https://example.test/party#> .\n")
+    loaded = _loaded(root)
+    built: list[object] = []
+    original = kernel._compute_safe_prefix_bindings
+    monkeypatch.setattr(
+        kernel,
+        "_compute_safe_prefix_bindings",
+        lambda item, path: built.append(item) or original(item, path),
+    )
+
+    first = kernel._safe_prefix_bindings(loaded, root)
+    first["injected"] = "https://evil.test/"  # a caller's edit must not reach the memo
+    second = kernel._safe_prefix_bindings(loaded, root)
+    other = kernel._safe_prefix_bindings(_loaded(root), root)  # a new closure is a miss
+
+    assert second == {"party": "https://example.test/party#"}
+    assert other == second
+    assert len(built) == 2

@@ -740,3 +740,67 @@ def test_an_unresolvable_ref_ends_the_branch_without_raising(tmp_path: Path) -> 
     assert load_bound_relations(tmp_path / "integration" / "bindings", tmp_path) == {
         ("tms", "shipment")
     }
+
+
+class TestBoundRelationsMemo:
+    """The hub-wide bound set is computed once per hub state, never served stale (#598)."""
+
+    def _bound(self, hub: Path) -> set[tuple[str, str]]:
+        return load_bound_relations(hub / "integration" / "bindings", hub)
+
+    def test_a_repeat_call_does_not_reparse(self, tmp_path: Path, monkeypatch) -> None:
+        _write_binding(tmp_path, "qargo", "companies")
+        assert self._bound(tmp_path) == {("qargo", "companies")}
+        parsed: list[str] = []
+        original = yaml.safe_load
+        monkeypatch.setattr(
+            "kairos_ontology.core.source_disposition.yaml.safe_load",
+            lambda text: parsed.append(text) or original(text),
+        )
+        assert self._bound(tmp_path) == {("qargo", "companies")}
+        assert parsed == []
+
+    def test_an_edited_binding_is_a_miss(self, tmp_path: Path) -> None:
+        _write_binding(tmp_path, "qargo", "companies")
+        assert self._bound(tmp_path) == {("qargo", "companies")}
+        path = tmp_path / "integration" / "bindings" / "qargo-companies.binding.yaml"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("qargo.companies", "qargo.drivers"),
+            encoding="utf-8",
+        )
+        assert self._bound(tmp_path) == {("qargo", "drivers")}
+
+    def test_a_new_binding_is_a_miss(self, tmp_path: Path) -> None:
+        _write_binding(tmp_path, "qargo", "companies")
+        assert self._bound(tmp_path) == {("qargo", "companies")}
+        _write_binding(tmp_path, "qargo", "drivers")
+        assert self._bound(tmp_path) == {("qargo", "companies"), ("qargo", "drivers")}
+
+    def test_an_edited_model_sql_is_a_miss(self, tmp_path: Path) -> None:
+        _write_dbt_model_binding(tmp_path, "qargo", "assignments")
+        assert self._bound(tmp_path) == {("qargo", "assignments")}
+        _write_dbt_model_binding(tmp_path, "qargo", "assignments", "standing_orders")
+        assert self._bound(tmp_path) == {("qargo", "assignments"), ("qargo", "standing_orders")}
+
+    def test_a_sql_path_outside_the_models_directory_is_tracked(self, tmp_path: Path) -> None:
+        """`sqlPath` is repository-relative, so a model can live anywhere in the hub."""
+        _write_dbt_model_binding(tmp_path, "qargo", "assignments")
+        binding = tmp_path / "integration" / "bindings" / "assignment.binding.yaml"
+        elsewhere = tmp_path / "sql" / "int_assignment.sql"
+        elsewhere.parent.mkdir()
+        elsewhere.write_text("select * from {{ source('qargo', 'drivers') }}\n", encoding="utf-8")
+        binding.write_text(
+            binding.read_text(encoding="utf-8").replace(
+                "integration/transforms/dbt/models/intermediate/int_assignment.sql",
+                "sql/int_assignment.sql",
+            ),
+            encoding="utf-8",
+        )
+        assert self._bound(tmp_path) == {("qargo", "drivers")}
+        elsewhere.write_text("select * from {{ source('qargo', 'fleets') }}\n", encoding="utf-8")
+        assert self._bound(tmp_path) == {("qargo", "fleets")}
+
+    def test_the_caller_cannot_corrupt_the_memo(self, tmp_path: Path) -> None:
+        _write_binding(tmp_path, "qargo", "companies")
+        self._bound(tmp_path).add(("injected", "row"))
+        assert self._bound(tmp_path) == {("qargo", "companies")}

@@ -346,8 +346,34 @@ def declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple[str, ...
     return _compute_declared_prefix_aliases(loaded, root_path, uri)
 
 
+#: ``_safe_prefix_bindings`` per loaded closure (#598): ``(id(loaded), root) -> (loaded,
+#: bindings)``. Labelling owners and binding refs asks for the same closure's map once per
+#: URI -- 2,204 rebuilds on a 15-domain hub, each resolving every source path. The loaded
+#: result is an immutable snapshot of its closure, so its map cannot change; the stored
+#: ``loaded`` guards against a recycled ``id``. Bounded, and in-process only.
+_SAFE_BINDINGS_CACHE: dict[tuple[int, str], tuple[object, dict[str, str]]] = {}
+_SAFE_BINDINGS_CACHE_SIZE = 32
+
+
 def _safe_prefix_bindings(loaded, root_path: Path) -> dict[str, str]:
     """Return every prefix -> namespace binding safe to resolve for ANY local name.
+
+    Memoized per loaded closure (see :data:`_SAFE_BINDINGS_CACHE`); a fresh ``dict`` is
+    returned so a caller cannot corrupt the shared entry.
+    """
+    key = (id(loaded), str(root_path))
+    hit = _SAFE_BINDINGS_CACHE.get(key)
+    if hit is not None and hit[0] is loaded:
+        return dict(hit[1])
+    bindings = _compute_safe_prefix_bindings(loaded, root_path)
+    if len(_SAFE_BINDINGS_CACHE) >= _SAFE_BINDINGS_CACHE_SIZE:
+        _SAFE_BINDINGS_CACHE.pop(next(iter(_SAFE_BINDINGS_CACHE)))
+    _SAFE_BINDINGS_CACHE[key] = (loaded, bindings)
+    return dict(bindings)
+
+
+def _compute_safe_prefix_bindings(loaded, root_path: Path) -> dict[str, str]:
+    """The uncached implementation of :func:`_safe_prefix_bindings`.
 
     Root-declared prefixes always win (last declaration per prefix, matching Turtle's
     own last-wins semantics); an imported prefix is included only when every source in

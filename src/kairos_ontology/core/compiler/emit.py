@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
@@ -228,10 +228,26 @@ def _target_path(
     return target
 
 
+#: Resolved roots for the current :func:`emit_artifacts` call (#598). Every containment
+#: check resolved its root again -- half of 53,000 ``resolve()`` calls in a 15-domain
+#: emit, each a round of filesystem queries on Windows -- for the same two or three
+#: directories. The candidate is still resolved every time: that is the check that
+#: catches a symlink escaping the target. Cleared at the start of each emit.
+_RESOLVED_ROOTS: dict[str, Path] = {}
+
+
+def _resolved_root(root: Path) -> Path:
+    key = str(root)
+    resolved = _RESOLVED_ROOTS.get(key)
+    if resolved is None:
+        resolved = _RESOLVED_ROOTS[key] = root.resolve(strict=False)
+    return resolved
+
+
 def _contained_path(root: Path, relative: str, *, error_type: type[EmissionError]) -> Path:
     candidate = root.joinpath(*relative.split("/"))
     try:
-        candidate.resolve(strict=False).relative_to(root.resolve(strict=False))
+        candidate.resolve(strict=False).relative_to(_resolved_root(root))
     except (OSError, ValueError) as exc:
         raise error_type(f"path escapes the selected target: {relative!r}") from exc
     return candidate
@@ -299,10 +315,16 @@ def _validate_target_collisions(
 ) -> None:
     owned_keys = {_collision_key(path) for path in previously_owned}
     replace_unowned_keys = {_collision_key(path) for path in replace_unowned_paths}
+    # A parent directory is shared by every artifact below it; its verdict cannot differ
+    # between them, so each is checked once (#598).
+    checked_parents: set[str] = set()
     for artifact in artifacts:
         parts = artifact.path.split("/")
         for index in range(1, len(parts)):
             relative = "/".join(parts[:index])
+            if relative in checked_parents:
+                continue
+            checked_parents.add(relative)
             parent = _contained_path(target, relative, error_type=ArtifactPathError)
             kind = _path_kind(parent)
             if kind == "symlink":
@@ -656,6 +678,15 @@ def _commit_stage(stage: Path, target: Path) -> Path | None:
     return backup
 
 
+@dataclass(frozen=True, slots=True)
+class EmitPart:
+    """One manifest's artifacts within an :func:`emit_artifact_batch` transaction."""
+
+    rendered: Mapping[str, object]
+    manifest_name: str = EMIT_MANIFEST_NAME
+    replace_unowned_paths: Collection[str] = ()
+
+
 def emit_artifacts(
     rendered: Mapping[str, object],
     target_dir: str | os.PathLike[str],
@@ -672,40 +703,70 @@ def emit_artifacts(
     ``target_dir`` is selected.  Commit swaps the previous target to a backup and the stage
     into place; failures restore the backup whenever the platform permits.
     """
+    (result,) = emit_artifact_batch(
+        (EmitPart(rendered, manifest_name, replace_unowned_paths),),
+        target_dir,
+        owned_subtree=owned_subtree,
+    )
+    return result
 
-    manifest_name = _manifest_file_name(manifest_name)
-    replace_unowned_paths = tuple(_canonical_artifact_path(path) for path in replace_unowned_paths)
-    plan = plan_emission(rendered)
-    for artifact in plan.artifacts:
-        if artifact.path == manifest_name:
-            raise ArtifactCollisionError(
-                f"artifact path {artifact.path!r} is reserved for the compiler manifest"
-            )
+
+def emit_artifact_batch(
+    parts: Sequence[EmitPart],
+    target_dir: str | os.PathLike[str],
+    *,
+    owned_subtree: str | None = None,
+) -> tuple[EmissionResult, ...]:
+    """Emit several manifests into one target as a single transaction (#598).
+
+    Exactly what emitting each part in turn with :func:`emit_artifacts` would leave on
+    disk, but with one stage and one swap instead of one per part. Staging hardlinks the
+    whole target, so a compile that emitted a domain's own, shared and dependency
+    manifests as three transactions paid for three copies and three swaps of the entire
+    dbt project per domain.
+
+    Each part is validated against the stage as the earlier parts left it -- the same
+    state a sequential emit would have committed before it -- so a later part sees an
+    earlier part's files and manifest. Nothing is committed unless every part succeeds,
+    which is stricter than the sequential form: a failing third part no longer leaves the
+    first two committed.
+    """
+    _RESOLVED_ROOTS.clear()
+    prepared = []
+    names: set[str] = set()
+    for part in parts:
+        manifest_name = _manifest_file_name(part.manifest_name)
+        if manifest_name in names:
+            raise EmissionError(f"manifest {manifest_name!r} appears twice in one emit")
+        names.add(manifest_name)
+        replace_unowned_paths = tuple(
+            _canonical_artifact_path(path) for path in part.replace_unowned_paths
+        )
+        plan = plan_emission(part.rendered)
+        for artifact in plan.artifacts:
+            if artifact.path == manifest_name:
+                raise ArtifactCollisionError(
+                    f"artifact path {artifact.path!r} is reserved for the compiler manifest"
+                )
+        prepared.append((plan, manifest_name, replace_unowned_paths))
     target = _target_path(target_dir, owned_subtree)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     stage: Path | None = None
     backup: Path | None = None
+    results: list[EmissionResult] = []
     with _TargetLock(target):
         _recover_interrupted_emit(target)
         if target.exists() and not target.is_dir():
             raise EmissionError(f"emission target must be a directory: {target}")
-        previously_owned = _parse_manifest(target, manifest_name) if target.exists() else {}
-        _validate_target_collisions(
-            target,
-            plan.artifacts,
-            previously_owned,
-            replace_unowned_paths,
-        )
-        stale = tuple(sorted(set(previously_owned) - set(plan.paths)))
-        retained = _still_owned_elsewhere(target, manifest_name, stale, replace_unowned_paths)
-        logger.debug(
-            "emit plan: target=%s artifacts=%d previously_owned=%d stale=%d",
-            target.name,
-            len(plan.paths),
-            len(previously_owned),
-            len(stale),
-        )
+        # The first part is validated against the target before anything is staged, so a
+        # plan that cannot land fails without paying for a stage. The stage starts as an
+        # exact copy of the target, so this verdict also stands for the stage.
+        first_owned: dict[str, str] | None = None
+        if prepared:
+            plan, manifest_name, replace_unowned_paths = prepared[0]
+            first_owned = _parse_manifest(target, manifest_name) if target.exists() else {}
+            _validate_target_collisions(target, plan.artifacts, first_owned, replace_unowned_paths)
 
         try:
             stage = Path(
@@ -713,15 +774,43 @@ def emit_artifacts(
             )
             if target.exists():
                 _stage_from_target(target, stage)
-            _write_stage(
-                stage,
-                plan,
-                previously_owned,
-                manifest_name,
-                replace_unowned_paths,
-                retained,
-            )
-            _validate_stage(stage, plan, manifest_name)
+            for index, (plan, manifest_name, replace_unowned_paths) in enumerate(prepared):
+                if index == 0 and first_owned is not None:
+                    previously_owned = first_owned
+                else:
+                    previously_owned = _parse_manifest(stage, manifest_name)
+                    _validate_target_collisions(
+                        stage, plan.artifacts, previously_owned, replace_unowned_paths
+                    )
+                stale = tuple(sorted(set(previously_owned) - set(plan.paths)))
+                retained = _still_owned_elsewhere(
+                    stage, manifest_name, stale, replace_unowned_paths
+                )
+                logger.debug(
+                    "emit plan: target=%s manifest=%s artifacts=%d previously_owned=%d stale=%d",
+                    target.name,
+                    manifest_name,
+                    len(plan.paths),
+                    len(previously_owned),
+                    len(stale),
+                )
+                _write_stage(
+                    stage,
+                    plan,
+                    previously_owned,
+                    manifest_name,
+                    replace_unowned_paths,
+                    retained,
+                )
+                _validate_stage(stage, plan, manifest_name)
+                results.append(
+                    EmissionResult(
+                        target_dir=target,
+                        manifest_path=target / manifest_name,
+                        written=plan.paths,
+                        removed=tuple(path for path in stale if path not in retained),
+                    )
+                )
             backup = _commit_stage(stage, target)
             stage = None
         except EmissionError:
@@ -733,14 +822,10 @@ def emit_artifacts(
 
         _best_effort_remove(backup)
         logger.debug(
-            "emit commit: target=%s written=%d removed=%d",
+            "emit commit: target=%s manifests=%d written=%d removed=%d",
             target.name,
-            len(plan.paths),
-            len(stale) - len(retained),
+            len(results),
+            sum(len(item.written) for item in results),
+            sum(len(item.removed) for item in results),
         )
-        return EmissionResult(
-            target_dir=target,
-            manifest_path=target / manifest_name,
-            written=plan.paths,
-            removed=tuple(path for path in stale if path not in retained),
-        )
+        return tuple(results)

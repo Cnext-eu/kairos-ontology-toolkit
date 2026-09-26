@@ -18,10 +18,10 @@ OWL_CLASS = URIRef("http://www.w3.org/2002/07/owl#Class")
 
 @pytest.fixture(autouse=True)
 def _reset_ontology_cache():
-    """Tier A (in-process) memoization is module-global state; isolate every test."""
-    ontology_loader._IN_PROCESS_CACHE.clear()
+    """Tier A and A2 (in-process) memoization is module-global state; isolate every test."""
+    ontology_loader.reset_in_process_caches()
     yield
-    ontology_loader._IN_PROCESS_CACHE.clear()
+    ontology_loader.reset_in_process_caches()
 
 
 def _count_turtle_parses(monkeypatch) -> list:
@@ -256,11 +256,15 @@ def test_cached_result_is_not_reused_across_a_different_profile(tmp_path, monkey
     root.write_text(_ttl("urn:a", cls="urn:A"), encoding="utf-8")
     parsed = _count_turtle_parses(monkeypatch)
 
-    load_ontology(root, identity_root=tmp_path, profile=SemanticProfile.ASSERTED)
+    asserted = load_ontology(root, identity_root=tmp_path, profile=SemanticProfile.ASSERTED)
     assert len(parsed) == 1
 
-    load_ontology(root, identity_root=tmp_path, profile=SemanticProfile.RDFS)
-    assert len(parsed) == 2  # different profile is a different cache key, not a hit
+    rdfs = load_ontology(root, identity_root=tmp_path, profile=SemanticProfile.RDFS)
+    # A different profile is a different Tier A key, so the result is rebuilt; the
+    # unchanged file itself comes from Tier A2 rather than a second Turtle parse.
+    assert rdfs is not asserted
+    assert rdfs.profile != asserted.profile
+    assert len(parsed) == 1
 
 
 def test_repeated_load_reparses_when_a_transitively_imported_file_changes(tmp_path, monkeypatch):
@@ -280,7 +284,9 @@ def test_repeated_load_reparses_when_a_transitively_imported_file_changes(tmp_pa
     assert second is not first
     assert second.closure_hash != first.closure_hash
     assert (URIRef("urn:Changed"), RDF.type, OWL_CLASS) in second.graph
-    assert len(parsed) == 4  # the stale Tier A entry was rejected; both files reparsed
+    # The stale Tier A entry was rejected; only the changed file is reparsed, because
+    # Tier A2 is keyed on content and the root's content did not change.
+    assert parsed[2:] == [child.resolve()]
 
 
 def test_on_disk_cache_survives_a_simulated_new_process_without_reparsing_turtle(
@@ -294,7 +300,7 @@ def test_on_disk_cache_survives_a_simulated_new_process_without_reparsing_turtle
 
     # Simulate a fresh process: Tier A (in-process memoization) does not survive this,
     # only Tier B (the on-disk, per-file parse cache) does.
-    ontology_loader._IN_PROCESS_CACHE.clear()
+    ontology_loader.reset_in_process_caches()
     parsed = _count_turtle_parses(monkeypatch)
 
     result = load_ontology(root, identity_root=tmp_path)
@@ -313,7 +319,7 @@ def test_on_disk_cache_invalidates_only_the_file_that_actually_changed(tmp_path,
     with ontology_loader.cache_write_scope(True):
         load_ontology(root, catalog_path=catalog)
 
-    ontology_loader._IN_PROCESS_CACHE.clear()
+    ontology_loader.reset_in_process_caches()
     child.write_text(_ttl("urn:b", cls="urn:Changed"), encoding="utf-8")
     parsed = _count_turtle_parses(monkeypatch)
 
@@ -341,3 +347,52 @@ def test_cache_write_scope_restores_previous_value_on_exception(tmp_path):
             assert ontology_loader.CACHE_WRITE_ENABLED is True
             raise RuntimeError("boom")
     assert ontology_loader.CACHE_WRITE_ENABLED is False
+
+
+def test_two_closures_sharing_an_import_parse_it_once(tmp_path, monkeypatch):
+    """Tier A2 (#598): every domain imports the same shared modules."""
+    shared = tmp_path / "shared.ttl"
+    shared.write_text(_ttl("urn:shared", cls="urn:Shared"), encoding="utf-8")
+    first = tmp_path / "a.ttl"
+    second = tmp_path / "b.ttl"
+    first.write_text(_ttl("urn:a", imports=("urn:shared",), cls="urn:A"), encoding="utf-8")
+    second.write_text(_ttl("urn:b", imports=("urn:shared",), cls="urn:B"), encoding="utf-8")
+    catalog = _catalog(tmp_path / "catalog.xml", {"urn:shared": "shared.ttl"})
+    parsed = _count_turtle_parses(monkeypatch)
+
+    loaded_a = load_ontology(first, catalog_path=catalog)
+    loaded_b = load_ontology(second, catalog_path=catalog)
+
+    assert sorted(parsed) == sorted([first.resolve(), shared.resolve(), second.resolve()])
+    assert (URIRef("urn:Shared"), RDF.type, OWL_CLASS) in loaded_b.graph
+    # The closures are separate graphs: one domain's triples never leak into another's.
+    assert (URIRef("urn:A"), RDF.type, OWL_CLASS) not in loaded_b.graph
+    assert (URIRef("urn:B"), RDF.type, OWL_CLASS) not in loaded_a.graph
+
+
+def test_no_cache_bypasses_the_source_graph_memo(tmp_path, monkeypatch):
+    root = tmp_path / "a.ttl"
+    root.write_text(_ttl("urn:a", cls="urn:A"), encoding="utf-8")
+    load_ontology(root, identity_root=tmp_path)
+    monkeypatch.setattr(ontology_loader, "CACHE_ENABLED", False)
+    parsed = _count_turtle_parses(monkeypatch)
+
+    load_ontology(root, identity_root=tmp_path)
+
+    assert parsed == [root.resolve()]
+
+
+def test_a_graph_served_from_memory_still_warms_another_hubs_disk_cache(tmp_path):
+    """Tier B is per hub; Tier A2 is per process. A second hub with the same file content
+    must still get its own on-disk entry when it emits."""
+    body = _ttl("urn:a", cls="urn:A")
+    first_hub, second_hub = tmp_path / "one", tmp_path / "two"
+    for hub in (first_hub, second_hub):
+        hub.mkdir()
+        (hub / "a.ttl").write_text(body, encoding="utf-8")
+
+    load_ontology(first_hub / "a.ttl", identity_root=first_hub)
+    with ontology_loader.cache_write_scope(True):
+        load_ontology(second_hub / "a.ttl", identity_root=second_hub)
+
+    assert list((second_hub / ".cache" / "ontology-parse").glob("*.nt"))

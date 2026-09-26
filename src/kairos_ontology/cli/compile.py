@@ -786,38 +786,6 @@ def _reconciled_dbt_dependencies(result, target: Path) -> dict[str, str] | None:
     return artifacts
 
 
-def _preflight_emit(
-    artifacts: dict[str, str],
-    target: Path,
-    *,
-    manifest_name: str,
-    replace_unowned_paths: tuple[str, ...] = (),
-) -> None:
-    """Validate every planned write before any unified-project manifest is mutated."""
-    from ..core.compiler.emit import (
-        ArtifactCollisionError,
-        EmissionError,
-        _parse_manifest,
-        _validate_target_collisions,
-        plan_emission,
-    )
-
-    if target.exists() and not target.is_dir():
-        raise EmissionError(f"emission target must be a directory: {target}")
-    plan = plan_emission(artifacts)
-    if any(artifact.path == manifest_name for artifact in plan.artifacts):
-        raise ArtifactCollisionError(
-            f"artifact path {manifest_name!r} is reserved for the compiler manifest"
-        )
-    previously_owned = _parse_manifest(target, manifest_name) if target.exists() else {}
-    _validate_target_collisions(
-        target,
-        plan.artifacts,
-        previously_owned,
-        replace_unowned_paths,
-    )
-
-
 def _diagram_artifacts(result, hub: Path) -> dict[str, str]:
     """Return the ERD artifacts this domain contributes to the hub diagrams directory.
 
@@ -886,7 +854,7 @@ def _emit_diagram_artifacts(result, hub: Path, diagrams: dict[str, str]) -> Path
 
 
 def _emit_compile_artifacts(result, emit_dir: Path, hub: Path) -> Path:
-    from ..core.compiler.emit import emit_artifacts
+    from ..core.compiler.emit import EmitPart, emit_artifact_batch
     from ..core.compiler.provenance import provenance_artifact
 
     target = emit_dir.resolve(strict=False)
@@ -905,40 +873,18 @@ def _emit_compile_artifacts(result, emit_dir: Path, hub: Path) -> Path:
         domain_artifacts[provenance_path] = provenance_content
     shared_artifacts = _reconciled_shared_artifacts(result, target)
     dependency_artifacts = _reconciled_dbt_dependencies(result, target)
-    _preflight_emit(
-        domain_artifacts,
-        target,
-        manifest_name=_domain_manifest_name(result.domain),
-    )
-    _preflight_emit(
-        shared_artifacts,
-        target,
-        manifest_name=_SHARED_MANIFEST_NAME,
-        replace_unowned_paths=tuple(shared_artifacts),
-    )
+    # One transaction for the domain's own, shared and dependency manifests (#598). They
+    # used to be three emits, each staging and swapping the whole dbt project, behind a
+    # preflight that validated all three first so a failing later one could not leave an
+    # earlier one committed. The batch validates each part against the state the earlier
+    # parts leave and commits all or nothing, which is that guarantee without the copies.
+    parts = [
+        EmitPart(domain_artifacts, _domain_manifest_name(result.domain)),
+        EmitPart(shared_artifacts, _SHARED_MANIFEST_NAME, tuple(shared_artifacts)),
+    ]
     if dependency_artifacts is not None:
-        _preflight_emit(
-            dependency_artifacts,
-            target,
-            manifest_name=_DEPENDENCY_MANIFEST_NAME,
-        )
-    emit_artifacts(
-        domain_artifacts,
-        target,
-        manifest_name=_domain_manifest_name(result.domain),
-    )
-    emit_artifacts(
-        shared_artifacts,
-        target,
-        manifest_name=_SHARED_MANIFEST_NAME,
-        replace_unowned_paths=tuple(shared_artifacts),
-    )
-    if dependency_artifacts is not None:
-        emit_artifacts(
-            dependency_artifacts,
-            target,
-            manifest_name=_DEPENDENCY_MANIFEST_NAME,
-        )
+        parts.append(EmitPart(dependency_artifacts, _DEPENDENCY_MANIFEST_NAME))
+    emit_artifact_batch(parts, target)
     _emit_diagram_artifacts(result, hub, diagrams)
     return target
 
