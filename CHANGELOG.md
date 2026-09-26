@@ -67,6 +67,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Every diagnostic is a structured log record, and writing commands keep a run log**
+  (#1011).
+  - `compile`, `emit-gold` and `package-powerbi-release` log each diagnostic they report
+    as `kairos.diagnostic.reported`, attributed to its task (domain or
+    `gold:<product>`) and gate. Each run ends with a `kairos.run.summary`.
+  - `--log-file` now receives INFO and above whatever the console level, so it is no
+    longer empty at the default level.
+  - `compile --emit`, `emit-gold` and `package-powerbi-release` also write
+    `<hub>/.kairos/logs/<utc>-<command>-<operation>.jsonl` by default. The newest 20 are
+    kept, and the directory ignores itself in git.
+  - `compile --check` and `--explain` stay write-free (DD-133/140). Use `--log-file` for
+    them. `KAIROS_RUN_LOG=0` turns the default off.
+  - A multi-domain `compile` prints a "Diagnostics by task" table.
+  - See `docs/guide/OBSERVABILITY.md`. OTel spans per task are a follow-up.
+
 ### Fixed
 - **The reference Silver DDL (`analyses/<domain>/<domain>-ddl.sql`) is valid SQL again**
   (#1005). A column with a description put the separating comma after its inline `--`
