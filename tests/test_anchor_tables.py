@@ -25,6 +25,11 @@ from kairos_ontology.core.anchor_tables import (
 )
 
 
+def _recorder(lines):
+    """A report callback with the level parameter run_anchor_tables passes (#1039)."""
+    return lambda message, level="info": lines.append(message)
+
+
 def catalog(**bridged):
     return ClassCatalog(
         text="- TransportCall [owned by domain 'route-schedule']: A call at a location.\n"
@@ -180,6 +185,81 @@ class TestRunAndArtifact:
 
     def test_loader_is_empty_when_no_artifact(self, tmp_path):
         assert load_table_anchors(tmp_path) == {}
+
+
+class TestCliReRun:
+    """#1039: core passes a level with drift and skipped-ruling lines; the CLI
+    callback took one argument, so every re-run crashed after the model spend and
+    before the anchors file was written."""
+
+    VERDICT = {"anchors": {"qargo.stops": {
+        "anchor": "TransportCall", "alternate": None, "confidence": 0.91,
+        "grain_columns": ["stop_id"], "natural_key": ["stop_id"], "load_hint": "scd"}}}
+
+    def _invoke(self, tmp_path, monkeypatch, *extra):
+        import json
+
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli import sources as cli_sources
+        from kairos_ontology.core import anchor_tables as at
+
+        vocab = tmp_path / "sources" / "qargo" / "vocabulary"
+        vocab.mkdir(parents=True, exist_ok=True)
+        (vocab / "stops.vocabulary.ttl").write_text("# no triples\n", encoding="utf-8")
+        (tmp_path / "catalog.xml").write_text("<catalog/>", encoding="utf-8")
+
+        client = MagicMock()
+        message = MagicMock()
+        message.content = json.dumps(self.VERDICT)
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=message)]
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_provider.get_ai_client", lambda *a, **k: client
+        )
+        monkeypatch.setattr(cli_sources, "require_business_discovery", lambda *a, **k: None)
+        monkeypatch.setattr(at, "build_class_catalog", lambda *a, **k: catalog())
+        monkeypatch.setattr(
+            at, "build_source_outline",
+            lambda *a, **k: [("qargo", "stops", ["stop_id", "arrival_time"])],
+        )
+        return CliRunner().invoke(
+            cli_sources.anchor_tables_cmd,
+            [
+                "--sources", str(tmp_path / "sources"),
+                "--analysis", str(tmp_path / "_analysis"),
+                "--catalog", str(tmp_path / "catalog.xml"),
+                "--accelerator", "logistics",
+                "--model", "m",
+                *extra,
+            ],
+        )
+
+    def test_a_re_run_reports_drift_and_rewrites_the_anchors(self, tmp_path, monkeypatch):
+        first = self._invoke(tmp_path, monkeypatch)
+        assert first.exit_code == 0, first.output
+        out = tmp_path / "_analysis" / ANCHORS_FILENAME
+        out.write_text(out.read_text(encoding="utf-8") + "# marker\n", encoding="utf-8")
+
+        second = self._invoke(tmp_path, monkeypatch)
+        assert second.exit_code == 0, second.output
+        assert "# marker" not in out.read_text(encoding="utf-8"), "anchors file rewritten"
+        assert "drift" in second.output.lower()
+
+    def test_a_skipped_ruling_is_reported_even_under_quiet(self, tmp_path, monkeypatch):
+        rulings = tmp_path / "discovery" / "design-rulings.yaml"
+        rulings.parent.mkdir(parents=True)
+        rulings.write_text("not: a list\n", encoding="utf-8")
+
+        result = self._invoke(tmp_path, monkeypatch, "--quiet")
+        assert result.exit_code == 0, result.output
+        assert "ruling <file> skipped" in result.output
+        assert "Anchoring tables in" not in result.output, "info lines stay quiet"
 
 
 class TestAlignmentConsumption:
@@ -439,7 +519,7 @@ class TestPropertylessAnchorWarning:
                 catalog_path=tmp_path / "catalog.xml",
                 ref_models_dir=None, accelerator=None,
                 analysis_dir=tmp_path / "_analysis",
-                report=lines.append,
+                report=_recorder(lines),
             )
         return yaml.safe_load(out.read_text(encoding="utf-8")), lines
 
@@ -641,7 +721,7 @@ class TestSchemaCatalogueIsRoutedBeforeAnchoring:
                 catalog_path=tmp_path / "catalog.xml",
                 ref_models_dir=None, accelerator=None,
                 analysis_dir=tmp_path / "_analysis",
-                report=lines.append,
+                report=_recorder(lines),
             )
         doc = yaml.safe_load(out.read_text(encoding="utf-8"))
         assert [e["table"] for e in doc["excluded"]] == [catalogue[1]]
