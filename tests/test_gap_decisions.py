@@ -134,6 +134,31 @@ class TestAutoDispositions:
         assert entry["disposition"] == "deferred"
         assert entry["decided_by"] == "user"
 
+    def test_loader_columns_are_decided_without_a_conflict(self, tmp_path):
+        """#1049: the hub's bronze loader columns clear the gate under --auto.
+
+        ``_message_code`` is a source's own envelope and must stay a reviewer's decision.
+        """
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+
+        write_alignment(
+            tmp_path / "integration" / "sources" / "_analysis", "party", "companies",
+            [
+                {"column": name, "data_type": "varchar", "example_values": ["x"]}
+                for name in ("_source_file", "_idx", "_load_ts", "_message_code")
+            ],
+        )
+        before = {c.column for c in undecided_gap_columns(tmp_path)}
+        assert before == {"_message_code"}, "loader columns never reach the gate"
+
+        stats = apply_auto_dispositions(tmp_path)
+        assert stats["conflicts"] == []
+        recorded = load_dispositions(tmp_path)
+        for name in ("_source_file", "_idx", "_load_ts"):
+            assert recorded[("qargo", "companies", name)]["disposition"] == "not-business-data"
+        assert ("qargo", "companies", "_message_code") not in recorded
+        assert [c.column for c in undecided_gap_columns(tmp_path)] == ["_message_code"]
+
 
 class TestDecisionSheet:
     def _hub_with_gaps(self, tmp_path):

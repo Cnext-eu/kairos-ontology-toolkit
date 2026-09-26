@@ -94,8 +94,9 @@ AUTO_DISPOSITIONS: dict[str, str] = {
 
 _AUTO_RATIONALE = {
     REASON_OPERATIONAL: (
-        "Audit/system column (created, updated, guid, hash, ingest metadata). Carries "
-        "no business meaning to model; classified deterministically by reason code "
+        "Audit/system column (created, updated, guid, hash, ingest metadata) or a "
+        "bookkeeping column the hub's bronze loader added (_source_file, _row_key, _idx). "
+        "Carries no business meaning to model; classified deterministically by reason code "
         "'{reason}' from the column name and evidence, not by a model."
     ),
     REASON_VENDOR_SLOT: (
@@ -528,6 +529,76 @@ FRAMEWORK_ARTIFACT_PAIRS = frozenset(
     }
 )
 
+#: Whole names a client's bronze loader writes next to the source's own columns (#1049).
+#:
+#: Token tuples, matched against the *entire* name after its leading underscores:
+#:
+#:   _source_file, _file_name, _filename, _file_path   which file the row came from
+#:   _row_key, _row_id, _row_number                     the loader's own row identity
+#:   _parent_row_key, _parent_row_id                    link to the parent row of an
+#:                                                      array-expanded child table
+#:   _idx, _index, _line_number, _line_no               position within the parent/file
+#:
+#: Whole-name tuples rather than tokens because every word here occurs in business names
+#: (``file_name`` of an attached document, ``line_number`` of an order line). The leading
+#: underscore is what makes them the loader's, which is why it is required.
+LOADER_ARTIFACT_NAMES = frozenset(
+    {
+        ("source", "file"),
+        ("source", "file", "name"),
+        ("source", "filename"),
+        ("file", "name"),
+        ("filename",),
+        ("file", "path"),
+        ("row", "key"),
+        ("row", "id"),
+        ("row", "number"),
+        ("parent", "row", "key"),
+        ("parent", "row", "id"),
+        ("idx",),
+        ("index",),
+        ("line", "number"),
+        ("line", "no"),
+    }
+)
+
+#: First tokens that make an underscore-prefixed name loader bookkeeping whatever follows:
+#: ``_load_ts``, ``_loaded_at``, ``_batch_id``, ``_ingested_at``, ``_ingestion_run``.
+LOADER_ARTIFACT_LEADING_TOKENS = frozenset(
+    {"load", "loaded", "batch", "ingest", "ingested", "ingestion"}
+)
+
+
+def is_loader_artifact_column(column: str) -> bool:
+    """Whether *column* is a bookkeeping column the hub's own bronze loader added (#1049).
+
+    These columns are written by the client's loader, not by the source system and not
+    by the toolkit's importers: ``_source_file``, ``_row_key``, ``_parent_row_key``,
+    ``_idx``, ``_load_ts``, ``_batch_id``. They carry no business meaning to model, so the
+    gap report classifies them ``operational`` instead of leaving them to the DD-169 gate.
+
+    Checked on the **raw** name: it must start with ``_`` and the rest must be one of
+    :data:`LOADER_ARTIFACT_NAMES` or start with a :data:`LOADER_ARTIFACT_LEADING_TOKENS`
+    token. :func:`_name_tokens` drops the leading underscore, and the underscore is the
+    only thing separating the loader's ``_row_key`` from a source's own ``row_key``.
+
+    Deliberately *not* part of ``propose_alignment._is_operational_column``: that predicate
+    also removes columns from grain proposals, and on an array-expanded child table
+    ``(_parent_row_key, _idx)`` is often the only row identity there is. This one feeds
+    only the gap reason code and the auto-disposition cross-check.
+
+    A source's own underscore-prefixed envelope (``_message_code``, ``_message_send_date``)
+    is source data and matches neither vocabulary, so it stays a gap.
+    """
+    name = str(column or "").strip()
+    if not name.startswith("_"):
+        return False
+    tokens = tuple(_name_tokens(name))
+    if not tokens:
+        return False
+    return tokens in LOADER_ARTIFACT_NAMES or tokens[0] in LOADER_ARTIFACT_LEADING_TOKENS
+
+
 #: Tokens that make a column time-valued. Deliberately disjoint from the audit
 #: tokens above — being a timestamp is what the name says, not what it means.
 _TIME_TOKENS = frozenset({"timestamp", "datetime", "date", "time", "ts", "dt"})
@@ -595,8 +666,12 @@ def is_audit_named(column: str) -> bool:
 
     Also recognises :data:`FRAMEWORK_ARTIFACT_PAIRS`: a column written by the loading
     tool is an audit artifact by any reading, and this predicate guards the write site
-    for the classification that silences them, so it has to see them too.
+    for the classification that silences them, so it has to see them too. The same goes
+    for :func:`is_loader_artifact_column` (#1049): ``classify_unmapped`` calls those
+    operational, so the cross-check must not hold them back as unproven.
     """
+    if is_loader_artifact_column(column):
+        return True
     tokens = _name_tokens(column)
     if set(tokens) & _AUDIT_NAME_TOKENS:
         return True
