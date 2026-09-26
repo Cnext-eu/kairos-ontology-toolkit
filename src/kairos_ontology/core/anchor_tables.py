@@ -1439,6 +1439,22 @@ def load_affinity_secondary_domains(analysis_dir: Path) -> dict[tuple[str, str],
     return {key: value[2] for key, value in _load_affinity(analysis_dir).items()}
 
 
+def _secondary_domain_ids(entries: Any) -> tuple[str, ...]:
+    """Domain ids from an affinity ``secondary_domains`` list.
+
+    analyse-sources writes each entry as ``{domain, domain_group, domain_uris}``; a bare
+    id is accepted too. Reading the mapping as a string matched no owner on the live
+    GDW hub, where 83 of 109 tables carry secondaries (#1040).
+    """
+    ids: list[str] = []
+    for entry in entries or ():
+        raw = entry.get("domain") if isinstance(entry, dict) else entry
+        value = str(raw or "").strip()
+        if value and value not in ids:
+            ids.append(value)
+    return tuple(ids)
+
+
 def _load_affinity(
     analysis_dir: Path,
 ) -> dict[tuple[str, str], tuple[str, str, tuple[str, ...]]]:
@@ -1452,7 +1468,7 @@ def _load_affinity(
                 out[(system, str(table["table"]))] = (
                     str(table.get("domain") or ""),
                     str(table.get("likely_entity") or ""),
-                    tuple(str(d) for d in table.get("secondary_domains") or () if d),
+                    _secondary_domain_ids(table.get("secondary_domains")),
                 )
     return out
 

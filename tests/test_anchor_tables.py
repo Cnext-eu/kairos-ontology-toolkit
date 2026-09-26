@@ -225,13 +225,22 @@ class TestOwnerAmbiguousFlag:
                    for line in lines)
 
     def test_a_secondary_affinity_resolves_it_without_a_flag(self, tmp_path):
+        """The shape analyse-sources writes: one mapping per secondary domain."""
         from kairos_ontology.core.anchor_tables import OWNER_AMBIGUOUS_FLAG
 
+        entry, _ = self._run(tmp_path, {"domain": "party", "secondary_domains": [
+            {"domain": "customs", "domain_group": "compliance", "domain_uris": ["https://x#"]},
+            {"domain": "reference-data", "domain_group": "visibility-events",
+             "domain_uris": ["https://onerecord/cargo#"]},
+        ]})
+        assert (entry["domain"], entry["domain_basis"]) == ("reference-data", "owner+secondary")
+        assert OWNER_AMBIGUOUS_FLAG not in entry["flags"]
+
+    def test_bare_secondary_domain_ids_are_read_too(self, tmp_path):
         entry, _ = self._run(
             tmp_path, {"domain": "party", "secondary_domains": ["reference-data"]}
         )
-        assert (entry["domain"], entry["domain_basis"]) == ("reference-data", "owner+secondary")
-        assert OWNER_AMBIGUOUS_FLAG not in entry["flags"]
+        assert entry["domain_basis"] == "owner+secondary"
 
 
 class TestPrompt:
