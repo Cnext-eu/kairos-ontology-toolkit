@@ -50,6 +50,7 @@ RETAINED_COMMANDS = {
     "inverse-scan",
     "list-class-properties",
     "list-patterns",
+    "logs",
     "mdm-validate",
     "migrate",
     "new-repo",

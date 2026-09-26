@@ -304,5 +304,6 @@ during cleanup.
 | [DD-239](decisions/dd-239-a-fabric-deploy-promotes-one-archive-per-github-environment-and-frames-the-model-before.md) | A Fabric deploy promotes one archive per GitHub Environment and frames the model before it counts | Accepted | 2026-09-24 |
 | [DD-240](decisions/dd-240-modelling-best-practices-live-in-one-catalogue-that-the-docs-the-skills-and-the-checks.md) | Modelling best practices live in one catalogue that the docs, the skills and the checks all read | Accepted | 2026-09-24 |
 | [DD-241](decisions/dd-241-relationship-cardinality-is-declared-in-owl-and-each-diagram-draws-what-its-layer.md) | Relationship cardinality is declared in OWL, and each diagram draws what its layer guarantees | Accepted | 2026-09-25 |
+| [DD-242](decisions/dd-242-one-command-run-is-one-trace-of-task-spans-and-opentelemetry-export-is-opt-in.md) | One command run is one trace of task spans, and OpenTelemetry export is opt-in | Accepted | 2026-09-26 |
 
 ---

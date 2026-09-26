@@ -22,7 +22,7 @@ import click
 from .gates import escape_option
 
 from ..core.compiler import build_compile_plan
-from ..core.observability import events
+from ..core.observability import events, spans
 from ..core.hub_utils import find_hub_root
 
 
@@ -78,10 +78,6 @@ def package_powerbi_release_cmd(
     from ..cli.compile import _hub_domains
     from ..core.projections.dbt.gold_connection import GoldProductConfig, load_gold_products
     from ..core.projections.dbt.gold_release_package import build_powerbi_release_archive
-    from ..core.projections.dbt.gold_specs import GoldContractError
-    from ..core.projections.dbt.pbip_validate import validate_package_artifacts
-    from ..core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
-    from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plans
 
     hub_root = find_hub_root(Path.cwd(), require_model=True)
     if hub_root is None:
@@ -117,72 +113,22 @@ def package_powerbi_release_cmd(
     domain_artifacts: dict[str, dict[str, str]] = {}
     skipped: list[str] = []
     for product in products:
-        plans = []
-        incomplete = False
-        for member in product.domains:
-            plan = build_compile_plan(hub_root, member)
-            if plan.blocked:
-                for diagnostic in plan.diagnostics.ordered:
-                    events.log_diagnostic(
-                        diagnostic, command="package-powerbi-release", gate="compile"
-                    )
-                    click.echo(diagnostic.render(), err=True)
-                raise click.ClickException(
-                    f"{member}: compile plan is blocked; see diagnostics above"
-                )
-            contract = plan.normalized_contract
-            if contract is None or contract.policy.gold.profile is None:
-                # An implicit product is just a domain, and a domain without a Gold
-                # profile has always been skipped. A *declared* product naming such a
-                # domain is an authoring error, and is reported as one by the projector.
-                if not product.declared:
-                    skipped.append(member)
-                    incomplete = True
-                    break
-            plans.append(plan)
-        if incomplete:
-            continue
-
-        try:
-            artifacts = generate_gold_from_compile_plans(plans, product)
-        except GoldContractError as exc:
-            raise click.ClickException(f"{product.name}: {exc}") from exc
-
-        package_failures = [
-            result for result in validate_package_artifacts(artifacts) if result.status != "pass"
-        ]
-        if package_failures:
-            detail = "; ".join(f"{item.artifact_path}: {item.message}" for item in package_failures)
-            raise click.ClickException(
-                f"{product.name}: Fabric package validation failed for "
-                f"{len(package_failures)} file(s): {detail}"
+        # One product span, so its gates group under it in the run log (#1011).
+        with spans.task_span(
+            "product", f"gold:{product.name}", **{"kairos.product": product.name}
+        ):
+            artifacts = _package_product(
+                hub_root, product, skipped, skip_tmdl_validation=skip_tmdl_validation
             )
-
-        if not skip_tmdl_validation:
-            tmdl_results = validate_tmdl_artifacts(artifacts)
-            failures = [result for result in tmdl_results if result.status == "fail"]
-            for result in tmdl_results:
-                if result.status == "unavailable":
-                    click.echo(
-                        f"   (TOM SDK validation unavailable for {product.name} "
-                        f"{result.definition_root}: {result.message})"
-                    )
-            if failures:
-                detail = "; ".join(
-                    f"{item.definition_root}: {item.message}" for item in failures
-                )
-                raise click.ClickException(
-                    f"{product.name}: TMDL structural validation failed for "
-                    f"{len(failures)} model(s): {detail}"
-                )
-
-        domain_artifacts[product.name] = artifacts
+        if artifacts is not None:
+            domain_artifacts[product.name] = artifacts
 
     if skipped:
         click.echo(f"   (skipped, no Gold profile authored: {', '.join(sorted(skipped))})")
 
     try:
-        archive = build_powerbi_release_archive(domain_artifacts)
+        with spans.task_span("stage", "archive"):
+            archive = build_powerbi_release_archive(domain_artifacts)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     if archive is None:
@@ -205,3 +151,49 @@ def package_powerbi_release_cmd(
     sidecar.write_text(f"{archive.sha256}  {output.name}\n", encoding="utf-8")
     click.echo(f"   → {output}")
     click.echo(f"   → {sidecar}")
+
+
+def _package_product(
+    hub_root: Path, product, skipped: list[str], *, skip_tmdl_validation: bool
+) -> dict[str, str] | None:
+    """Compile, render and validate one product; None when it has nothing to package."""
+    from ..core.projections.dbt.gold_specs import GoldContractError
+    from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plans
+    from .emit_gold import _check_package, _check_tmdl, _refuse
+
+    command = "package-powerbi-release"
+    plans = []
+    with spans.task_span("gate", "compile"):
+        for member in product.domains:
+            plan = build_compile_plan(hub_root, member)
+            if plan.blocked:
+                for diagnostic in plan.diagnostics.ordered:
+                    events.log_diagnostic(
+                        diagnostic, command=command, domain=member, gate="compile"
+                    )
+                    click.echo(diagnostic.render(), err=True)
+                spans.mark_refused()
+                raise click.ClickException(
+                    f"{member}: compile plan is blocked; see diagnostics above"
+                )
+            contract = plan.normalized_contract
+            if contract is None or contract.policy.gold.profile is None:
+                # An implicit product is just a domain, and a domain without a Gold
+                # profile has always been skipped. A *declared* product naming such a
+                # domain is an authoring error, and is reported as one by the projector.
+                if not product.declared:
+                    skipped.append(member)
+                    return None
+            plans.append(plan)
+
+    with spans.task_span("gate", "gold-shape"):
+        try:
+            artifacts = generate_gold_from_compile_plans(plans, product)
+        except GoldContractError as exc:
+            _refuse(exc, product=product.name, gate="gold-shape", command=command)
+            raise click.ClickException(f"{product.name}: {exc}") from exc
+
+    _check_package(artifacts, product, command=command, label=product.name)
+    if not skip_tmdl_validation:
+        _check_tmdl(artifacts, product, command=command, label=product.name)
+    return artifacts

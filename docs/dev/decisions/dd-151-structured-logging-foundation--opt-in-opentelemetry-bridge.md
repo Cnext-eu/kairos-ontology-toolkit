@@ -1,6 +1,6 @@
 # DD-151: Structured logging foundation + opt-in OpenTelemetry bridge
 
-**Status:** Accepted
+**Status:** Accepted (amended by [DD-242](dd-242-one-command-run-is-one-trace-of-task-spans-and-opentelemetry-export-is-opt-in.md))
 **Date:** 2026-08-14
 **Context:** observability change request
 

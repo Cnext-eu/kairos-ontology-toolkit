@@ -20,6 +20,10 @@ from typing import Final
 #: Stable structured-log attribute carrying the per-invocation id.
 OPERATION_ID_ATTR: Final[str] = "kairos.operation.id"
 
+#: A record carrying this attribute set to False is for the run log only: the command
+#: already printed it, and the console handler must not print it twice.
+CONSOLE_ATTR: Final[str] = "kairos.console"
+
 
 @dataclass(frozen=True, slots=True)
 class OperationContext:
@@ -68,6 +72,7 @@ def clear_operation_context() -> None:
 
 
 __all__ = [
+    "CONSOLE_ATTR",
     "OPERATION_ID_ATTR",
     "OperationContext",
     "clear_operation_context",

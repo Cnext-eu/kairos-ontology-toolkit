@@ -119,6 +119,11 @@ def project(
         accelerator,
     ) = _resolve_projection_cli_scope(ontologies, ontology, catalog, ref_models, accelerator)
 
+    # `project` always writes, so it keeps a default run log like the other writing
+    # commands (#1011); outside a hub there is nowhere to keep one.
+    from .run_log import start_run_log
+
+    start_run_log(hub_root, "project")
     cwd = Path.cwd()
     if output is not None:
         output_path = Path(output)

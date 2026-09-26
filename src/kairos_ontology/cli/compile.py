@@ -19,7 +19,7 @@ from ..core import ontology_loader
 from ..core.compiler import CompileMode, compile_domain
 from ..core.compiler.result import CompileDiagnostic
 from ..core.conformance_artifact import check_discovery_gate
-from ..core.observability import events
+from ..core.observability import events, spans
 from ..core.determinism import write_text_lf
 from ..core.hub_utils import contract_diagrams_dir, find_hub_root, publish_root
 from ..core.observability import current_operation_id
@@ -122,6 +122,45 @@ def _deferred_references(result) -> list[dict[str, str]]:
     return [{"term": term, "value": value} for term, value in deferred]
 
 
+def _note(code: str, severity: str, message: str, *, rule_id: str = "", location: str = ""):
+    """A diagnostic-shaped record for a finding the console prints as a plain line."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        code=code, severity=severity, message=message, rule_id=rule_id, location=location
+    )
+
+
+def _log_deferred(domain: str, result) -> None:
+    """Log the deferred-bridge and deferred-reference notes a check prints (#1011)."""
+    for item in _deferred_bridges(result):
+        events.log_diagnostic(
+            _note(
+                "compile.deferred-bridge",
+                "warning",
+                f"bridge {item['bridge']} endpoint {item['endpoint']} is outside this "
+                "domain's scope; emit-gold needs the owning domain in the same product",
+                rule_id="#763",
+            ),
+            command="compile",
+            domain=domain,
+            gate="compile",
+        )
+    for item in _deferred_references(result):
+        events.log_diagnostic(
+            _note(
+                "compile.deferred-reference",
+                "info",
+                f"Gold reference {item['term']} {item['value']} names another domain's "
+                "table; it is checked when the product is shaped",
+                rule_id="#1012",
+            ),
+            command="compile",
+            domain=domain,
+            gate="compile",
+        )
+
+
 def _report_deferred_bridges(domain: str, result) -> None:
     deferred = _deferred_bridges(result)
     if deferred:
@@ -175,7 +214,9 @@ def _gold_product_checks(hub: Path, plans: dict[str, Any]) -> list[tuple[str, li
     try:
         declared = load_gold_products(hub)
     except (GoldContractError, OSError, ValueError) as exc:
-        return [("gold.products", [], f"kairos.yaml gold.products is unusable: {exc}")]
+        entry = ("gold.products", [], f"kairos.yaml gold.products is unusable: {exc}")
+        _log_gold_product_check(entry)
+        return [entry]
     claimed = {domain for product in declared for domain in product.domains}
     products = [product for product in declared if set(product.domains) & set(gold_plans)] + [
         GoldProductConfig(name=domain, domains=(domain,), declared=False)
@@ -183,36 +224,29 @@ def _gold_product_checks(hub: Path, plans: dict[str, Any]) -> list[tuple[str, li
         if domain not in claimed
     ]
     shape_codes = set(CODES.values())
-    checked: list[tuple[str, list, str]] = []
-    for product in products:
+
+    def check(product) -> tuple[str, list, str]:
         missing = [domain for domain in product.domains if domain not in gold_plans]
         if missing:
-            checked.append(
-                (
-                    product.name,
-                    [],
-                    f"not shape-checked: {', '.join(missing)} did not compile in this run "
-                    "(name every member domain, or use --all)",
-                )
+            return (
+                product.name,
+                [],
+                f"not shape-checked: {', '.join(missing)} did not compile in this run "
+                "(name every member domain, or use --all)",
             )
-            continue
         try:
             logical, _ = plan_gold_from_compile_plans(
                 [gold_plans[domain] for domain in product.domains], product
             )
         except GoldContractError as exc:
-            checked.append(
-                (
-                    product.name,
-                    [],
-                    f"not shape-checked: the product does not shape ({exc}); "
-                    "emit-gold fails the same way",
-                )
+            return (
+                product.name,
+                [],
+                f"not shape-checked: the product does not shape ({exc}); "
+                "emit-gold fails the same way",
             )
-            continue
         except Exception as exc:  # noqa: BLE001 - an advisory pass must not crash a check
-            checked.append((product.name, [], f"not shape-checked: {type(exc).__name__}: {exc}"))
-            continue
+            return (product.name, [], f"not shape-checked: {type(exc).__name__}: {exc}")
         location = SourceLocation(path=f"gold product {product.name}")
         diagnostics = []
         for code, message, _resource in getattr(logical, "advisories", ()) or ():
@@ -233,18 +267,32 @@ def _gold_product_checks(hub: Path, plans: dict[str, Any]) -> list[tuple[str, li
                     rule_id="DD-240-practices",
                 )
             )
-        checked.append((product.name, diagnostics, ""))
+        return (product.name, diagnostics, "")
+
+    checked: list[tuple[str, list, str]] = []
+    for product in products:
+        with (
+            spans.task_span("product", f"gold:{product.name}", **{"kairos.product": product.name}),
+            spans.task_span("gate", "gold-shape"),
+        ):
+            entry = check(product)
+            _log_gold_product_check(entry)
+        checked.append(entry)
     return checked
+
+
+def _log_gold_product_check(entry: tuple[str, list, str]) -> None:
+    """Log one product's shape findings, or the note saying why it was not checked."""
+    name, diagnostics, note = entry
+    if note:
+        diagnostics = [_note("compile.gold-note", "warning", note, rule_id="DD-240")]
+    for diagnostic in diagnostics:
+        events.log_diagnostic(diagnostic, command="compile", product=name, gate="gold-shape")
 
 
 def _report_gold_product_checks(
     checked: list[tuple[str, list, str]], payloads: list[dict[str, Any]], output_format: str
 ) -> None:
-    for name, diagnostics, _note in checked:
-        for diagnostic in diagnostics:
-            events.log_diagnostic(
-                diagnostic, command="compile", product=name, gate="gold-shape"
-            )
     if output_format == "json":
         # Additive: each product's findings ride on the payload of its first compiled
         # domain, so neither the single-domain object nor the --all array changes shape.
@@ -1057,38 +1105,41 @@ def compile_cmd(
         start_run_log(hub, "compile")
     with ontology_loader.cache_write_scope(not no_cache and mode is CompileMode.EMIT):
         for index, one in enumerate(selected, start=1):
-            _announce_domain_start(one, index, total, quiet=quiet)
-            started = perf_counter()
-            succeeded, payload = _compile_one_domain(
-                hub,
-                one,
-                mode,
-                check_mode=check_mode,
-                explain_mode=explain_mode,
-                emit_mode=emit_mode,
-                no_cache=no_cache,
-                output_format=output_format,
-                whole_hub=all_domains,
-                quiet=quiet,
-                plans=plans if check_mode else None,
-            )
-            events.emit(
-                events.COMPILE_DOMAIN_COMPLETED,
-                logging.INFO,
-                f"compile {one} completed",
-                domain=one,
-                index=index,
-                total=total,
-                duration_ms=int((perf_counter() - started) * 1000),
-                succeeded=succeeded,
-            )
+            with spans.task_span("domain", one, **{"kairos.domain": one}) as span:
+                _announce_domain_start(one, index, total, quiet=quiet)
+                succeeded, payload = _compile_one_domain(
+                    hub,
+                    one,
+                    mode,
+                    check_mode=check_mode,
+                    explain_mode=explain_mode,
+                    emit_mode=emit_mode,
+                    no_cache=no_cache,
+                    output_format=output_format,
+                    whole_hub=all_domains,
+                    quiet=quiet,
+                    plans=plans if check_mode else None,
+                )
+                if not succeeded and span.status == "ok":
+                    span.set_status("error")
+                events.emit(
+                    events.COMPILE_DOMAIN_COMPLETED,
+                    logging.INFO,
+                    f"compile {one} completed",
+                    domain=one,
+                    index=index,
+                    total=total,
+                    duration_ms=int((perf_counter() - span.started) * 1000),
+                    succeeded=succeeded,
+                )
             if payload is not None:
                 payloads.append(payload)
             if not succeeded:
                 failed.append(one)
 
     if mode is CompileMode.EMIT:
-        _regenerate_master_silver_erd(hub)
+        with spans.task_span("stage", "erd"):
+            _regenerate_master_silver_erd(hub)
     if check_mode:
         _report_gold_product_checks(_gold_product_checks(hub, plans), payloads, output_format)
 
@@ -1170,14 +1221,26 @@ def _hub_domains(hub: Path) -> list[str]:
     return sorted(name for name in counts if name)
 
 
-def _gate_payload(domain: str, mode: CompileMode, diagnostics: list) -> dict[str, Any]:
+def _gate_payload(
+    domain: str, mode: CompileMode, diagnostics: list, *, gate: str | None = None
+) -> dict[str, Any]:
     """Shape a gate refusal like any other compile result (#598 follow-up).
 
     A gate returns before there is a ``CompileResult``, so a refused domain used to
     contribute no JSON at all -- under ``--all`` it simply vanished from the array and
     a consumer saw 13 of 14 entries with no machine-readable reason. Same keys as
     :func:`_payload`, so one parser handles both.
+
+    Also the one place a refusal reaches the run log (#1011): each diagnostic is logged
+    under *gate*, which defaults to the gate span it is refused in, and that span and its
+    domain are marked refused.
     """
+    if gate is None:
+        span = spans.current_span()
+        gate = span.name if span is not None and span.kind == "gate" else "gate"
+    for diagnostic in diagnostics:
+        events.log_diagnostic(diagnostic, command="compile", domain=domain, gate=gate)
+    spans.mark_refused()
     return {
         "domain": domain,
         "mode": mode.value if hasattr(mode, "value") else str(mode),
@@ -1224,6 +1287,7 @@ def _gate_failure(
                 rule_id=gate.rule_id if gate is not None else "DD-234",
             )
         ],
+        gate=gate_id,
     )
 
 
@@ -1289,6 +1353,23 @@ def _stale_dependent_domains(hub: Path, emit_target: Path, emitted: str) -> tupl
     return tuple(sorted(stale))
 
 
+def _log_stale_dependents(domain: str, stale: tuple[str, ...]) -> None:
+    """Put the stale-dependents warning in the run log, whatever the console shows."""
+    for other in stale:
+        events.log_diagnostic(
+            _note(
+                "compile.stale-dependent",
+                "warning",
+                f"{other}: committed output records authored inputs that changed since it "
+                "was emitted; run: kairos-ontology compile --all --emit --confirm-emit",
+                rule_id="#796",
+            ),
+            command="compile",
+            domain=domain,
+            gate="emit",
+        )
+
+
 def _report_stale_dependents(domains: tuple[str, ...], *, quiet: bool) -> None:
     if not domains or quiet:
         return
@@ -1326,18 +1407,19 @@ def _compile_one_domain(
     # domain's compile; cross-cutting or matching-domain judgments still do. That scoping
     # is also what makes a multi-domain invocation safe: one domain's gate failure is
     # reported against that domain and leaves the others' verdicts untouched.
-    discovery_errors = check_discovery_gate(hub, domains=[domain])
-    if discovery_errors:
-        for error in discovery_errors:
-            click.echo(f"✗ {error}", err=True)
-        return False, _gate_payload(
-            domain,
-            mode,
-            [
-                CompileDiagnostic(code="discovery.unresolved-judgment", message=str(error))
-                for error in discovery_errors
-            ],
-        )
+    with spans.task_span("gate", "discovery.unresolved-judgment"):
+        discovery_errors = check_discovery_gate(hub, domains=[domain])
+        if discovery_errors:
+            for error in discovery_errors:
+                click.echo(f"✗ {error}", err=True)
+            return False, _gate_payload(
+                domain,
+                mode,
+                [
+                    CompileDiagnostic(code="discovery.unresolved-judgment", message=str(error))
+                    for error in discovery_errors
+                ],
+            )
 
     # Ontology integrity, at the stage the damage is done (DD-163). Binding authoring is
     # where an agent is under pressure to make `binding.unknown-property` go away, and
@@ -1359,138 +1441,147 @@ def _compile_one_domain(
     # skipped, an absent directory yields nothing -- so "no findings" and "nothing was
     # read" arrived here indistinguishable. On one real hub, deleting _analysis/ took
     # the DD-169 gate from 661 findings to a clean pass.
-    try:
-        from ..core.alignment_report import alignment_evidence_gaps
+    with spans.task_span("gate", "alignment.evidence-missing"):
+        try:
+            from ..core.alignment_report import alignment_evidence_gaps
 
-        evidence_gaps = alignment_evidence_gaps(hub)
-    except Exception as exc:  # noqa: BLE001 - reported as a gate failure, not swallowed
-        return False, _gate_failure(domain, mode, "alignment.evidence-missing", exc)
-    if evidence_gaps:
-        click.echo(
-            f"✗ the gap gates for '{domain}' cannot read the evidence they judge:",
-            err=True,
-        )
-        for gap in evidence_gaps:
-            click.echo(f"    {gap.detail}", err=True)
-            click.echo(f"      ↪ {gap.remediation}", err=True)
-        return False, _gate_payload(
-            domain,
-            mode,
-            [
-                CompileDiagnostic(
-                    code="alignment.evidence-missing",
-                    message=gap.describe(),
-                    rule_id="DD-234",
-                )
-                for gap in evidence_gaps
-            ],
-        )
-
-    try:
-        from ..core.alignment_report import (
-            render_unanchored_guidance,
-            undecided_unanchored_tables,
-        )
-
-        unanchored = undecided_unanchored_tables(hub, domains=[domain])
-    except Exception as exc:  # noqa: BLE001 - reported as a gate failure, not swallowed
-        return False, _gate_failure(domain, mode, "alignment.table-unanchored", exc)
-    if unanchored:
-        click.echo(
-            f"✗ {len(unanchored)} table(s) in '{domain}' have no reference class and no "
-            "recorded decision. Their columns cannot map well until this is resolved:",
-            err=True,
-        )
-        for line in render_unanchored_guidance(unanchored).splitlines()[2:]:
-            click.echo(line, err=True)
-        click.echo(
-            "  Or record a table-level disposition to accept the table as out of scope.",
-            err=True,
-        )
-        return False, _gate_payload(
-            domain,
-            mode,
-            [
-                CompileDiagnostic(
-                    code="alignment.table-unanchored",
-                    message=(
-                        f"{table.system}.{table.table} has no reference class and no "
-                        f"recorded decision (status: {table.status})"
-                    ),
-                    rule_id="DD-180",
-                )
-                for table in unanchored
-            ],
-        )
-
-    try:
-        from ..core.alignment_report import GAP_RESOLUTIONS, undecided_gap_columns
-
-        undecided = undecided_gap_columns(hub, domains=[domain])
-    except Exception as exc:  # noqa: BLE001 - reported as a gate failure, not swallowed
-        return False, _gate_failure(domain, mode, "alignment.gap-column-undecided", exc)
-    if undecided:
-        click.echo(
-            f"✗ {len(undecided)} source column(s) in '{domain}' carry real business data "
-            "with no canonical home and no recorded decision:",
-            err=True,
-        )
-        for column in undecided[:10]:
+            evidence_gaps = alignment_evidence_gaps(hub)
+        except Exception as exc:  # noqa: BLE001 - reported as a gate failure, not swallowed
+            return False, _gate_failure(domain, mode, "alignment.evidence-missing", exc)
+        if evidence_gaps:
             click.echo(
-                f"    {column.system}.{column.table}.{column.column} "
-                f"({column.data_type}) [{column.reason}]",
+                f"✗ the gap gates for '{domain}' cannot read the evidence they judge:",
                 err=True,
             )
-        if len(undecided) > 10:
-            click.echo(f"    … and {len(undecided) - 10} more", err=True)
-        click.echo("  Resolve each by one of:", err=True)
-        for resolution in GAP_RESOLUTIONS:
-            click.echo(f"    - {resolution}", err=True)
-        return False, _gate_payload(
-            domain,
-            mode,
-            [
-                CompileDiagnostic(
-                    code="alignment.gap-column-undecided",
-                    message=(
-                        f"{column.system}.{column.table}.{column.column} "
-                        f"({column.data_type}) carries business data with no canonical "
-                        f"home and no recorded decision [{column.reason}]"
-                    ),
-                    rule_id="DD-169",
-                )
-                for column in undecided
-            ],
-        )
+            for gap in evidence_gaps:
+                click.echo(f"    {gap.detail}", err=True)
+                click.echo(f"      ↪ {gap.remediation}", err=True)
+            return False, _gate_payload(
+                domain,
+                mode,
+                [
+                    CompileDiagnostic(
+                        code="alignment.evidence-missing",
+                        message=gap.describe(),
+                        rule_id="DD-234",
+                    )
+                    for gap in evidence_gaps
+                ],
+            )
 
-    integrity_failures = _domain_integrity_failures(hub, domain)
-    if integrity_failures:
-        for finding in integrity_failures:
-            click.echo(f"✗ {finding.message}", err=True)
-            click.echo(f"  ↪ {finding.remediation}", err=True)
-        click.echo(
-            "✗ ontology integrity must pass before a binding compiles; "
-            "run 'kairos-ontology validate --all' for the full picture",
-            err=True,
-        )
-        return False, _gate_payload(
-            domain,
-            mode,
-            [
-                CompileDiagnostic(
-                    code="ontology.integrity",
-                    message=f"{finding.message} -> {finding.remediation}",
-                    rule_id="DD-163",
+    with spans.task_span("gate", "alignment.table-unanchored"):
+        try:
+            from ..core.alignment_report import (
+                render_unanchored_guidance,
+                undecided_unanchored_tables,
+            )
+
+            unanchored = undecided_unanchored_tables(hub, domains=[domain])
+        except Exception as exc:  # noqa: BLE001 - reported as a gate failure, not swallowed
+            return False, _gate_failure(domain, mode, "alignment.table-unanchored", exc)
+        if unanchored:
+            click.echo(
+                f"✗ {len(unanchored)} table(s) in '{domain}' have no reference class and no "
+                "recorded decision. Their columns cannot map well until this is resolved:",
+                err=True,
+            )
+            for line in render_unanchored_guidance(unanchored).splitlines()[2:]:
+                click.echo(line, err=True)
+            click.echo(
+                "  Or record a table-level disposition to accept the table as out of scope.",
+                err=True,
+            )
+            return False, _gate_payload(
+                domain,
+                mode,
+                [
+                    CompileDiagnostic(
+                        code="alignment.table-unanchored",
+                        message=(
+                            f"{table.system}.{table.table} has no reference class and no "
+                            f"recorded decision (status: {table.status})"
+                        ),
+                        rule_id="DD-180",
+                    )
+                    for table in unanchored
+                ],
+            )
+
+    with spans.task_span("gate", "alignment.gap-column-undecided"):
+        try:
+            from ..core.alignment_report import GAP_RESOLUTIONS, undecided_gap_columns
+
+            undecided = undecided_gap_columns(hub, domains=[domain])
+        except Exception as exc:  # noqa: BLE001 - reported as a gate failure, not swallowed
+            return False, _gate_failure(domain, mode, "alignment.gap-column-undecided", exc)
+        if undecided:
+            click.echo(
+                f"✗ {len(undecided)} source column(s) in '{domain}' carry real business data "
+                "with no canonical home and no recorded decision:",
+                err=True,
+            )
+            for column in undecided[:10]:
+                click.echo(
+                    f"    {column.system}.{column.table}.{column.column} "
+                    f"({column.data_type}) [{column.reason}]",
+                    err=True,
                 )
-                for finding in integrity_failures
-            ],
-        )
+            if len(undecided) > 10:
+                click.echo(f"    … and {len(undecided) - 10} more", err=True)
+            click.echo("  Resolve each by one of:", err=True)
+            for resolution in GAP_RESOLUTIONS:
+                click.echo(f"    - {resolution}", err=True)
+            return False, _gate_payload(
+                domain,
+                mode,
+                [
+                    CompileDiagnostic(
+                        code="alignment.gap-column-undecided",
+                        message=(
+                            f"{column.system}.{column.table}.{column.column} "
+                            f"({column.data_type}) carries business data with no canonical "
+                            f"home and no recorded decision [{column.reason}]"
+                        ),
+                        rule_id="DD-169",
+                    )
+                    for column in undecided
+                ],
+            )
+
+    with spans.task_span("gate", "ontology.integrity"):
+        integrity_failures = _domain_integrity_failures(hub, domain)
+        if integrity_failures:
+            for finding in integrity_failures:
+                click.echo(f"✗ {finding.message}", err=True)
+                click.echo(f"  ↪ {finding.remediation}", err=True)
+            click.echo(
+                "✗ ontology integrity must pass before a binding compiles; "
+                "run 'kairos-ontology validate --all' for the full picture",
+                err=True,
+            )
+            return False, _gate_payload(
+                domain,
+                mode,
+                [
+                    CompileDiagnostic(
+                        code="ontology.integrity",
+                        message=f"{finding.message} -> {finding.remediation}",
+                        rule_id="DD-163",
+                    )
+                    for finding in integrity_failures
+                ],
+            )
 
     # Cache-write permission is opened by the caller, around the whole domain loop, so
     # that it also covers the gates above (see compile_cmd).
-    result = compile_domain(hub, domain, mode)
-    for diagnostic in result.diagnostics.ordered:
-        events.log_diagnostic(diagnostic, command="compile", domain=domain, gate="compile")
+    with spans.task_span("gate", "compile") as span:
+        result = compile_domain(hub, domain, mode)
+        for diagnostic in result.diagnostics.ordered:
+            events.log_diagnostic(diagnostic, command="compile", domain=domain, gate="compile")
+        if not result.succeeded:
+            span.set_status("error")
+        if check_mode and result.succeeded:
+            _log_deferred(domain, result)
     if check_mode and explain_mode:
         # Both diagnostics and the explain report are already computed as part of the
         # same plan (CompileResult always carries both), so this is a free relabel —
@@ -1501,12 +1592,14 @@ def _compile_one_domain(
     if emit_mode and result.can_emit:
         # The emit location is fixed and not configurable: derived dbt artifacts
         # always land in the sibling publish root, never inside the hub.
-        requested_target = publish_root(hub) / _DBT_EMIT_SUBPATH
-        emit_target = _emit_compile_artifacts(result, requested_target, hub)
-        # Only meaningful for a partial emit: `--all` has just refreshed everything,
-        # so anything it would report is already fixed (#796).
-        if not whole_hub:
-            stale_dependents = _stale_dependent_domains(hub, emit_target, domain)
+        with spans.task_span("stage", "emit"):
+            requested_target = publish_root(hub) / _DBT_EMIT_SUBPATH
+            emit_target = _emit_compile_artifacts(result, requested_target, hub)
+            # Only meaningful for a partial emit: `--all` has just refreshed everything,
+            # so anything it would report is already fixed (#796).
+            if not whole_hub:
+                stale_dependents = _stale_dependent_domains(hub, emit_target, domain)
+                _log_stale_dependents(domain, stale_dependents)
     if plans is not None and result.succeeded and result.plan is not None:
         plans[domain] = result.plan
     payload = _payload(result) if output_format == "json" else None

@@ -25,7 +25,7 @@ import click
 from .gates import escape_option
 
 from ..core.compiler import build_compile_plan
-from ..core.observability import events
+from ..core.observability import events, spans
 from ..core.determinism import write_text_lf
 from ..core.hub_utils import contract_diagrams_dir, find_hub_root, publish_root
 from ..core.projections.dbt.gold_connection import GOLD_CONNECTION_OVERRIDE_PATH
@@ -125,19 +125,6 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
       kairos-ontology emit-gold party
       kairos-ontology emit-gold party --confirm-emit
     """
-    from ..cli.compile import _hub_domains
-    from ..core.compiler.emit import emit_artifacts
-    from ..core.compiler.provenance import provenance_artifact
-    from ..core.projections.dbt.bpa_profile import profile_stamp
-    from ..core.insights import InsightsError
-    from ..core.projections.dbt.gold_connection import resolve_gold_product
-    from ..core.projections.dbt.gold_specs import GoldContractError
-    from ..core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
-    from ..core.projections.medallion_gold_projector import (
-        plan_gold_from_compile_plans,
-        render_gold_product,
-    )
-
     hub_root = find_hub_root(Path.cwd(), require_model=True)
     from .run_log import start_run_log
 
@@ -151,41 +138,177 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
             "Cannot locate a hub (model/ + integration/) from the current directory."
         )
 
+    from ..cli.compile import _hub_domains
+    from ..core.projections.dbt.gold_connection import resolve_gold_product
+    from ..core.projections.dbt.gold_specs import GoldContractError
+
     try:
         product = resolve_gold_product(hub_root, domain, hub_domains=tuple(_hub_domains(hub_root)))
     except GoldContractError as exc:
+        _refuse(exc, product=domain, gate="gold-shape")
         raise click.ClickException(str(exc)) from exc
+
+    # One product span, so every gate and stage below groups under it (#1011).
+    with spans.task_span("product", f"gold:{product.name}", **{"kairos.product": product.name}):
+        _emit_gold_product(hub_root, product, confirm_emit, skip_tmdl_validation)
+
+
+def _refuse(finding, *, product: str, gate: str, command: str = "emit-gold") -> None:
+    """Log a refusal as a diagnostic and mark its task refused, before it is raised.
+
+    A ``GoldContractError`` carries ``code``/``message``/``rule_id`` already; anything else
+    goes through :func:`_finding`.
+    """
+    events.log_diagnostic(finding, command=command, product=product, gate=gate)
+    spans.mark_refused()
+
+
+def _finding(code: str, severity: str, message: str, *, location: str = "", rule_id: str = ""):
+    """A diagnostic-shaped record for a finding the console prints as a plain line."""
+    return SimpleNamespace(
+        code=code, severity=severity, message=message, location=location, rule_id=rule_id
+    )
+
+
+def _check_package(artifacts: dict[str, str], product, *, command: str, label: str = "") -> None:
+    """The Fabric package gate: log each failing file, then refuse. Always runs.
+
+    *label* prefixes the refusal (``package-powerbi-release`` names the product).
+    """
+    with spans.task_span("gate", "package-validation"):
+        package_failures = [
+            result for result in validate_package_artifacts(artifacts) if result.status != "pass"
+        ]
+        if not package_failures:
+            return
+        for item in package_failures:
+            events.log_diagnostic(
+                _finding(
+                    "gold.package-invalid",
+                    "error",
+                    item.message,
+                    location=item.artifact_path,
+                    rule_id="#623",
+                ),
+                command=command,
+                product=product.name,
+                gate="package-validation",
+            )
+        spans.mark_refused()
+        detail = "; ".join(f"{item.artifact_path}: {item.message}" for item in package_failures)
+        raise click.ClickException(
+            f"{label + ': ' if label else ''}Fabric package validation failed for "
+            f"{len(package_failures)} file(s): {detail}"
+        )
+
+
+def _check_tmdl(artifacts: dict[str, str], product, *, command: str, label: str = "") -> None:
+    """The TOM SDK structural gate: an unavailable SDK is reported, a failure refuses."""
+    from ..core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
+
+    gate = "gold.tmdl-structural-validation"
+    with spans.task_span("gate", gate):
+        tmdl_results = validate_tmdl_artifacts(artifacts)
+        failures = [result for result in tmdl_results if result.status == "fail"]
+        for result in tmdl_results:
+            if result.status == "unavailable":
+                events.log_diagnostic(
+                    _finding(
+                        "gold.tmdl-unavailable",
+                        "info",
+                        result.message,
+                        location=str(result.definition_root),
+                    ),
+                    command=command,
+                    product=product.name,
+                    gate=gate,
+                )
+                click.echo(
+                    f"   (TOM SDK validation unavailable for "
+                    f"{label + ' ' if label else ''}{result.definition_root}: "
+                    f"{result.message})"
+                )
+        if not failures:
+            return
+        for item in failures:
+            events.log_diagnostic(
+                _finding(
+                    "gold.tmdl-invalid", "error", item.message, location=str(item.definition_root)
+                ),
+                command=command,
+                product=product.name,
+                gate=gate,
+            )
+        spans.mark_refused()
+        detail = "; ".join(f"{item.definition_root}: {item.message}" for item in failures)
+        raise click.ClickException(
+            f"{label + ': ' if label else ''}TMDL structural validation failed for "
+            f"{len(failures)} model(s): {detail}"
+        )
+
+
+def _emit_gold_product(
+    hub_root: Path, product, confirm_emit: bool, skip_tmdl_validation: bool
+) -> None:
+    """Everything emit-gold does once the product is resolved."""
+    from ..core.compiler.emit import emit_artifacts
+    from ..core.compiler.provenance import provenance_artifact
+    from ..core.projections.dbt.bpa_profile import profile_stamp
+    from ..core.insights import InsightsError
+    from ..core.projections.dbt.gold_specs import GoldContractError
+    from ..core.projections.medallion_gold_projector import (
+        plan_gold_from_compile_plans,
+        render_gold_product,
+    )
 
     plans = []
-    for member in product.domains:
-        plan = build_compile_plan(hub_root, member)
-        if plan.blocked:
-            for diagnostic in plan.diagnostics.ordered:
-                events.log_diagnostic(
-                    diagnostic, command="emit-gold", domain=member, gate="compile"
+    with spans.task_span("gate", "compile"):
+        for member in product.domains:
+            plan = build_compile_plan(hub_root, member)
+            if plan.blocked:
+                for diagnostic in plan.diagnostics.ordered:
+                    events.log_diagnostic(
+                        diagnostic, command="emit-gold", domain=member, gate="compile"
+                    )
+                    click.echo(diagnostic.render(), err=True)
+                spans.mark_refused()
+                raise click.ClickException(
+                    f"{member}: compile plan is blocked; see diagnostics above"
                 )
-                click.echo(diagnostic.render(), err=True)
-            raise click.ClickException(f"{member}: compile plan is blocked; see diagnostics above")
-        contract = plan.normalized_contract
-        if contract is None or contract.policy.gold.profile is None:
-            raise click.ClickException(
-                f"{member} has no authored Gold profile "
-                "(kairos-ext:goldProductProfile) -- nothing to emit"
-            )
-        plans.append(plan)
+            contract = plan.normalized_contract
+            if contract is None or contract.policy.gold.profile is None:
+                message = (
+                    f"{member} has no authored Gold profile "
+                    "(kairos-ext:goldProductProfile) -- nothing to emit"
+                )
+                _refuse(
+                    _finding("gold.profile-missing", "error", message),
+                    product=product.name,
+                    gate="compile",
+                )
+                raise click.ClickException(message)
+            plans.append(plan)
 
-    try:
-        # Shaped once and reused: the coverage report below reads the same spec, and
-        # shaping a product twice per emit is pure waste.
-        logical, _ = plan_gold_from_compile_plans(plans, product)
-        artifacts = render_gold_product(logical, plans, product)
-    except GoldContractError as exc:
-        raise click.ClickException(str(exc)) from exc
-    except InsightsError as exc:
-        # Rendering reads insights.yaml to build the brief, so a malformed file surfaces
-        # here rather than in the coverage report below. Without this the operator gets a
-        # Python traceback for a stray tab in their own YAML.
-        raise click.ClickException(f"insights.yaml is unusable: {exc}") from exc
+    with spans.task_span("gate", "gold-shape"):
+        try:
+            # Shaped once and reused: the coverage report below reads the same spec, and
+            # shaping a product twice per emit is pure waste.
+            logical, _ = plan_gold_from_compile_plans(plans, product)
+            artifacts = render_gold_product(logical, plans, product)
+        except GoldContractError as exc:
+            _refuse(exc, product=product.name, gate="gold-shape")
+            raise click.ClickException(str(exc)) from exc
+        except InsightsError as exc:
+            # Rendering reads insights.yaml to build the brief, so a malformed file
+            # surfaces here rather than in the coverage report below. Without this the
+            # operator gets a Python traceback for a stray tab in their own YAML.
+            message = f"insights.yaml is unusable: {exc}"
+            _refuse(
+                _finding("gold.insights-unusable", "error", message),
+                product=product.name,
+                gate="gold-shape",
+            )
+            raise click.ClickException(message) from exc
 
     # DD-218. The Gold lane emits into its own manifest-owned subtree, so it carries its
     # own sidecar rather than relying on the Silver one; `lane` keeps the two paths apart
@@ -203,29 +326,10 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     # so there is no .NET SDK to be missing and no build cost to opt out of. It is also
     # the gate that covers everything Desktop and Fabric read *before* the model, which
     # is where #623's blocker lived -- a `.pbip` whose $schema URI 404s.
-    package_failures = [
-        result for result in validate_package_artifacts(artifacts) if result.status != "pass"
-    ]
-    if package_failures:
-        detail = "; ".join(f"{item.artifact_path}: {item.message}" for item in package_failures)
-        raise click.ClickException(
-            f"Fabric package validation failed for {len(package_failures)} file(s): {detail}"
-        )
+    _check_package(artifacts, product, command="emit-gold")
 
     if not skip_tmdl_validation:
-        tmdl_results = validate_tmdl_artifacts(artifacts)
-        failures = [result for result in tmdl_results if result.status == "fail"]
-        for result in tmdl_results:
-            if result.status == "unavailable":
-                click.echo(
-                    f"   (TOM SDK validation unavailable for {result.definition_root}: "
-                    f"{result.message})"
-                )
-        if failures:
-            detail = "; ".join(f"{item.definition_root}: {item.message}" for item in failures)
-            raise click.ClickException(
-                f"TMDL structural validation failed for {len(failures)} model(s): {detail}"
-            )
+        _check_tmdl(artifacts, product, command="emit-gold")
 
     target = (publish_root(hub_root) / _POWERBI_EMIT_SUBPATH).resolve(strict=False)
     # The Gold ERDs leave the Power BI package and go to the hub, beside the Silver and
@@ -251,26 +355,27 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         click.echo("   (dry run -- pass --confirm-emit to write these files)")
         return
 
-    _retire_superseded_manifests(target, product, diagrams_target)
+    with spans.task_span("stage", "emit"):
+        _retire_superseded_manifests(target, product, diagrams_target)
 
-    # `parameter.yml` is the one hub-wide root artifact every domain's Gold emit writes
-    # into this shared directory -- correctly so, since fabric-cicd reads exactly one
-    # per `repository_directory` and it must cover every domain. Each domain owns only
-    # its own manifest, so without declaring it mergeable the second domain's emit sees
-    # an unowned file already on disk and fails closed (issue #664). Mirrors how
-    # `cli/compile.py` declares the Silver side's shared artifacts.
-    emit_artifacts(
-        artifacts,
-        target,
-        manifest_name=manifest_name,
-        replace_unowned_paths=(PARAMETER_ARTIFACT_PATH, *_shared_domain_artifacts(product)),
-    )
-    if diagrams:
+        # `parameter.yml` is the one hub-wide root artifact every domain's Gold emit
+        # writes into this shared directory -- correctly so, since fabric-cicd reads
+        # exactly one per `repository_directory` and it must cover every domain. Each
+        # domain owns only its own manifest, so without declaring it mergeable the second
+        # domain's emit sees an unowned file already on disk and fails closed (issue
+        # #664). Mirrors how `cli/compile.py` declares the Silver side's shared artifacts.
         emit_artifacts(
-            diagrams,
-            diagrams_target,
-            manifest_name=_gold_diagrams_manifest_name(product.name),
+            artifacts,
+            target,
+            manifest_name=manifest_name,
+            replace_unowned_paths=(PARAMETER_ARTIFACT_PATH, *_shared_domain_artifacts(product)),
         )
+        if diagrams:
+            emit_artifacts(
+                diagrams,
+                diagrams_target,
+                manifest_name=_gold_diagrams_manifest_name(product.name),
+            )
     # #748: success is announced only once the write has actually committed. The line used
     # to be printed before `emit_artifacts`, so a failed swap left a "✅ Emitted" on the
     # terminal directly above the error that said nothing was written.
@@ -281,7 +386,8 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
 
     from ..core.hub_config import hub_display_name
 
-    _regenerate_master_gold_erd(diagrams_target, hub_name=hub_display_name(hub_root))
+    with spans.task_span("stage", "erd"):
+        _regenerate_master_gold_erd(diagrams_target, hub_name=hub_display_name(hub_root))
 
 
 def _report_shape_findings(logical, product) -> None:
@@ -298,7 +404,7 @@ def _report_shape_findings(logical, product) -> None:
         return
     for code, message in findings:
         events.log_diagnostic(
-            SimpleNamespace(code=code, message=message, severity="warning"),
+            _finding(code, "warning", message, rule_id="DD-240-practices"),
             command="emit-gold",
             product=product.name,
             gate="gold-shape",
@@ -465,6 +571,19 @@ def _report_unresolved(artifacts: dict[str, str], product) -> None:
     unresolved = json.loads(report).get("unresolved_relationships") or []
     if not unresolved:
         return
+    for item in unresolved:
+        events.log_diagnostic(
+            _finding(
+                "gold.unresolved-relationship",
+                "warning",
+                f"{item['source_table']} -> {item['target_class']} has no target table in "
+                "this product; its join columns are emitted but nothing joins them",
+                rule_id="#744",
+            ),
+            command="emit-gold",
+            product=product.name,
+            gate="gold-shape",
+        )
     click.echo(
         f"   ⚠ {len(unresolved)} relationship(s) have no target table in this product; "
         "their join columns are emitted but nothing joins them:"
@@ -540,6 +659,19 @@ def _report_unresolved_bridges(artifacts: dict[str, str], product) -> None:
     unresolved = json.loads(report).get("unresolved_bridges") or []
     if not unresolved:
         return
+    for item in unresolved:
+        events.log_diagnostic(
+            _finding(
+                "gold.unresolved-bridge",
+                "warning",
+                f"bridge {item['bridge']} endpoint {item['endpoint']} is not a Gold table of "
+                "this product; the bridge is emitted but that relationship is not",
+                rule_id="#763",
+            ),
+            command="emit-gold",
+            product=product.name,
+            gate="gold-shape",
+        )
     click.echo(
         f"   ⚠ {len(unresolved)} bridge endpoint(s) are not Gold tables of this product; "
         "the bridge is emitted but those relationships are not:"
@@ -564,10 +696,29 @@ def _report_insight_coverage(hub_root: Path, logical, product) -> None:
     try:
         coverage = insight_coverage_for(logical, product, hub_root)
     except InsightsError as exc:
-        raise click.ClickException(f"insights.yaml is unusable: {exc}") from exc
+        message = f"insights.yaml is unusable: {exc}"
+        _refuse(
+            _finding("gold.insights-unusable", "error", message),
+            product=product.name,
+            gate="gold-shape",
+        )
+        raise click.ClickException(message) from exc
     gaps = [item for item in coverage if not item.covered]
     if not coverage:
         return
+    for item in gaps:
+        missing = ", ".join((*item.missing_measures, *item.missing_dimensions))
+        events.log_diagnostic(
+            _finding(
+                "gold.insight-unanswerable",
+                "warning",
+                f"confirmed insight {item.insight.id} is missing {missing}",
+                rule_id="#744",
+            ),
+            command="emit-gold",
+            product=product.name,
+            gate="gold-shape",
+        )
     click.echo(f"   {len(coverage) - len(gaps)}/{len(coverage)} confirmed insight(s) answerable")
     for item in gaps:
         missing = ", ".join((*item.missing_measures, *item.missing_dimensions))

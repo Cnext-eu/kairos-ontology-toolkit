@@ -20,7 +20,8 @@ from ..core.observability.context import (
     reset_operation_context,
     set_operation_context,
 )
-from ..core.observability.otel import configure_otel_logging, flush_otel
+from ..core.observability.otel import configure_otel, flush_otel
+from ..core.observability import spans as _spans
 from ..core.observability import events as _events
 from . import run_log as _run_log
 from ..core.gates import EnforcementMode as _EnforcementMode
@@ -40,6 +41,7 @@ from .package_powerbi_release import package_powerbi_release_cmd
 from .decisions import decision
 from .feedback import feedback
 from .gates import gates_cmd
+from .logs import logs_group
 from .promote_transform import promote_transform_cmd
 from .validation import (
     validate_dbt_cmd,
@@ -165,19 +167,32 @@ class _KairosGroup(click.Group):
     """
 
     def invoke(self, ctx):
+        # Every way out tears observability down once (DD-242): a refused or failing
+        # command is the run whose summary matters most, and Click's own exits used to
+        # skip it. The success path already tore down in the result callback.
+        exit_code, early_exit = 1, False
         try:
-            return super().invoke(ctx)
-        except (
-            click.exceptions.Exit,
-            click.Abort,
-            click.ClickException,
-            KeyboardInterrupt,
-            SystemExit,
-        ):
+            result = super().invoke(ctx)
+            exit_code = 0
+            return result
+        except click.exceptions.Exit as exc:
+            exit_code = exc.exit_code
+            early_exit = exit_code == 0
+            raise
+        except click.ClickException as exc:
+            exit_code = exc.exit_code
+            raise
+        except click.Abort:
+            raise
+        except KeyboardInterrupt:
+            exit_code = 130
+            raise
+        except SystemExit as exc:
+            exit_code = _system_exit_code(exc)
             raise
         except Exception as exc:
             _log_unhandled_exception(exc)
-            _teardown_observability(ctx)
+            _teardown_observability(ctx, exit_code=1)
             # OntologyLoadError carries structured diagnostics (missing_import et
             # al.) that explain the failure far better than its generic message;
             # render them instead of letting Click print a raw traceback (#587).
@@ -191,6 +206,8 @@ class _KairosGroup(click.Group):
                 # skip it, which is why the conversion happens after the logging.
                 raise click.exceptions.Exit(1)
             raise
+        finally:
+            _teardown_observability(ctx, exit_code=exit_code, early_exit=early_exit)
 
     def main(self, *args, **kwargs):
         # Issue #398: Click's Windows default expands an unquoted-by-the-time-it-
@@ -251,12 +268,17 @@ def cli(ctx, verbose, debug, log_file, log_format, mode):
     # is precisely where a stale ledger would be hardest to notice.
     _reset_enforcement_state()
     _set_active_mode(mode)
-    token = set_operation_context(OperationContext(operation_id=new_operation_id()))
-    otel_handler = configure_otel_logging()
+    operation_id = new_operation_id()
+    token = set_operation_context(OperationContext(operation_id=operation_id))
+    command = ctx.invoked_subcommand or ""
+    otel_session = configure_otel(operation_id=operation_id, command=command)
+    _spans.reset_spans()
+    _spans.set_tracer(otel_session.tracer if otel_session is not None else None)
+    _spans.open_run_span(command, **{"kairos.command": command})
     ctx.obj = {
         "operation_context_token": token,
-        "otel_handler": otel_handler,
-        "command": ctx.invoked_subcommand or "",
+        "otel_handler": otel_session,
+        "command": command,
     }
     _warn_if_outside_venv()
     _warn_if_version_mismatch()
@@ -286,23 +308,43 @@ def _log_unhandled_exception(exc: BaseException) -> None:
     )
 
 
-def _teardown_observability(ctx) -> None:  # noqa: ANN001
-    """Reset the operation context, flush the OTel bridge, and reset logging.
+def _system_exit_code(exc: SystemExit) -> int:
+    """The process exit code a ``SystemExit`` stands for."""
+    if exc.code is None:
+        return 0
+    return exc.code if isinstance(exc.code, int) else 1
+
+
+def _teardown_observability(  # noqa: ANN001
+    ctx, *, exit_code: int = 0, early_exit: bool = False
+) -> None:
+    """Write the run summary, end the run span, flush OTel, and reset logging.
 
     Shared by the success path (``@cli.result_callback()``, invoked only when
-    the command returns normally) and the failure path (``_KairosGroup.invoke``,
-    which Click's result callback never sees) so the two cannot drift.
-    Tolerates ``ctx.obj is None`` (root option parsing can fail before the
-    group callback runs).
+    the command returns normally) and every failure path (``_KairosGroup.invoke``,
+    which Click's result callback never sees) so the two cannot drift. Runs once
+    per invocation; a second call is a no-op. Tolerates ``ctx.obj is None`` (root
+    option parsing can fail before the group callback runs).
+
+    *early_exit* is a clean ``Exit(0)`` such as ``--help``: it ends the span but writes
+    no summary unless the command had already reported something.
     """
-    obj = ctx.obj or {}
+    obj = ctx.obj
+    if obj is None:
+        reset_logging()
+        return
+    if obj.get("torn_down"):
+        return
+    obj["torn_down"] = True
     token = obj.get("operation_context_token")
-    otel_handler = obj.get("otel_handler")
-    if obj.get("command"):
-        _events.log_run_summary(obj["command"])
+    otel_session = obj.get("otel_handler")
+    if obj.get("command") and not (early_exit and not _events.run_summary()):
+        _events.log_run_summary(obj["command"], exit_code=exit_code)
+    _spans.close_run_span(exit_code=exit_code)
+    _spans.reset_spans()
     if token is not None:
         reset_operation_context(token)
-    flush_otel(otel_handler)
+    flush_otel(otel_session)
     # Restore logging defaults so a CLI-invoking test does not leave
     # propagate=False set and starve later tests' caplog of records. This also
     # closes the file handler (see reset_logging -> _strip_owned_handlers),
@@ -326,6 +368,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(package_powerbi_release_cmd)
     group.add_command(decision)
     group.add_command(gates_cmd)
+    group.add_command(logs_group)
     group.add_command(feedback)
     group.add_command(validate_dbt_cmd)
     group.add_command(validate_dbt_contracts_cmd)
