@@ -233,6 +233,52 @@ def _record_dict(record: Any) -> dict[str, Any]:
     return data
 
 
+class _ProvenanceIndex:
+    """Which closure source first states a subject, or a triple, for one load result.
+
+    Provenance was answered by scanning every source graph in closure order, per call,
+    and one index build asks the same question many times over -- an inherited property's
+    provenance three times per class that inherits it. On a 15-domain hub that was 96,000
+    scans (#598). The first-subject map is one pass over the sources; triple answers are
+    memoized as they are asked. Same order, same first match, so the same answer.
+    """
+
+    def __init__(self, result: OntologyLoadResult):
+        self.result = result
+        self.first_subject: dict[Any, tuple[str, int]] = {}
+        for source in result.sources:
+            entry = (source.manifest.source_identity, source.manifest.import_depth)
+            for subject in source.graph.subjects(unique=True):
+                self.first_subject.setdefault(subject, entry)
+        self._triples: dict[tuple[Any, Any, Any], tuple[str, int] | None] = {}
+
+    def triple(self, subject: Any, predicate: Any, obj: Any) -> tuple[str, int] | None:
+        key = (subject, predicate, obj)
+        if key not in self._triples:
+            self._triples[key] = next(
+                (
+                    (source.manifest.source_identity, source.manifest.import_depth)
+                    for source in self.result.sources
+                    if key in source.graph
+                ),
+                None,
+            )
+        return self._triples[key]
+
+
+#: The index of the result most recently asked about. One slot is enough: a build asks
+#: about one result from start to finish, and the stored result guards a recycled ``id``.
+_PROVENANCE_INDEX: list[_ProvenanceIndex] = []
+
+
+def _provenance_index(result: OntologyLoadResult) -> _ProvenanceIndex:
+    if _PROVENANCE_INDEX and _PROVENANCE_INDEX[0].result is result:
+        return _PROVENANCE_INDEX[0]
+    index = _ProvenanceIndex(result)
+    _PROVENANCE_INDEX[:] = [index]
+    return index
+
+
 def _term_provenance(
     result: OntologyLoadResult,
     subject: URIRef | BNode,
@@ -241,20 +287,13 @@ def _term_provenance(
     *,
     asserted: bool = True,
 ) -> TermProvenance:
-    for source in result.sources:
-        if predicate is None:
-            if any(source.graph.triples((subject, None, None))):
-                return TermProvenance(
-                    source.manifest.source_identity,
-                    source.manifest.import_depth,
-                    asserted,
-                )
-        elif (subject, predicate, obj) in source.graph:
-            return TermProvenance(
-                source.manifest.source_identity,
-                source.manifest.import_depth,
-                asserted,
-            )
+    index = _provenance_index(result)
+    if predicate is None:
+        entry = index.first_subject.get(subject)
+    else:
+        entry = index.triple(subject, predicate, obj)
+    if entry is not None:
+        return TermProvenance(entry[0], entry[1], asserted)
     root = result.manifest[0]
     return TermProvenance(root.source_identity, root.import_depth, asserted)
 
@@ -265,7 +304,7 @@ def _is_asserted(
     predicate: Any,
     obj: Any,
 ) -> bool:
-    return any((subject, predicate, obj) in source.graph for source in result.sources)
+    return _provenance_index(result).triple(subject, predicate, obj) is not None
 
 
 def _uri_objects(graph: Graph, subject: Any, predicate: URIRef) -> set[URIRef]:
@@ -483,12 +522,18 @@ def _property_uris(graph: Graph) -> set[URIRef]:
 
 
 def _semantic_graph(result: OntologyLoadResult, profile: SemanticProfile) -> Graph:
+    """The graph the index reads. Copied only for OWL RL, the one profile that writes.
+
+    Every other profile only queries it, and copying the whole closure per build was a
+    third of the index cost (#598).
+    """
+    if profile is not SemanticProfile.OWL_RL:
+        return result.graph
+    from owlrl import DeductiveClosure, OWLRL_Semantics
+
     graph = Graph()
     graph += result.graph
-    if profile is SemanticProfile.OWL_RL:
-        from owlrl import DeductiveClosure, OWLRL_Semantics
-
-        DeductiveClosure(OWLRL_Semantics).expand(graph)
+    DeductiveClosure(OWLRL_Semantics).expand(graph)
     return graph
 
 
