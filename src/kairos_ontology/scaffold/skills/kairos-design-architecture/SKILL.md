@@ -31,7 +31,7 @@ and subdomain types are business judgements (Tier 3): propose, never decide.
 
 - `model/ontologies/<domain>.ttl` — canonical meaning; read only through
   `show-class-inventory`, `list-class-properties`, `explain-term`, `resolve-ontology`
-  (DD-103: never read a `.ttl` as text).
+  (DD-103: never read a `.ttl` as text — a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure).
 - `businessdiscovery/*-glossary.ttl` and `integration/discovery/` — confirmed terms and
   context from **kairos-design-discovery**.
 - An external logical model (an EA/XMI export, a whiteboard, a workshop transcript) is

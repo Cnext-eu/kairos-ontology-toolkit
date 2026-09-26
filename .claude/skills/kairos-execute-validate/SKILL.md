@@ -23,7 +23,7 @@ Validation is read-only unless the user explicitly requests an output file.
    error afterwards, degradable with `--degraded`).
 7. Never read a raw ontology serialization (`.ttl`/`.rdf`/`.owl`) as text; treat
    `validate`/`compile` diagnostics, or `resolve-ontology`/`show-class-inventory`/
-   `list-class-properties`/`explain-term` output, as authoritative.
+   `list-class-properties`/`explain-term` output, as authoritative — a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure.
 
 ## Three distinct "dbt check" tiers — do not conflate them
 

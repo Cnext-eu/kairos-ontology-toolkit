@@ -21,7 +21,8 @@ contract upgrade path. For a v5 conversion, never mutate the old hub in place:
 
 1. Create a fresh v5 repository with `kairos-setup-init`.
 2. Inventory reusable business terminology, source schemas, OWL concepts, and SHACL constraints in
-   the old repository.
+   the old repository (`show-class-inventory --ontology <file>` lists an old ontology's classes
+   with their imports resolved; never read a `.ttl` as text, DD-103).
 3. Re-author accepted source vocabularies under `integration/sources/` and canonical meaning under
    `model/ontologies/`; validate every Turtle input.
 4. Replace old mapping/execution metadata with closed

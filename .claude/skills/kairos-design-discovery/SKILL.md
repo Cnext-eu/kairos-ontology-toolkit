@@ -37,7 +37,9 @@ begins (DD-149).
 3. Confirm or AI-approve each business term and ontology link before writing it.
 4. Write business context as ordinary Markdown/YAML and alternative terminology as an rdflib-built
    SKOS glossary. Keep canonical class/property definitions in `model/ontologies/` unchanged.
-5. Link glossary concepts to ontology IRIs with semantic references; never redefine those IRIs.
+5. Link glossary concepts to ontology IRIs with semantic references (find them with
+   `show-class-inventory --domain <domain>` or `explain-term <IRI> --domain <domain>`; never
+   read a `.ttl` as text, DD-103); never redefine those IRIs.
 6. Parse generated Turtle and report unresolved terms for later ontology or binding review.
 
 Discovery artifacts are authored inputs, not execution authority. Source relations live under

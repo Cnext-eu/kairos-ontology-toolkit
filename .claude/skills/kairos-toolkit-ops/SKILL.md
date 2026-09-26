@@ -20,8 +20,9 @@ generated diffs.
   pinned release (or `--version <ver>` for a specific version).
 
 After an update, inspect `git diff`, run managed/scaffold tests, and compile representative v5
-bindings. Updating reference models is explicit: inspect ontology closure and compiler diagnostics
-before accepting changed semantics.
+bindings. Updating reference models is explicit: inspect the ontology closure
+(`show-class-inventory --domain <domain>`, `explain-term`; never a `.ttl` as text, DD-103)
+and compiler diagnostics before accepting changed semantics.
 
 ## Toolkit release
 

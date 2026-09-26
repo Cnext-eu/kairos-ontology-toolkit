@@ -13,6 +13,9 @@ continuation record or infer progress from generated files.
 
 ## Inspect
 
+Ontology meaning is read through `show-class-inventory` / `explain-term`, never a `.ttl`
+as text: a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure (DD-103).
+
 The deterministic next-action authority is the toolkit, not this skill. Recompute
 the advisory proposal instead of inventorying or ordering inputs yourself
 (DD-137):

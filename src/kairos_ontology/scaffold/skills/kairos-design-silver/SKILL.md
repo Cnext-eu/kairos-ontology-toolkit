@@ -25,8 +25,8 @@ Route the request as follows:
 Do not create a separate Silver policy document. The closed `EntityBinding` and
 the stateless compiler are the complete v5 materialization contract.
 
-This skill routes only — it does not read `model/ontologies/*.ttl` (or
-`.rdf`/`.owl`) itself. If inspection is needed, use `resolve-ontology`,
+This skill routes only — it never reads `model/ontologies/*.ttl` (or
+`.rdf`/`.owl`) as text. If inspection is needed, use `resolve-ontology`,
 `show-class-inventory`, `list-class-properties`, or `explain-term` in the
 destination skill.
 

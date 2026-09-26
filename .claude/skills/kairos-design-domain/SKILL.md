@@ -45,8 +45,11 @@ Read only the inputs relevant to the requested domain:
 1. `integration/discovery/` — confirmed business context and glossary.
 2. `integration/sources/<source>/*.ttl` — Bronze schema and already-redacted
    representative samples.
-3. Selected ontology-reference modules and their catalog-resolved import closure.
-4. Existing `model/ontologies/<domain>.ttl`, when amending a domain.
+3. Selected ontology-reference modules and their catalog-resolved import closure,
+   read through `show-class-inventory --domain <domain>` and
+   `explain-term <IRI> --domain <domain>`.
+4. Existing `model/ontologies/<domain>.ttl`, when amending a domain — through
+   `show-class-inventory --domain <domain>`, not as text: a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure (DD-103).
 5. `integration/discovery/bi/` — BI demand artifacts written by `import-tmdl`
    (Engineering Packs and `*-concept-mapping.yaml` worksheets). Reading the ones
    relevant to the active domain is required when they are present; they remain
@@ -350,7 +353,16 @@ completeness from filenames alone.
 
 ### 3. Inspect selected industry references
 
-Run Gate 0. Read the relevant import closure and surface the specialization tree,
+Run Gate 0. Then read the relevant import closure through the CLI, never the `.ttl`
+as text — a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure (DD-103):
+
+```powershell
+uv run kairos-ontology show-class-inventory --domain <domain>          # every class in the closure, with ancestors
+uv run kairos-ontology list-class-properties <IRI> --domain <domain>   # direct and inherited properties, with origin
+uv run kairos-ontology explain-term <IRI> --domain <domain>            # one term: label, comment, links
+```
+
+Surface the specialization tree,
 including SUBCLASSES of the parent and subclass-specific properties. Mark
 specializations as `(subclass)` in proposals. Prefer justified reuse over
 accidental local duplication, while keeping business meaning authoritative.
@@ -707,7 +719,7 @@ diff review, and ontology integrity still apply.
   is invisible to every catalog-resolved import.
 - Reading a raw ontology serialization (`.ttl`/`.rdf`/`.owl`) as text; use
   `resolve-ontology`, `show-class-inventory`, `list-class-properties`, or
-  `explain-term` instead.
+  `explain-term` instead — a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure.
 
 ## Related skills
 

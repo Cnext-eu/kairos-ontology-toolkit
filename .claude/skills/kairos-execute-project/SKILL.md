@@ -87,7 +87,8 @@ Every generated `.mmd` opens with `layout: elk` frontmatter (#855); a hub whose 
 predates Mermaid 10.5 sets `projections.mermaid_layout: none`.
 
 Compiler input is the authored ontology, source/dbt contracts, and closed
-`EntityBinding` documents. Compiler output is derived and must not be edited by
+`EntityBinding` documents. Read the ontology only through `show-class-inventory` or
+`explain-term`, never a `.ttl` as text (DD-103). Compiler output is derived and must not be edited by
 this skill — including temporary or workaround edits meant to unblock a failing
 test and "revert later"; if emitted output looks wrong, fix the authored input and
 re-emit. A successful compile is not a deployment or runtime-test verdict.

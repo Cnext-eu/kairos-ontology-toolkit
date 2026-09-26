@@ -282,6 +282,8 @@ license to skip checking:
 
 - Independently confirm each stage's own exit gate (`validate`, `compile --check`)
   rather than relying on a sub-agent's reported exit code.
+- Verify what the ontology says through `show-class-inventory` / `explain-term`, never by reading a
+  `.ttl` as text: a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure (DD-103).
 - Spot-check at least one multi-source or low-confidence decision per domain against
   its cited evidence directly.
 - Stage 5 (`validate-dbt`, `audit-silver-samples` against real samples) is part of
