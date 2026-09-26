@@ -308,5 +308,6 @@ during cleanup.
 | [DD-243](decisions/dd-243-ontology-meaning-is-read-from-the-import-closure-and-a-test-inventories-every-single-file.md) | Ontology meaning is read from the import closure, and a test inventories every single-file parse | Accepted | 2026-09-26 |
 | [DD-244](decisions/dd-244-an-llm-prompt-states-what-it-omits.md) | An LLM prompt states what it omits | Accepted | 2026-09-26 |
 | [DD-245](decisions/dd-245-ontology-semantics-are-served-through-one-interface-and-a-raw-read-corrects-itself.md) | Ontology semantics are served through one interface, and a raw read corrects itself | Accepted | 2026-09-26 |
+| [DD-246](decisions/dd-246-agentsmd-carries-the-agent-instructions-for-the-toolkit-hubs-and-dataplatforms-copilot.md) | AGENTS.md carries the agent instructions for the toolkit, hubs and dataplatforms; copilot-instructions.md is a pointer | Accepted | 2026-09-26 |
 
 ---

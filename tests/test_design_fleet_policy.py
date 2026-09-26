@@ -8,9 +8,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# DD-246: the hub's agent instructions are the managed block of its AGENTS.md. This repository's
+# own AGENTS.md is for toolkit contributors and carries no design-interaction policy.
 INSTRUCTION_PATHS = [
-    REPO_ROOT / ".github" / "copilot-instructions.md",
-    REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "copilot-instructions.md",
+    REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "AGENTS.md.template",
 ]
 
 DESIGN_SKILLS = [
@@ -26,7 +27,7 @@ DESIGN_SKILLS = [
 ]
 
 
-@pytest.mark.parametrize("path", INSTRUCTION_PATHS, ids=lambda p: p.parent.name)
+@pytest.mark.parametrize("path", INSTRUCTION_PATHS, ids=lambda p: p.name)
 def test_global_instructions_scope_design_fleet_mode_to_one_invocation(path):
     text = " ".join(path.read_text(encoding="utf-8").split())
     lowered = text.lower()

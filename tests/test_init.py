@@ -22,15 +22,25 @@ from kairos_ontology.cli.main import (
 )
 from kairos_ontology.cli.shared import (
     _HUB_WORKFLOW_SOURCES,
+    _MANAGED_REGION_FILES,
     _RETIRED_MANAGED_SCAFFOLD_FILES,
     _RETIRED_SCAFFOLD_DIRECTORIES,
     _SCAFFOLD_DIR,
     _V5_HUB_DIRECTORIES,
     _V5_OUTPUT_DIRECTORIES,
+    _get_region_version,
+    _managed_region_update,
 )
 from kairos_ontology.core.conformance_artifact import check_discovery_gate
 from kairos_ontology.core.hub_inspection import gather_hub_input_snapshot
 from kairos_ontology.core.next_actions import InputStatus
+
+def _managed_content(rel_path: str, scaffold_content: str, version: str) -> str:
+    """What `update` writes at *rel_path* for *version*: a region file (DD-246) or a stamp."""
+    if rel_path in _MANAGED_REGION_FILES:
+        return _managed_region_update(None, scaffold_content, version)
+    return _stamp_managed(scaffold_content, version)
+
 
 V5_SCAFFOLD_DIRECTORIES = {
     "model/ontologies",
@@ -843,7 +853,7 @@ def test_update_refreshes_outdated_files(tmp_path):
         dst = tmp_path / rel_path
         dst.parent.mkdir(parents=True, exist_ok=True)
         content = scaffold_src.read_text(encoding="utf-8")
-        old_stamped = _stamp_managed(content, "0.0.1")
+        old_stamped = _managed_content(rel_path, content, "0.0.1")
         dst.write_text(old_stamped, encoding="utf-8")
 
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
@@ -869,14 +879,17 @@ def test_update_check_reports_without_changing(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, "0.0.1"), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, "0.0.1"), encoding="utf-8")
 
         result = runner.invoke(cli, ["update", "--check"])
 
         # Files should still have the old version
         for rel_path in managed_map:
             content = (Path(td) / rel_path).read_text(encoding="utf-8")
-            assert _get_managed_version(content) == "0.0.1"
+            if rel_path in _MANAGED_REGION_FILES:
+                assert _get_region_version(content) == "0.0.1"
+            else:
+                assert _get_managed_version(content) == "0.0.1"
 
     assert result.exit_code != 0  # exit 1 for CI enforcement
     assert "need updating" in result.output
@@ -892,7 +905,7 @@ def test_update_check_exit_code_nonzero_on_drift(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, "0.0.1"), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, "0.0.1"), encoding="utf-8")
 
         result = runner.invoke(cli, ["update", "--check"])
 
@@ -942,7 +955,7 @@ class TestClaudeSettingsReconciliation:
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_text(
-                _stamp_managed(scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
+                _managed_content(rel_path, scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
             )
         _stage_current_hub_workflows(td)
         settings = Path(td) / ".claude" / "settings.json"
@@ -1019,7 +1032,7 @@ def test_update_check_exit_code_zero_when_current(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
         _stage_current_hub_workflows(td)
 
         result = runner.invoke(cli, ["update", "--check"])
@@ -1040,7 +1053,7 @@ def test_update_noop_when_current(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
         _stage_current_hub_workflows(td)
         _stage_git_hygiene(td)
 
@@ -1084,7 +1097,7 @@ def test_update_creates_missing_git_hygiene_files(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_text(
-                _stamp_managed(scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
+                _managed_content(rel_path, scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
             )
         _stage_current_hub_workflows(td)
 
@@ -1110,7 +1123,7 @@ def test_update_check_reports_an_outdated_gitignore_instead_of_claiming_success(
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_text(
-                _stamp_managed(scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
+                _managed_content(rel_path, scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
             )
         _stage_current_hub_workflows(td)
         _stage_git_hygiene(td)
@@ -1134,7 +1147,7 @@ def test_update_never_overwrites_a_customized_gitignore(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_text(
-                _stamp_managed(scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
+                _managed_content(rel_path, scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
             )
         _stage_current_hub_workflows(td)
         _stage_git_hygiene(td)
@@ -1161,7 +1174,7 @@ def test_update_check_reports_missing_workflow_as_drift(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
         _stage_current_hub_workflows(td)
         # Simulate a repo scaffolded before pr-validate.yml existed.
         (Path(td) / ".github" / "workflows" / "pr-validate.yml").unlink()
@@ -1185,7 +1198,7 @@ def test_update_reports_missing_workflow_without_creating_it(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
         _stage_current_hub_workflows(td)
         (Path(td) / ".github" / "workflows" / "pr-validate.yml").unlink()
 
@@ -1215,7 +1228,11 @@ def test_update_creates_missing_files(tmp_path):
             created_file = Path(td) / rel_path
             assert created_file.is_file(), f"Expected {rel_path} to be created"
             content = created_file.read_text(encoding="utf-8")
-            assert _get_managed_version(content) == ver
+            if rel_path in _MANAGED_REGION_FILES:
+                assert _get_region_version(content) == ver
+                assert _get_managed_version(content) is None
+            else:
+                assert _get_managed_version(content) == ver
 
 
 def test_update_check_reports_missing_as_drift(tmp_path):
@@ -1250,7 +1267,7 @@ def test_update_creates_new_skill_file(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
 
         result = runner.invoke(cli, ["update"])
 
@@ -1272,7 +1289,7 @@ def test_update_removes_stale_managed_skill(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
 
         # Add a stale managed skill (not in scaffold)
         stale_dir = Path(td) / ".claude" / "skills" / "kairos-old-skill"
@@ -1302,7 +1319,7 @@ def test_update_check_reports_stale_managed_skill(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
 
         # Add a stale managed skill
         stale_dir = Path(td) / ".claude" / "skills" / "kairos-old-skill"
@@ -1378,7 +1395,7 @@ def test_update_preserves_custom_unmanaged_skill(tmp_path):
             dst = Path(td) / rel_path
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
-            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+            dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
 
         # Add a custom skill WITHOUT managed marker
         custom_dir = Path(td) / ".claude" / "skills" / "my-custom-skill"

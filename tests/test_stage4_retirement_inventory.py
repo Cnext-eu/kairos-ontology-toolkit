@@ -174,7 +174,10 @@ def test_removed_subsystems_are_absent_from_cli_help_and_managed_guidance(invent
     paths = [
         PACKAGE / "cli" / "main.py",
         ROOT / ".github" / "copilot-instructions.md",
+        ROOT / "AGENTS.md",
         PACKAGE / "scaffold" / "copilot-instructions.md",
+        PACKAGE / "scaffold" / "AGENTS.md.template",
+        PACKAGE / "scaffold" / "dataplatform-AGENTS.md.template",
         ROOT / ".claude" / "skills" / "kairos-help" / "SKILL.md",
         PACKAGE / "scaffold" / "skills" / "kairos-help" / "SKILL.md",
     ]

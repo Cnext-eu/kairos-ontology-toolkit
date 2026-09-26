@@ -37,6 +37,7 @@ from .shared import (
     _superseded_workflow_templates,
     _workflow_sources,
     _MANAGED_MARKER_RE,
+    _MANAGED_REGION_FILES,
     _MANAGED_SKILLS_TREE,
     _RETIRED_MANAGED_SCAFFOLD_FILES,
     _RETIRED_SCAFFOLD_DIRECTORIES,
@@ -47,9 +48,11 @@ from .shared import (
     declared_customized_workflows,
     _dependency_files_transaction,
     _get_managed_version,
+    _get_region_version,
     _has_kairos_channel,
     _lock_and_sync_dependency,
     _managed_dataplatform_map,
+    _managed_region_update,
     _managed_files_transaction,
     _managed_scaffold_map,
     _parse_hub_package_pin,
@@ -67,6 +70,7 @@ from .shared import (
     _rewrite_hub_package_pin,
     _rewrite_toolkit_dependency_source,
     _refmodels_whl_url,
+    _report_claude_memory_without_agents_import,
     _single_toolkit_dependency_source,
     _stamp_managed,
     _tag_to_version,
@@ -466,7 +470,10 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
     \b
     Managed files (do not edit manually -- `update` replaces them):
       CICD.md, CONTRIBUTING.md
-      .github/copilot-instructions.md
+      AGENTS.md -- only the block between its managed-begin/-end markers; text
+        outside it is yours and is kept (an AGENTS.md without the block gets it
+        prepended)
+      .github/copilot-instructions.md (a pointer to AGENTS.md)
       .claude/skills/*/SKILL.md
       the per-directory README.md guides under ontology-hub/ and .import/
       ontology-hub/decisions/{README.md,HUB-DD-template.md.template}
@@ -739,6 +746,31 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
 
     for rel_path, scaffold_src in managed_map.items():
         local_file = repo_root / rel_path
+        if rel_path in _MANAGED_REGION_FILES:
+            # DD-246: only the delimited region is the toolkit's; drift outside it is the
+            # repository's own text and is never reported or rewritten.
+            existing = local_file.read_text(encoding="utf-8") if local_file.is_file() else None
+            region_ver = _get_region_version(existing) if existing is not None else None
+            if region_ver == _toolkit_version and not force_managed:
+                current.append(rel_path)
+                continue
+            new_content = _managed_region_update(
+                existing, scaffold_src.read_text(encoding="utf-8"), _toolkit_version
+            )
+            if new_content == existing:
+                current.append(rel_path)
+            elif check:
+                if existing is None:
+                    missing.append(rel_path)
+                else:
+                    outdated.append((rel_path, region_ver or "unmanaged"))
+            else:
+                local_file.write_text(new_content, encoding="utf-8")
+                if existing is None:
+                    created.append(rel_path)
+                else:
+                    updated.append((rel_path, region_ver or "unmanaged"))
+            continue
         if not local_file.is_file():
             if check:
                 missing.append(rel_path)
@@ -888,6 +920,10 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             print(f"  ✓ {destination} (Kairos MCP server registration)")
+
+    # --- CLAUDE.md that switches AGENTS.md off (DD-246) ----------------------
+    # Advisory only: the file is the repository's, and the fix is one line in it.
+    _report_claude_memory_without_agents_import(repo_root)
 
     # --- Reconcile .github/workflows/*.yml (issue #658) ----------------------
     # Scaffolded once and never revisited, so a real fix to a workflow template

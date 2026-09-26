@@ -46,8 +46,15 @@ fails `update --check` until it is refreshed or declared.
 ## What the toolkit owns, and what stays yours
 
 Owned and replaced on update: `CICD.md`, `CONTRIBUTING.md`,
-`.github/copilot-instructions.md`, `.claude/skills/*/SKILL.md`, and the per-directory
-`README.md` guides. Edits to these are lost.
+`.github/copilot-instructions.md` (a short pointer to `AGENTS.md`),
+`.claude/skills/*/SKILL.md`, and the per-directory `README.md` guides. Edits to these are
+lost.
+
+Shared: `AGENTS.md` carries the agent instructions. The toolkit owns only the block between
+its `managed-begin` and `managed-end` markers; text outside it is yours and is kept. An
+`AGENTS.md` you already had gets the block prepended. If you keep a `CLAUDE.md`, add the line
+`@AGENTS.md` to it: Claude Code reads `AGENTS.md` only when no `CLAUDE.md` exists, and `update`
+reminds you until you do.
 
 Yours, never overwritten: `.gitignore` and `.gitattributes` (missing template rules are
 *reported*, not merged), `.claude/settings.json` (replaced only when it matches a

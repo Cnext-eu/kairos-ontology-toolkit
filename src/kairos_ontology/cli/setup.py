@@ -47,7 +47,9 @@ from .shared import (
     _V5_OUTPUT_DIRECTORIES,
     _check_not_inside_git_repo,
     _configure_branch_protection,
+    _MANAGED_REGION_FILES,
     _copy_managed,
+    _write_managed_region,
     _create_github_repo,
     _detect_hub_context,
     _format_refmodels_fetch_provenance,
@@ -425,6 +427,12 @@ def init(
             _copy_managed(instructions_src, instructions_dst)
             print("  ✓ Installed copilot-instructions.md")
 
+    # 4-bis. AGENTS.md (DD-246). Only the managed region is written, so an AGENTS.md the
+    # repository already has keeps its own text below it; --force is not needed for that.
+    agents_src = _SCAFFOLD_DIR / "AGENTS.md.template"
+    if agents_src.is_file() and _write_managed_region(agents_src, cwd / "AGENTS.md"):
+        print("  ✓ Installed AGENTS.md (agent instructions)")
+
     # 4b. Copy CI workflow for managed-file checks
     workflow_src = _SCAFFOLD_DIR / "github-workflows" / "managed-check.yml"
     workflow_dst = cwd / ".github" / "workflows" / "managed-check.yml"
@@ -627,6 +635,8 @@ def init(
     # `update --check` -- the check `managed-check.yml` runs on every pull request.
     # Idempotent: an already-stamped file is left alone.
     for _rel_path, _src in _managed_scaffold_map().items():
+        if _rel_path in _MANAGED_REGION_FILES:
+            continue  # written through its region above (DD-246), never whole-file
         _dst = cwd / _rel_path
         if _dst.is_file():
             _current = _dst.read_text(encoding="utf-8")
@@ -1324,6 +1334,11 @@ def new_repo(
         _copy_managed(instructions_src, instructions_dst)
         print("  ✓ copilot-instructions.md")
 
+    # Agent instructions (DD-246)
+    agents_src = _SCAFFOLD_DIR / "AGENTS.md.template"
+    if agents_src.is_file() and _write_managed_region(agents_src, repo_dir / "AGENTS.md"):
+        print("  ✓ AGENTS.md")
+
     # CI workflow for managed-file checks
     workflow_src = _SCAFFOLD_DIR / "github-workflows" / "managed-check.yml"
     workflow_dst = repo_dir / ".github" / "workflows" / "managed-check.yml"
@@ -1428,6 +1443,8 @@ def new_repo(
     # `update --check` -- the check `managed-check.yml` runs on every pull request.
     # Idempotent: an already-stamped file is left alone.
     for _rel_path, _src in _managed_scaffold_map().items():
+        if _rel_path in _MANAGED_REGION_FILES:
+            continue  # written through its region above (DD-246), never whole-file
         _dst = repo_dir / _rel_path
         if _dst.is_file():
             _current = _dst.read_text(encoding="utf-8")
@@ -1929,6 +1946,10 @@ def init_dataplatform(name, dest, platform, org_override):
     if dp_instructions.is_file():
         _copy_managed(dp_instructions, github_dir / "copilot-instructions.md")
         click.echo("  ✓ .github/copilot-instructions.md")
+
+    dp_agents = _SCAFFOLD_DIR / "dataplatform-AGENTS.md.template"
+    if dp_agents.is_file() and _write_managed_region(dp_agents, repo_dir / "AGENTS.md"):
+        click.echo("  ✓ AGENTS.md")
 
     # PR validation workflow (DD-206 §4 "Dataplatform pull request", schema-level
     # default): dbt deps/parse/compile plus physical source-binding validation,

@@ -270,6 +270,15 @@ class TestInitDataplatform:
         content = ci.read_text(encoding="utf-8")
         assert "Kairos Dataplatform" in content
         assert "kairos-ontology-toolkit" in content
+        assert "AGENTS.md" in content
+
+    def test_agents_md_created(self, dataplatform_output):
+        """DD-246: the dataplatform's agent instructions are the managed block of AGENTS.md."""
+        agents = (dataplatform_output / "AGENTS.md").read_text(encoding="utf-8")
+        assert agents.startswith("<!-- kairos-ontology-toolkit:managed-begin v")
+        assert "# Kairos Dataplatform — Agent instructions" in agents
+        assert "<!-- kairos-ontology-toolkit:managed-end -->" in agents
+        assert "## Repository notes" in agents
 
     def test_skills_subset_created(self, dataplatform_output):
         skills_dir = dataplatform_output / ".claude" / "skills"
