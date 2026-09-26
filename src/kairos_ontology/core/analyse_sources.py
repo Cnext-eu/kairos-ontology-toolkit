@@ -25,6 +25,7 @@ from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 
 from . import analysis_paths
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
+from .prompt_context import disclosure_line  # noqa: F401 - DD-244 contract
 from .ontology_loader import stable_value
 from ._cache import SidecarCache, compute_entry_hash, open_cache
 from .source_catalog import build_source_catalog
@@ -1063,7 +1064,20 @@ def _resolve_uris_to_classes(
     module_cache: dict[str, list[dict[str, str]]],
     cap: int = MAX_DOMAIN_CLASSES,
 ) -> list[dict[str, str]]:
-    """Resolve a domain's import URIs to a capped, de-duplicated class summary."""
+    """Resolve a domain's import URIs to a capped, de-duplicated class summary.
+
+    Sorted by name before the cap so the prompt is the same across runs (DD-175);
+    :func:`_resolve_uris_to_all_classes` is the uncapped list the cap is disclosed from.
+    """
+    return _resolve_uris_to_all_classes(uris, resolver, module_cache)[:cap]
+
+
+def _resolve_uris_to_all_classes(
+    uris: list[str],
+    resolver,
+    module_cache: dict[str, list[dict[str, str]]],
+) -> list[dict[str, str]]:
+    """Every class the import URIs resolve to, de-duplicated by name and sorted."""
     seen: set[str] = set()
     out: list[dict[str, str]] = []
     for uri in uris:
@@ -1080,7 +1094,8 @@ def _resolve_uris_to_classes(
                 continue
             seen.add(c["name"])
             out.append(c.copy())
-    return out[:cap]
+    out.sort(key=lambda c: c["name"])
+    return out
 
 
 def resolve_domain_class_summaries(
@@ -1119,9 +1134,12 @@ def resolve_domain_class_summaries(
         uris = domain.get("uris", [])
         if not uris:
             continue
-        summary = _resolve_uris_to_classes(uris, resolver, module_cache, cap)
+        every = _resolve_uris_to_all_classes(uris, resolver, module_cache)
+        summary = every[:cap]
         if summary:
             domain["class_summary"] = summary
+            # DD-244: the prompt says how many the cap left out.
+            domain["class_summary_omitted"] = len(every) - len(summary)
             grounded += 1
     if grounded:
         report(
@@ -1133,8 +1151,20 @@ def resolve_domain_class_summaries(
 def _summarize_classes(
     classes: list[dict[str, Any]],
     cap: int = MAX_DOMAIN_CLASSES,
+    *,
+    prefer: tuple[str, ...] = (),
 ) -> list[dict[str, str]]:
-    """Trim a full class list down to a capped {name,label,comment} summary."""
+    """Trim a full class list down to a capped {name,label,comment} summary.
+
+    *prefer* names the namespaces of the target's own modules (DD-244): a closure lists
+    every imported class too, and cut by URI order an imported module's classes could
+    crowd out the domain's own. Own classes come first, then the rest, each in the
+    original order.
+    """
+    if prefer:
+        own = [c for c in classes if str(c.get("uri", "")).startswith(prefer)]
+        rest = [c for c in classes if not str(c.get("uri", "")).startswith(prefer)]
+        classes = own + rest
     out: list[dict[str, str]] = []
     for c in classes[:cap]:
         out.append(
@@ -1158,8 +1188,14 @@ def _build_candidates(ref_domains: list[dict[str, Any]]) -> list[dict[str, Any]]
     for d in ref_domains:
         dd_meta = d.get("data_domain_meta") or {}
         class_summary = d.get("class_summary")
+        omitted = int(d.get("class_summary_omitted") or 0)
         if class_summary is None:
-            class_summary = _summarize_classes(d.get("classes", []))
+            classes = d.get("classes", [])
+            prefer = tuple(
+                str(uri).rstrip("#/") for uri in (d.get("uris") or []) if str(uri).strip()
+            )
+            class_summary = _summarize_classes(classes, prefer=prefer)
+            omitted = max(0, len(classes) - len(class_summary))
         candidates.append(
             {
                 "id": d["domain_name"],
@@ -1168,6 +1204,7 @@ def _build_candidates(ref_domains: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "owns": dd_meta.get("owns", ""),
                 "does_not_own": dd_meta.get("does_not_own", ""),
                 "class_summary": class_summary,
+                "class_summary_omitted": omitted,
             }
         )
     return candidates
@@ -1288,7 +1325,10 @@ def _build_single_call_prompt(
         cs = c.get("class_summary") or []
         if cs:
             labels = ", ".join(x.get("label") or x.get("name", "") for x in cs)
-            lines.append(f"  KEY CONCEPTS: {labels}")
+            omitted = int(c.get("class_summary_omitted") or 0)
+            # DD-244: a capped list says it is capped.
+            more = f" (+{omitted} more not listed)" if omitted else ""  # see disclosure_line
+            lines.append(f"  KEY CONCEPTS: {labels}{more}")
         cand_blocks.append("\n".join(lines))
 
     candidate_ids = ", ".join(c["id"] for c in candidates)

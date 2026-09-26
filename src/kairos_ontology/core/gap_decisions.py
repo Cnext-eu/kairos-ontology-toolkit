@@ -1038,8 +1038,11 @@ def suggest_loose_dispositions(
                 )
             )
 
-        prompt = f"""These are single source column names with no reference-model property and no
-rule-based proposal. For EACH, propose a disposition from exactly this closed set:
+        prompt = f"""These are single source column names for which the aligner found no match among
+the reference properties it was shown, and no rule-based proposal applies. The aligner sees
+a bounded slice of each reference class (its own properties first, then inherited ones), so
+absence from its list is not absence from the reference model. For EACH, propose a
+disposition from exactly this closed set:
 
    - blueprint-gap: real business data the accelerator blueprint has no domain for.
      This asserts a REFERENCE-MODEL DEFECT to file upstream — use it sparingly.
@@ -1218,8 +1221,10 @@ def suggest_family_dispositions(
 
     glossary_block = _glossary_prompt_block(hub_root, subject="family")
 
-    prompt = f"""These groups of source columns share a leading token and have no reference-model
-property. For EACH family decide two things.
+    prompt = f"""These groups of source columns share a leading token, and the aligner found no match
+for them among the reference properties it was shown (a bounded slice of each class, so
+absence from its list is not absence from the reference model). For EACH family decide two
+things.
 
 1. coherent: do these names really describe ONE concept, or is the shared token a
    coincidence (e.g. several unrelated booleans)? An incoherent family must be split

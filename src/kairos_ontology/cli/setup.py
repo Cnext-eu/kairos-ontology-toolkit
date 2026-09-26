@@ -2334,6 +2334,50 @@ def _gather_ai_context(hub: Path, domain_slug: str) -> str:
     return "\n\n".join(parts) if parts else ""
 
 
+def _imported_class_context(hub: Path, imports: list[dict[str, str]]) -> str:
+    """Render the classes the mandated imports already provide (DD-244).
+
+    The prompt used to name the import IRIs and nothing else, then ask for "2-3 class
+    stubs"; the model, never shown ``Party`` or ``Consignment``, minted them locally --
+    the shadowing `ontology_integrity` later warns about. Each import is loaded through
+    its closure and its own classes rendered through the one prompt renderer.
+    """
+    catalog = hub / "catalog-v001.xml"
+    if not catalog.is_file() or not imports:
+        return ""
+    from kairos_ontology.core.catalog_utils import CatalogResolver
+    from kairos_ontology.core.ontology_loader import SemanticProfile, load_ontology
+    from kairos_ontology.core.prompt_context import render_class_context
+
+    try:
+        resolver = CatalogResolver.with_reference_models(catalog)
+    except Exception:  # noqa: BLE001 - no catalog, no context; the prompt still works
+        return ""
+    parts: list[str] = []
+    for imp in imports:
+        uri = str(imp.get("uri") or "")
+        target = resolver.mappings.get(uri) if uri else None
+        if not target:
+            continue
+        try:
+            loaded = load_ontology(
+                Path(target),
+                catalog_path=catalog,
+                profile=SemanticProfile.KAIROS_DESIGN,
+                degraded=True,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        index = loaded.semantic_index
+        namespace = uri.rstrip("#/")
+        own = [cls.uri for cls in index.classes if cls.uri.startswith(namespace)]
+        rendered = render_class_context(
+            index, own, max_classes=40, max_properties=6, heading=f"IMPORTED MODULE {uri}"
+        )
+        parts.append(rendered.text)
+    return "\n\n".join(parts)
+
+
 def _build_ai_domain_prompt(
     *,
     domain: str,
@@ -2341,6 +2385,7 @@ def _build_ai_domain_prompt(
     company_domain: str,
     imports: list[dict[str, str]],
     context: str,
+    imported_context: str = "",
 ) -> str:
     """Build the prompt sent to the AI provider for domain TTL generation."""
     import_uris = [imp.get("uri", "") for imp in imports if imp.get("uri")]
@@ -2366,6 +2411,13 @@ def _build_ai_domain_prompt(
         prompt_lines.append("## Mandated owl:imports (include these IRIs):")
         for iri in import_uris:
             prompt_lines.append(f"  <{iri}>")
+        prompt_lines.append("")
+    if imported_context:
+        prompt_lines.append(
+            "## Classes the imports already provide (reuse them; never redeclare a class "
+            "with one of these names -- subclass it instead):"
+        )
+        prompt_lines.append(imported_context)
         prompt_lines.append("")
 
     prompt_lines.append("## Instructions:")
@@ -2399,8 +2451,9 @@ def _generate_domain_ttl_with_ai(
     responsible for prepending the provenance comment and writing the file.
     """
     from kairos_ontology.core.ai_preflight import require_ai_provider
-    from kairos_ontology.core.ai_provider import get_ai_client
+    from kairos_ontology.core.ai_provider import create_chat_completion, get_ai_client
     from kairos_ontology.core._concurrency import call_with_backoff
+    from kairos_ontology.core.tracing import call_metadata
 
     # Fail fast if AI is not configured — re-raise so the command can decide.
     provider_config = require_ai_provider(None, probe=False)
@@ -2413,14 +2466,20 @@ def _generate_domain_ttl_with_ai(
         company_domain=company_domain,
         imports=imports,
         context=context,
+        imported_context=_imported_class_context(hub, imports),
     )
 
     client = get_ai_client()
 
     try:
+        # Through the wrapper (DD-244): tracing, redaction and the per-model parameter
+        # fallbacks every other AI call gets.
         response = call_with_backoff(
-            lambda: client.chat.completions.create(
+            lambda: create_chat_completion(
+                client,
                 model=model_name,
+                trace_name="scaffold-domain",
+                trace_metadata=call_metadata("", "scaffold", domain=domain),
                 messages=[
                     {
                         "role": "system",

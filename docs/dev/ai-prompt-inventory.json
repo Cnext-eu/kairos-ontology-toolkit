@@ -10,9 +10,7 @@
       "module": "cli/setup.py",
       "function": "_generate_domain_ttl_with_ai",
       "ontology_terms": true,
-      "known_gap": "DD-244",
-      "raw_sdk": true,
-      "note": "scaffold-domain --ai: import IRIs only, no imported classes; bypasses create_chat_completion"
+      "note": "scaffold-domain --ai: imported classes rendered through prompt_context; wrapper call (DD-244)"
     },
     {
       "module": "core/ai_preflight.py",
@@ -25,8 +23,7 @@
       "module": "core/analyse_sources.py",
       "function": "analyse_table_single_call",
       "ontology_terms": true,
-      "known_gap": "DD-244",
-      "note": "18 class labels; accelerator path is a single-file parse by design; cap not disclosed"
+      "note": "own-namespace classes first, cap disclosed (DD-244); accelerator path is a single-file parse by design"
     },
     {
       "module": "core/anchor_tables.py",
@@ -46,21 +43,20 @@
       "function": "suggest_family_dispositions",
       "ontology_terms": true,
       "known_gap": "DD-244",
-      "note": "asserts 'no reference-model property' without showing the model"
+      "note": "wording no longer asserts absence from the reference model (DD-244); the candidate class's properties are not yet rendered -- needs the closure in scope"
     },
     {
       "module": "core/gap_decisions.py",
       "function": "suggest_loose_dispositions",
       "ontology_terms": true,
       "known_gap": "DD-244",
-      "note": "asserts 'no reference-model property' without showing the model"
+      "note": "wording no longer asserts absence from the reference model (DD-244); the candidate class's properties are not yet rendered -- needs the closure in scope"
     },
     {
       "module": "core/propose_alignment.py",
       "function": "_align_table_once",
       "ontology_terms": true,
-      "known_gap": "DD-244",
-      "note": "closure index, but 12/60 cut drops inherited properties first with no disclosure; response enum wider than the prompt"
+      "note": "closure index; the schema, the pair check and the prompt share the shown pool; a cut is disclosed (DD-244)"
     }
   ]
 }

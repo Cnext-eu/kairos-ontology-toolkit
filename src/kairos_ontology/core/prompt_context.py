@@ -14,7 +14,7 @@ the model can act on. ``tests/test_prompt_context_contract.py`` holds builders t
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable
 
 from .semantic_index import ClassRecord, SemanticIndex
 
@@ -40,6 +40,33 @@ DISCLOSURE_TEMPLATE = (
     "not listed above. If nothing listed fits, answer null; do not conclude the concept is "
     "absent from the reference model."
 )
+
+
+def disclosure_line(*, omitted_classes: int = 0, omitted_properties: int = 0) -> str:
+    """The one line a prompt adds when it had to cut; empty when it did not."""
+    if not (omitted_classes or omitted_properties):
+        return ""
+    return DISCLOSURE_TEMPLATE.format(classes=omitted_classes, properties=omitted_properties)
+
+
+def truncate_class_pool(
+    ref_classes: list[dict[str, Any]], *, max_properties: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Cut each dict-shaped class's ``properties`` to *max_properties*.
+
+    Returns ``(shown, omitted_property_count)``. Order is preserved, so a pool sorted
+    own-before-inherited drops inherited properties first, and whatever survives here is
+    exactly what the prompt lists -- the response schema and the pair check are built
+    from the same list (DD-244), so the model is never offered a term it was not shown.
+    """
+    shown: list[dict[str, Any]] = []
+    omitted = 0
+    for cls in ref_classes:
+        props = list(cls.get("properties") or [])
+        kept = props[:max_properties]
+        omitted += len(props) - len(kept)
+        shown.append({**cls, "properties": kept} if len(kept) != len(props) else cls)
+    return shown, omitted
 
 
 def render_class_context(
@@ -88,7 +115,7 @@ def render_class_context(
     if omitted_classes or omitted_properties:
         lines.append("")
         lines.append(
-            DISCLOSURE_TEMPLATE.format(classes=omitted_classes, properties=omitted_properties)
+            disclosure_line(omitted_classes=omitted_classes, omitted_properties=omitted_properties)
         )
     return RenderedClassContext(
         text="\n".join(lines),
@@ -111,4 +138,10 @@ def _local(uri: str) -> str:
     return uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
 
 
-__all__ = ["DISCLOSURE_TEMPLATE", "RenderedClassContext", "render_class_context"]
+__all__ = [
+    "DISCLOSURE_TEMPLATE",
+    "RenderedClassContext",
+    "disclosure_line",
+    "render_class_context",
+    "truncate_class_pool",
+]

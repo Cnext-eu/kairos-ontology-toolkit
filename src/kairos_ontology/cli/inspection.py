@@ -152,6 +152,9 @@ def _show_all_domain_inventory(catalog, profile, max_classes):
                 "domain": domain_name,
                 "class_count": len(class_entries),
                 "classes": class_entries,
+                # Profile, truncation and per-profile coverage: the combined view used to
+                # drop the slice metadata, so --all could not say what it left out.
+                "metadata": slice_data["metadata"],
             }
         )
 
@@ -201,6 +204,11 @@ def show_class_inventory_cmd(ontology, domain, all_domains, catalog, profile, ma
     data = loaded.semantic_index.slice(max_classes=max_classes)
     for entry in data["classes"]:
         entry["tokens"] = _compute_class_tokens(loaded, path, entry["uri"])
+    # Properties whose declared domain is a class this closure does not contain: they
+    # attach to nothing and would otherwise be invisible to every consumer.
+    data["unattached_property_domains"] = [
+        list(pair) for pair in loaded.semantic_index.unattached_property_domains
+    ]
     click.echo(json.dumps(data, indent=2, sort_keys=True))
 
 
@@ -797,9 +805,18 @@ def explain_term_cmd(iri, ontology, domain, catalog, profile):
         catalog_path=Path(catalog) if catalog else None,
         profile=profile,
     )
-    term = loaded.semantic_index.term(iri)
+    index = loaded.semantic_index
+    term = index.term(iri)
     if term is None:
         raise click.ClickException(_closure_miss_message(loaded, iri, path))
+    from ..core.semantic_index import PROFILE_DEPENDENT_FIELDS
+
+    record = asdict(term)
+    # #937: an empty tuple under a profile that never fills the field is not "declares
+    # none". Name those fields, so a reader (or an agent) does not conclude from them.
+    not_carried = [
+        field for field in PROFILE_DEPENDENT_FIELDS if field in record and not index.carries(field)
+    ]
     click.echo(
         json.dumps(
             {
@@ -807,7 +824,12 @@ def explain_term_cmd(iri, ontology, domain, catalog, profile):
                 "semantic_profile": loaded.profile.value,
                 "closure_hash": loaded.closure_hash,
                 "import_complete": loaded.complete,
-                "term": asdict(term),
+                "coverage": index.coverage,
+                "not_carried_by_profile": not_carried,
+                "unattached_property_domains": [
+                    list(pair) for pair in index.unattached_property_domains
+                ],
+                "term": record,
             },
             indent=2,
             sort_keys=True,

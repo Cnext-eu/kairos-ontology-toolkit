@@ -66,6 +66,7 @@ from .analyse_sources import (
     parse_source_vocabulary,
     parse_reference_model,
 )
+from .prompt_context import disclosure_line, truncate_class_pool
 from .ai_provider import (
     ROLE_ALIGNMENT,
     create_chat_completion,
@@ -488,31 +489,33 @@ def load_glossary_records(
     directory = Path(hub_root) / "businessdiscovery"
     if not directory.is_dir():
         return []
-    label_re = re.compile(r'skos:prefLabel\s+"([^"]+)"')
-    definition_re = re.compile(r'skos:definition\s+"([^"]+)"')
-    see_also_re = re.compile(r"rdfs:seeAlso\s+<([^>]+)>")
-    blank_line_re = re.compile(r"\n\s*\n")
+    from rdflib import RDFS, SKOS, Graph
+
     records: dict[str, dict[str, str]] = {}
     for path in sorted(directory.glob("*.ttl")):
         if path.name.startswith(("glossary-template", "_")):
             continue
+        # Read as RDF (DD-244): the regex this replaced only saw `rdfs:seeAlso <iri>`, so
+        # a prefixed name -- the form the glossary skill writes -- was a concept with no
+        # reference-model link, and the alignment prompt lost the one signal that makes a
+        # business term's relevance decidable. A glossary is not an ontology: it has no
+        # imports, and a single-file parse is the whole document.
+        graph = Graph()
         try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
+            graph.parse(path, format="turtle")
+        except Exception:  # noqa: BLE001 - a malformed glossary is reported by validate
             continue
-        for block in blank_line_re.split(text):
-            label_match = label_re.search(block)
-            if not label_match:
+        for subject in sorted(set(graph.subjects(SKOS.prefLabel, None)), key=str):
+            label = str(graph.value(subject, SKOS.prefLabel) or "").strip()
+            if not label:
                 continue
-            definition_match = definition_re.search(block)
-            see_also_match = see_also_re.search(block)
-            raw = definition_match.group(1) if definition_match else ""
+            raw = str(graph.value(subject, SKOS.definition) or "")
             records.setdefault(
-                label_match.group(1).strip(),
+                label,
                 {
-                    "label": label_match.group(1).strip(),
+                    "label": label,
                     "definition": " ".join(raw.split())[:240],
-                    "see_also": see_also_match.group(1) if see_also_match else "",
+                    "see_also": str(graph.value(subject, RDFS.seeAlso) or ""),
                 },
             )
     return [records[key] for key in sorted(records)][:limit]
@@ -974,6 +977,9 @@ def extract_ref_model_inventory(
                             # (DD-172); this rebuild previously dropped it, leaving every
                             # property indistinguishable from a literal one.
                             "type": p.get("type", ""),
+                            # DD-244: the prompt marks an inherited property, and the cut
+                            # at MAX_REF_PROPERTIES_PER_PROMPT is disclosed as such.
+                            "inherited": group == "inherited_properties" or bool(p.get("inherited")),
                         }
                     )
 
@@ -1149,7 +1155,13 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
                 kind = " [OBJECT PROPERTY → links to a related entity, not a literal]"
             label = p.get("label") or p["name"]
             label_str = f" [{label}]" if label != p["name"] else ""
-            prop_lines.append(f"    - {p['name']}{label_str}{range_str}{kind}")
+            inherited = " (inherited)" if p.get("inherited") else ""
+            prop_lines.append(f"    - {p['name']}{label_str}{range_str}{kind}{inherited}")
+        if len(props) > MAX_REF_PROPERTIES_PER_PROMPT:
+            # DD-244: a cut class says it was cut, on the class itself.
+            prop_lines.append(
+                f"    … {len(props) - MAX_REF_PROPERTIES_PER_PROMPT} more not listed"
+            )
         lines.append(
             f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})"
             f"{_module_tag(cls)}{_bridge_tag(cls)}{_value_object_tag(cls)}"
@@ -2090,6 +2102,14 @@ def build_alignment_prompt(
             )
 
     ref_inventory = _format_ref_inventory(ref_classes)
+    # DD-244: one actionable line when a class was cut, so "no listed property fits" is
+    # not read as "the reference model lacks it".
+    _, omitted_properties = truncate_class_pool(
+        ref_classes, max_properties=MAX_REF_PROPERTIES_PER_PROMPT
+    )
+    disclosure = disclosure_line(omitted_properties=omitted_properties)
+    if disclosure:
+        ref_inventory = f"{ref_inventory}\n\n{disclosure}"
     source_cols = _format_source_columns(columns)
     # DD-179: blank line either side when present; empty string when no role group
     # was found, so a table without this shape keeps its previous prompt exactly.
@@ -2263,7 +2283,15 @@ ALIGNMENT_KINDS = ("exact", "semantic", "partial", "custom")
 #: on-disk alignment produced before them is not merely older, it is answering a
 #: narrower question — reusing it would keep serving the false gaps this fixes.
 #: Bump whenever the pool or the pair check changes.
-ALIGNMENT_POOL_CONTRACT = 2
+#: 3: DD-244 -- the response schema and the pair check see the shown pool, not the
+#: whole one, and a cut class is disclosed in the prompt.
+ALIGNMENT_POOL_CONTRACT = 3
+
+
+def _shown_pool(ref_classes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The pool exactly as :func:`_format_ref_inventory` lists it (DD-244)."""
+    shown, _ = truncate_class_pool(ref_classes, max_properties=MAX_REF_PROPERTIES_PER_PROMPT)
+    return shown
 
 
 def qualified_property_names(ref_classes: list[dict[str, Any]]) -> list[str]:
@@ -2712,16 +2740,20 @@ def _align_table_once(
     # enum and the prose cannot disagree. Issue #520: prefer qualified
     # ``Class.property`` enum members, which make a wrong-class pair
     # unrepresentable rather than merely detectable.
+    # DD-244: the enum offers exactly the properties the prompt lists. Built from the
+    # whole pool, it accepted a property the model was never shown, which then read as a
+    # confident match nobody could trace to the prompt.
+    shown_ref_classes = _shown_pool(ref_classes)
     response_format, schema_notes = build_alignment_response_schema(
         [str(c.get("name", "")) for c in columns if c.get("name")],
         [str(c.get("name", "")) for c in ref_classes if c.get("name")],
         [
             str(p.get("name", ""))
-            for c in ref_classes
+            for c in shown_ref_classes
             for p in (c.get("properties") or [])
             if p.get("name")
         ],
-        qualified_properties=qualified_property_names(ref_classes),
+        qualified_properties=qualified_property_names(shown_ref_classes),
     )
     for note in schema_notes:
         logger.info("Alignment schema for %s: %s", table_name, note)
@@ -2893,7 +2925,7 @@ def _align_table_once(
     # Issue #520: the deterministic backstop. A no-op when the qualified enum was in
     # force; the whole guarantee when it was not (budget overflow, or the provider
     # rejecting the schema and falling back to plain JSON mode).
-    repaired, rejected = enforce_class_property_pairs(alignments, ref_classes)
+    repaired, rejected = enforce_class_property_pairs(alignments, _shown_pool(ref_classes))
     if repaired or rejected:
         logger.warning(
             "Alignment for %s: %d wrong-class propert%s reassigned to their owning "

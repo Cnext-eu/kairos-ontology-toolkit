@@ -271,6 +271,11 @@
       "reason": "iri"
     },
     {
+      "module": "core/propose_alignment.py",
+      "function": "load_glossary_records",
+      "reason": "glossary"
+    },
+    {
       "module": "core/reference_modules.py",
       "function": "resolve_reference_modules",
       "reason": "syntax"
