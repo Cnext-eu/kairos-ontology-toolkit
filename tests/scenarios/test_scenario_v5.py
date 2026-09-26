@@ -694,6 +694,38 @@ def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
     assert bytes_ab == bytes_ba
 
 
+@pytest.mark.parametrize("domains", (("party",), ("party", "billing"), ("billing", "party")))
+def test_v5_reemit_of_an_unchanged_hub_is_byte_identical(tmp_path, monkeypatch, domains):
+    """#1009: a second emit must not rewrite the shared source catalog in another layout."""
+    hub = _copy_hub(tmp_path)
+    if len(domains) > 1:
+        # Both domains read source('erp', 'customers'): one shared catalog, two writers.
+        _add_contracted_multi_domain_fixture(hub)
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    runner = CliRunner()
+    monkeypatch.chdir(hub)
+
+    def emit_all() -> dict[str, bytes]:
+        for domain in domains:
+            result = runner.invoke(
+                cli,
+                ["compile", domain, "--emit", "--confirm-emit"],
+                env={"KAIROS_SKILL_CONTEXT": "1"},
+            )
+            assert result.exit_code == 0, result.output
+        return {
+            path.relative_to(target).as_posix(): path.read_bytes()
+            for path in target.rglob("*")
+            if path.is_file()
+        }
+
+    first = emit_all()
+    assert any(path.endswith("__sources.yml") for path in first)
+    second = emit_all()
+    assert {path for path in first if first[path] != second.get(path)} == set()
+    assert first.keys() == second.keys()
+
+
 def test_v5_reemit_prunes_stale_noncanonical_manifest_artifacts(tmp_path):
     result = compile_domain(_HUB, "party", CompileMode.EMIT)
     obsolete = {

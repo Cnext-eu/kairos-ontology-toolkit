@@ -966,7 +966,8 @@ def render_profile_markdown() -> str:
         "Targets: **fabric** is Direct Lake over OneLake; **databricks** is DirectQuery over "
         "`Databricks.Catalogs`, published to a Power BI workspace.",
         "",
-        "An exception is authored in the Gold extension on the `owl:Ontology` resource, and "
+        "An exception is authored in the Gold extension on an `owl:Ontology` resource (the "
+        "domain's, or the extension file's own; both are read), and "
         "is emitted as the `BestPracticeAnalyzer_IgnoreRules` annotation that Tabular "
         "Editor honours; the dataplatform's post-deploy notebook applies it to Semantic "
         "Link Labs findings, which ignore it:",

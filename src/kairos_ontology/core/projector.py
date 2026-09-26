@@ -24,6 +24,10 @@ from .determinism import generated_at_iso, resolve_generated_at, write_text_lf
 from .hub_utils import is_domain_ontology_stem
 from .projections.uri_utils import extract_local_name
 from .projections.shared import OntologyClassInfo
+from .projections.dbt.sources_catalog import (
+    SourcesUnionError as SourcesUnionError,
+    union_sources_yaml as _union_sources_yaml,
+)
 
 if TYPE_CHECKING:
     from .compiler.plan import CompilePlan
@@ -638,77 +642,6 @@ _DBT_PACKAGE_LEVEL_ARTIFACTS = frozenset({"dbt_project.yml", "README.md", "packa
 def _is_shared_sources_artifact(path: str) -> bool:
     """A per-source-system ``_sources.yml`` shared by every domain using that system."""
     return path.startswith("models/silver/") and path.endswith("__sources.yml")
-
-
-class SourcesUnionError(ValueError):
-    """Two shared ``_sources.yml`` renderings disagree on source or table metadata.
-
-    Issues #584/#586 made the union fail closed: dbt allows exactly one definition per
-    source name, so silently keeping the first-seen header (or first-seen table entry)
-    would let one domain's stale vocabulary quietly win over another's. The caller
-    surfaces this as an artifact collision before any file is written.
-    """
-
-
-def _union_sources_yaml(existing: str, incoming: str) -> str:
-    """Deterministically union the ``tables`` of two rendered ``_sources.yml`` docs.
-
-    Two domains that map tables from the same source system each emit a
-    ``_{system}__sources.yml`` filtered to *their* mapped tables. The package-level
-    file must declare the union of those tables exactly once. The source header
-    (name/description/database/schema) must be identical for a given system and any
-    same-named table entries must be identical; a mismatch raises
-    :class:`SourcesUnionError` (fail closed) rather than silently keeping the
-    first-seen variant. Non-conflicting output is byte-identical to the historical
-    first-wins union.
-    """
-    import yaml
-
-    existing_doc = yaml.safe_load(existing) or {}
-    incoming_doc = yaml.safe_load(incoming) or {}
-    sources_by_name: dict[str, dict] = {}
-    order: list[str] = []
-    for doc in (existing_doc, incoming_doc):
-        for src in doc.get("sources", []) or []:
-            name = src.get("name")
-            header = {k: v for k, v in src.items() if k != "tables"}
-            if name not in sources_by_name:
-                header["_tables"] = {}
-                sources_by_name[name] = header
-                order.append(name)
-            else:
-                existing_header = {k: v for k, v in sources_by_name[name].items() if k != "_tables"}
-                if existing_header != header:
-                    raise SourcesUnionError(
-                        f"conflicting source metadata for source {name!r}: "
-                        f"{existing_header!r} != {header!r}"
-                    )
-            tables = sources_by_name[name]["_tables"]
-            for tbl in src.get("tables", []) or []:
-                table_name = tbl.get("name")
-                previous = tables.get(table_name)
-                if previous is not None and previous != tbl:
-                    raise SourcesUnionError(
-                        f"conflicting table entry {table_name!r} in source {name!r}: "
-                        f"{previous!r} != {tbl!r}"
-                    )
-                # The fail-closed check above makes first-wins unreachable; assign
-                # directly rather than keeping the retired silent-merge setdefault idiom.
-                tables[table_name] = tbl
-    merged_sources: list[dict] = []
-    for name in order:
-        entry = sources_by_name[name]
-        table_map = entry.pop("_tables")
-        entry["tables"] = [table_map[t] for t in sorted(table_map)]
-        merged_sources.append(entry)
-    return yaml.safe_dump(
-        {
-            "version": existing_doc.get("version", incoming_doc.get("version", 2)),
-            "sources": merged_sources,
-        },
-        sort_keys=False,
-        default_flow_style=False,
-    )
 
 
 def _merge_dbt_artifacts(
