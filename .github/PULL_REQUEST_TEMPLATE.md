@@ -21,5 +21,6 @@ Closes #
 - [ ] `uv run kairos-ontology validate` passes (if ontology changes)
 - [ ] `uv run kairos-ontology project` regenerated (if ontology changes)
 - [ ] Version bump only if this PR is cutting a release (see `docs/dev/RELEASING.md`) — not required otherwise
+- [ ] User-visible change? Add a `changelog.d/<issue>-<slug>.md` fragment — never edit `CHANGELOG.md` outside a release PR (CI rejects it)
 - [ ] DCO sign-off on all commits (`git commit -s`)
 - [ ] No secrets, credentials, or PII in code
