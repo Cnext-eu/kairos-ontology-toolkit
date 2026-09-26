@@ -433,10 +433,11 @@ def _introspect_tables_databricks(
     # Discover tables if not specified
     if tables is None:
         cursor.execute(
-            f"SELECT table_name FROM information_schema.tables "
-            f"WHERE table_schema = '{schema}' AND table_type = 'MANAGED' "
-            f"OR (table_schema = '{schema}' AND table_type = 'EXTERNAL') "
-            f"ORDER BY table_name"
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = ? AND table_type = 'MANAGED' "
+            "OR (table_schema = ? AND table_type = 'EXTERNAL') "
+            "ORDER BY table_name",
+            (schema, schema)
         )
         tables = [row[0] for row in cursor.fetchall()]
 
