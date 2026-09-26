@@ -106,6 +106,7 @@ from .inspection import (
     propose_relationships_cmd,
     plan_sources_cmd,
     explain_term_cmd,
+    find_term_cmd,
     coverage_report_cmd,
     field_mapping_report_cmd,
     domain_coverage_cmd,
@@ -448,6 +449,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(propose_relationships_cmd)
     group.add_command(plan_sources_cmd)
     group.add_command(explain_term_cmd)
+    group.add_command(find_term_cmd)
     group.add_command(coverage_report_cmd)
     group.add_command(field_mapping_report_cmd)
     group.add_command(domain_coverage_cmd)

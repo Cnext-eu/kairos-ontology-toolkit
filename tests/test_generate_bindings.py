@@ -392,11 +392,40 @@ MASTER_TTL = """\
     owl:imports <https://acme.com/ont/roro> .
 """
 
+#: A second reference module the cargo module extends: ``name`` is inherited by
+#: CargoItem from another *reference* module, and must not read as hub-authored.
+REF_BASE_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <https://ref.example.com/ont/base#> .
+
+<https://ref.example.com/ont/base> a owl:Ontology .
+
+:Thing a owl:Class .
+:name a owl:DatatypeProperty ; rdfs:domain :Thing ; rdfs:range xsd:string .
+"""
+
+SIBLING_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <https://acme.com/ont/booking#> .
+
+<https://acme.com/ont/booking> a owl:Ontology ;
+    owl:imports <https://ref.example.com/ont/cargo> .
+
+:bookingReference a owl:DatatypeProperty ;
+    rdfs:domain <https://ref.example.com/ont/cargo#CargoItem> ; rdfs:range xsd:string .
+"""
+
 CATALOG = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
   <uri name="https://acme.com/ont/roro" uri="model/ontologies/roro.ttl"/>
-  <uri name="https://ref.example.com/ont/cargo" uri="model/ontologies/ref-cargo.ttl"/>
+  <uri name="https://acme.com/ont/booking" uri="model/ontologies/booking.ttl"/>
+  <uri name="https://ref.example.com/ont/cargo" uri="refmodels/ref-cargo.ttl"/>
+  <uri name="https://ref.example.com/ont/base" uri="refmodels/ref-base.ttl"/>
 </catalog>
 """
 
@@ -404,9 +433,29 @@ CATALOG = """\
 def _hub(tmp_path):
     ontologies = tmp_path / "model" / "ontologies"
     ontologies.mkdir(parents=True)
-    (ontologies / "_master.ttl").write_text(MASTER_TTL, encoding="utf-8")
+    refmodels = tmp_path / "refmodels"
+    refmodels.mkdir()
+    (ontologies / "_master.ttl").write_text(
+        MASTER_TTL.replace(
+            "owl:imports <https://acme.com/ont/roro> .",
+            "owl:imports <https://acme.com/ont/roro> , <https://acme.com/ont/booking> .",
+        ),
+        encoding="utf-8",
+    )
     (ontologies / "roro.ttl").write_text(DOMAIN_TTL, encoding="utf-8")
-    (ontologies / "ref-cargo.ttl").write_text(REF_TTL, encoding="utf-8")
+    (ontologies / "booking.ttl").write_text(SIBLING_TTL, encoding="utf-8")
+    (refmodels / "ref-cargo.ttl").write_text(
+        REF_TTL.replace(
+            "<https://ref.example.com/ont/cargo> a owl:Ontology .",
+            "<https://ref.example.com/ont/cargo> a owl:Ontology ;\n"
+            "    owl:imports <https://ref.example.com/ont/base> .",
+        ).replace(
+            ':CargoItem a owl:Class ;',
+            ':CargoItem a owl:Class ; rdfs:subClassOf <https://ref.example.com/ont/base#Thing> ;',
+        ),
+        encoding="utf-8",
+    )
+    (refmodels / "ref-base.ttl").write_text(REF_BASE_TTL, encoding="utf-8")
     (tmp_path / "catalog-v001.xml").write_text(CATALOG, encoding="utf-8")
     return tmp_path
 
@@ -438,6 +487,22 @@ class TestHubLocalPropertiesAgainstARealOntology:
         from kairos_ontology.core.generate_bindings import hub_local_properties
 
         assert "carrierOfRecord" not in hub_local_properties(_hub(tmp_path), REF_CLASS)
+
+    def test_a_property_inherited_from_a_second_reference_module_is_not_hub_local(
+        self, tmp_path
+    ):
+        """DD-248 §5: hub-local means "in a hub namespace", not "outside the class's
+        module". ``base:name`` reaches CargoItem by inheritance from another reference
+        module and used to come back as if the hub had authored it."""
+        from kairos_ontology.core.generate_bindings import hub_local_properties
+
+        assert "name" not in hub_local_properties(_hub(tmp_path), REF_CLASS)
+
+    def test_a_sibling_hub_domain_s_property_on_the_class_is_hub_local(self, tmp_path):
+        from kairos_ontology.core.generate_bindings import hub_local_properties
+
+        found = hub_local_properties(_hub(tmp_path), REF_CLASS)
+        assert found["bookingReference"] == "https://acme.com/ont/booking#bookingReference"
 
     def test_a_hub_with_no_master_yields_nothing_rather_than_failing(self, tmp_path):
         from kairos_ontology.core.generate_bindings import hub_local_properties

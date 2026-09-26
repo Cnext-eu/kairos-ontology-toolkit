@@ -171,11 +171,6 @@
       "reason": "legacy-api"
     },
     {
-      "module": "core/ontology_scope.py",
-      "function": "collect_hub_domain_bases",
-      "reason": "iri"
-    },
-    {
       "module": "core/projections/a2ui_projector.py",
       "function": "A2UIProjector._get_required_properties",
       "reason": "shapes"

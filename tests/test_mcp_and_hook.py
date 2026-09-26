@@ -157,13 +157,23 @@ class TestMcpServer:
             "show_class_inventory",
             "list_class_properties",
             "explain_term",
+            "find_term",
             "resolve_ontology",
             "compile_check",
             "compile_explain",
             "logs_show",
         }
-        for name in ("show_class_inventory", "list_class_properties", "explain_term"):
+        for name in ("show_class_inventory", "list_class_properties", "explain_term", "find_term"):
             assert "owl:imports" in tools[name]
+
+    def test_find_term_answers_by_name_through_the_closure(self, server):
+        """DD-248: the lookup an agent runs before it proposes a property."""
+        payload = _call(server, "find_term", {"name": "emailAddress", "domain": "customer"})
+        [hit] = payload["domains"][0]["candidates"]
+        assert (hit["uri"], hit["match"], hit["class_uris"]) == (
+            "urn:base#email", "near", ["urn:base#Party"],
+        )
+        assert payload["normalised"] == "email address"
 
     def test_list_class_properties_includes_inherited_with_origin(self, server):
         payload = _call(

@@ -492,8 +492,8 @@
           "load_skos_links",
           "load_tmdl_concept_mappings"
         ],
-        "kairos_ontology.core.ontology_scope": [
-          "collect_hub_domain_bases"
+        "kairos_ontology.core.hub_namespace": [
+          "hub_ontology_namespaces"
         ]
       }
     },

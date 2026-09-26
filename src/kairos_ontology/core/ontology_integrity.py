@@ -78,6 +78,12 @@ DEGRADABLE_CODES: frozenset[str] = frozenset(
         # deliberately makes degradable. A stricter sibling for the same kind of
         # mistake would be incoherent, and would newly block compile.
         "integrity.external-term-unresolved",
+        # DD-248 §5: a property declared in a hub file under a reference-model namespace
+        # is a ghost term -- invisible to every namespace-filtered check and present in
+        # the merged graph. Never correct, and the fix is a rename; degradable for now
+        # because `compile` runs the audit without a catalog and cannot see the reference
+        # modules at all there.
+        "integrity.property-outside-hub-namespace",
     }
 )
 
@@ -96,6 +102,8 @@ ALL_CODES: tuple[str, ...] = (
     "integrity.class-unanchored",
     "integrity.external-term-unresolved",
     "integrity.deprecated-reference-class",
+    "integrity.local-property-resembles-reference-property",
+    "integrity.property-outside-hub-namespace",
 )
 
 # Header block a domain .ttl uses to record what it deliberately leaves to other
@@ -162,6 +170,16 @@ class DomainOntology:
     #: Full URIs, unlike :attr:`referenced_external`, so a target can be checked for
     #: existence rather than only its module for import.
     external_term_refs: frozenset[tuple[str, str, str]] = frozenset()
+    #: DD-248: ``rdfs:label`` per local property, for the near-match lookup.
+    property_labels: dict[str, str] = field(default_factory=dict)
+    #: DD-248: local properties linked by ``owl:equivalentProperty`` to a resolvable
+    #: reference property -- the other legitimate way to say "this is that".
+    equivalent_linked_properties: frozenset[str] = frozenset()
+    #: DD-248 §5: ``(uri, kind)`` of every property this file *declares* (typed
+    #: ``owl:DatatypeProperty`` / ``ObjectProperty`` / ``AnnotationProperty``) under a
+    #: namespace that is not the file's own. Invisible to every other check here, which
+    #: filter to the file's namespace, and yet present in the compiler's merged graph.
+    foreign_property_declarations: frozenset[tuple[str, str]] = frozenset()
 
     @property
     def properties(self) -> dict[str, str]:
@@ -251,7 +269,10 @@ def _prose_tokens(text: str) -> set[str]:
 
 
 def _split_camel(name: str) -> list[str]:
-    return [part.lower() for part in re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+", name)]
+    """One implementation, shared with the anchor scorer (DD-248 tidy-up)."""
+    from .class_anchoring import _split_camel as split
+
+    return split(name)
 
 
 def class_named_in_prose(class_name: str, prose: str) -> bool:
@@ -504,6 +525,37 @@ def scan_domain_ontology(
         )
         property_domains[local] = targets
 
+    all_properties = {**object_properties, **datatype_properties}
+    property_labels = {
+        local: next(
+            (str(obj) for obj in graph.objects(URIRef(uri), RDFS.label)),
+            "",
+        )
+        for local, uri in all_properties.items()
+    }
+    equivalent_linked = {
+        _local_name(str(subject))
+        for subject in graph.subjects(OWL.equivalentProperty, None)
+        if str(subject).startswith(namespace)
+        and any(
+            not str(target).startswith(namespace) and _resolves(target)
+            for target in graph.objects(subject, OWL.equivalentProperty)
+            if isinstance(target, URIRef)
+        )
+    }
+    foreign_property_declarations = {
+        (str(subject), kind)
+        for rdf_type, kind in (
+            (OWL.DatatypeProperty, "datatype"),
+            (OWL.ObjectProperty, "object"),
+            (OWL.AnnotationProperty, "annotation"),
+        )
+        for subject in graph.subjects(RDF.type, rdf_type)
+        if isinstance(subject, URIRef)
+        and not str(subject).startswith(namespace)
+        and not str(subject).startswith(_VOCAB_PREFIXES)
+    }
+
     return DomainOntology(
         domain=domain,
         path=path,
@@ -518,6 +570,9 @@ def scan_domain_ontology(
         referenced_external=frozenset(referenced_external),
         external_term_refs=frozenset(external_term_refs),
         property_domains=property_domains,
+        property_labels=property_labels,
+        equivalent_linked_properties=frozenset(equivalent_linked),
+        foreign_property_declarations=frozenset(foreign_property_declarations),
     )
 
 
@@ -1027,21 +1082,34 @@ def check_deprecated_reference_classes(
 # ---------------------------------------------------------------------------
 
 
-def _closure_imports(
+@dataclass(frozen=True)
+class ClosureView:
+    """What one domain's resolved closure offers the audit (DD-243, DD-248)."""
+
+    modules: frozenset[str]
+    terms: Any  # closure_lookup.ClosureTermIndex
+
+
+_CLOSURE_TERMS_CACHE: dict[str, Any] = {}
+
+
+def _closure_views(
     ontologies: dict[str, DomainOntology], catalog_path: Optional[Path]
-) -> Optional[dict[str, set[str]]]:
-    """Every module in each domain's resolved ``owl:imports`` closure, or ``None``.
+) -> Optional[dict[str, ClosureView]]:
+    """Each domain's resolved ``owl:imports`` closure -- its modules and every property.
 
     Loaded under the RDFS profile, degraded: ``compile`` and ``validate`` load the same
     domain the same way just before this audit, so it is an in-process cache hit there,
     and a domain whose closure cannot resolve falls back to its direct imports rather
-    than failing an audit that never needed the closure before DD-243.
+    than failing an audit that never needed the closure before DD-243. The property
+    index is memoised per closure hash: several domains usually share one closure.
     """
     if catalog_path is None or not Path(catalog_path).is_file():
         return None
+    from .closure_lookup import terms_from_index
     from .ontology_loader import SemanticProfile, load_ontology
 
-    closure: dict[str, set[str]] = {}
+    views: dict[str, ClosureView] = {}
     for domain, onto in ontologies.items():
         try:
             loaded = load_ontology(
@@ -1049,12 +1117,156 @@ def _closure_imports(
             )
         except Exception:  # noqa: BLE001 - the audit falls back to direct imports
             continue
-        closure[domain] = {
+        modules = frozenset(
             (entry.import_uri or entry.ontology_iri or "").rstrip("#/")
             for entry in loaded.manifest
             if entry.import_depth > 0 and (entry.import_uri or entry.ontology_iri)
-        }
-    return closure
+        )
+        terms = _CLOSURE_TERMS_CACHE.get(loaded.closure_hash)
+        if terms is None and loaded.semantic_index is not None:
+            terms = terms_from_index(loaded.semantic_index)
+            _CLOSURE_TERMS_CACHE[loaded.closure_hash] = terms
+        views[domain] = ClosureView(modules=modules, terms=terms)
+    return views
+
+
+def _closure_imports(
+    ontologies: dict[str, DomainOntology], catalog_path: Optional[Path]
+) -> Optional[dict[str, set[str]]]:
+    """Every module in each domain's resolved closure, or ``None`` (see _closure_views)."""
+    views = _closure_views(ontologies, catalog_path)
+    if views is None:
+        return None
+    return {domain: set(view.modules) for domain, view in views.items()}
+
+
+def check_property_resemblance(
+    ontologies: dict[str, DomainOntology],
+    closure_terms: dict[str, Any],
+    *,
+    limit: int = 3,
+) -> list[IntegrityDiagnostic]:
+    """Flag a local property whose name or label resembles a closure property (DD-248).
+
+    The shadowing check catches an exact same local name. This catches
+    ``documentTypeCode`` beside ``documentType`` and ``shippedOnBoardDateTime`` beside
+    ``shippedOnBoardDate``: a token-subset match through the shared lookup, which is what
+    ``find-term`` runs, at the precision floor: measured live, every real duplicate scored
+    0.84 or more and the noise (``estimatedDateTime`` beside ``estimatedArrivalDateTime``)
+    0.78 or less. Warning, because a deliberate specialisation is legitimate -- and then
+    it carries ``rdfs:subPropertyOf`` or ``owl:equivalentProperty``, which is exactly what
+    silences this. A same-name hit is left to the shadowing check.
+    """
+    from .closure_lookup import PRECISION_MIN_SCORE, find_candidates
+
+    diagnostics: list[IntegrityDiagnostic] = []
+    for domain, onto in sorted(ontologies.items()):
+        index = closure_terms.get(domain)
+        if index is None:
+            continue
+        for name, uri in sorted(onto.properties.items()):
+            if name in onto.anchored_properties or name in onto.equivalent_linked_properties:
+                continue
+            hits = [
+                c
+                for c in find_candidates(
+                    index,
+                    name,
+                    label=onto.property_labels.get(name, ""),
+                    limit=limit + 3,
+                    min_score=PRECISION_MIN_SCORE,
+                )
+                if not c.uri.startswith(onto.namespace) and _local_name(c.uri) != name
+            ][:limit]
+            if not hits:
+                continue
+            listed = ", ".join(f"<{c.uri}> ({c.match} {c.score:.2f})" for c in hits)
+            diagnostics.append(
+                IntegrityDiagnostic(
+                    level="warning",
+                    code="integrity.local-property-resembles-reference-property",
+                    message=(
+                        f"Local property '{name}' resembles {listed} in the domain's import "
+                        "closure, with no rdfs:subPropertyOf or owl:equivalentProperty link."
+                    ),
+                    domain=domain,
+                    term_uri=uri,
+                    remediation=(
+                        "Reuse the closure property, or declare the local property "
+                        f"rdfs:subPropertyOf <{hits[0].uri}> with a one-line reason; "
+                        f"'kairos-ontology find-term {name} --domain {domain}' lists the "
+                        "candidates."
+                    ),
+                )
+            )
+    return diagnostics
+
+
+def check_property_namespace(
+    ontologies: dict[str, DomainOntology],
+    hub_namespaces: frozenset[str],
+    module_terms: dict[str, dict[str, set[str]]],
+) -> list[IntegrityDiagnostic]:
+    """Flag a property a hub file declares under a reference model's or a sibling's namespace.
+
+    ``scan_domain_ontology`` keeps only subjects in the file's namespace, so such a term
+    is invisible to every other check here, to the anchoring scores and to the reference
+    term reader -- and present in the compiler's merged graph. A reference model's
+    namespace is a ghost term (error, DD-248 §5); a sibling hub domain's is a placement
+    problem (warning: declare it in that file). A namespace that is neither is left
+    alone: a hub whose prefix is the parent path of its ontology IRI is an older, valid
+    convention, not a defect this check can name.
+    """
+    from .hub_utils import is_domain_ontology_stem
+
+    hub_bases = {ns.rstrip("#/") for ns in hub_namespaces}
+    diagnostics: list[IntegrityDiagnostic] = []
+    for domain, onto in sorted(ontologies.items()):
+        if not is_domain_ontology_stem(onto.domain):
+            continue
+        for uri, kind in sorted(onto.foreign_property_declarations):
+            base = _namespace_of(uri).rstrip("#/")
+            local = _local_name(uri)
+            if base not in hub_bases and base not in module_terms:
+                continue
+            if base in hub_bases:
+                diagnostics.append(
+                    IntegrityDiagnostic(
+                        level="warning",
+                        code="integrity.property-outside-hub-namespace",
+                        message=(
+                            f"Property '{local}' ({kind}) is declared in domain '{domain}' "
+                            f"under sibling hub namespace <{base}>, not this file's "
+                            f"<{onto.namespace}>."
+                        ),
+                        domain=domain,
+                        term_uri=uri,
+                        remediation=(
+                            "Declare it in the sibling domain's file, or rename it under "
+                            "this file's namespace and link it with rdfs:subPropertyOf."
+                        ),
+                    )
+                )
+                continue
+            diagnostics.append(
+                IntegrityDiagnostic(
+                    level="error",
+                    code="integrity.property-outside-hub-namespace",
+                    message=(
+                        f"Property '{local}' ({kind}) is declared in domain '{domain}' but "
+                        f"its IRI is not in this file's namespace <{onto.namespace}>; the IRI "
+                        f"belongs to reference module <{base}>."
+                    ),
+                    domain=domain,
+                    term_uri=uri,
+                    remediation=(
+                        "A hub file declares terms only under its own owl:Ontology IRI "
+                        f"(DD-248): rename it ':{local}' and, if it specialises the "
+                        "reference property, anchor it with rdfs:subPropertyOf."
+                    ),
+                )
+            )
+    return diagnostics
 
 
 def _module_terms(catalog_path: Optional[Path]) -> dict[str, dict[str, set[str]]]:
@@ -1101,8 +1313,11 @@ def reset_hub_scan_cache() -> None:
     _HUB_SCAN_CACHE.clear()
 
 
-def _hub_ontologies_fingerprint(ontologies_dir: Path) -> str:
+def _hub_ontologies_fingerprint(ontologies_dir: Path, *, include_managed: bool = False) -> str:
     """Content hash of every authored ``.ttl`` the scan would read.
+
+    *include_managed* adds ``_master.ttl`` and ``_foundation.ttl``, for readers that
+    care about every ontology IRI the hub declares (``hub_namespace``).
 
     Content, not ``mtime``. The reference-corpus fingerprint elsewhere in the toolkit can
     use ``st_mtime_ns`` because it stamps installed package files that only change on
@@ -1118,7 +1333,7 @@ def _hub_ontologies_fingerprint(ontologies_dir: Path) -> str:
     except OSError:
         return "unreadable"
     for path in paths:
-        if path.name.startswith("_"):
+        if path.name.startswith("_") and not include_managed:
             continue
         digest.update(path.name.encode("utf-8"))
         try:
@@ -1193,16 +1408,38 @@ def audit_ontology_integrity(
     diagnostics.extend(check_cross_domain_duplicates(ontologies))
     diagnostics.extend(check_declared_exclusions(ontologies))
     diagnostics.extend(check_blueprint_boundaries(ontologies, data_domains or {}))
+    views = _closure_views(ontologies, catalog_path)
     diagnostics.extend(
         check_reference_model_shadowing(
-            ontologies, module_terms, closure_imports=_closure_imports(ontologies, catalog_path)
+            ontologies,
+            module_terms,
+            closure_imports=(
+                {d: set(v.modules) for d, v in views.items()} if views is not None else None
+            ),
         )
     )
+    if views is not None:
+        # DD-248: the near-duplicate check needs the closure's properties in scope.
+        diagnostics.extend(
+            check_property_resemblance(
+                ontologies, {d: v.terms for d, v in views.items() if v.terms is not None}
+            )
+        )
     diagnostics.extend(check_unused_imports(ontologies))
     diagnostics.extend(check_collapsed_value_objects(ontologies))
     diagnostics.extend(check_unanchored_classes(ontologies))
     diagnostics.extend(check_external_terms_resolve(ontologies, module_terms))
     diagnostics.extend(check_deprecated_reference_classes(ontologies, module_terms))
+    from .hub_namespace import hub_ontology_namespaces
+
+    diagnostics.extend(
+        check_property_namespace(
+            ontologies,
+            frozenset(o.namespace for o in ontologies.values())
+            | hub_ontology_namespaces(Path(ontologies_dir).parent.parent),
+            module_terms,
+        )
+    )
 
     if domains is not None:
         scope = set(domains)

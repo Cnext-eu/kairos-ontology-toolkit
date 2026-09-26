@@ -194,6 +194,10 @@ def hub_local_properties(
     candidate pool however correctly they were authored, and the whole extension
     mechanism stopped at the ontology.
 
+    "Hub-authored" means declared under one of the hub's own ``owl:Ontology`` IRIs
+    (DD-248 §5). It used to mean "not in the anchor class's module", which also matched
+    a property the class inherits from a *second* reference module.
+
     Resolution goes through the DD-103 canonical loader rather than a local rdflib
     parse, which is not merely a boundary rule: ``SemanticIndex`` resolves the catalog,
     the import closure, inherited properties, and the union-domain and
@@ -226,7 +230,9 @@ def hub_local_properties(
     if index is None:
         return {}
 
-    hub_namespace = _module_of(class_uri)
+    from .hub_namespace import hub_ontology_namespaces, is_hub_namespace
+
+    namespaces = hub_ontology_namespaces(Path(hub_root))
     found: dict[str, str] = {}
     for prop in index.class_properties(class_uri):
         # `property_uri`, not `uri`: SemanticIndex names it that way, and reading the
@@ -239,7 +245,7 @@ def hub_local_properties(
             continue
         # Reference properties already reach the pool via _class_pools; this adds only
         # what the hub authored for itself.
-        if not uri or _module_of(uri) == hub_namespace:
+        if not uri or not is_hub_namespace(uri, namespaces):
             continue
         local = uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
         if local:

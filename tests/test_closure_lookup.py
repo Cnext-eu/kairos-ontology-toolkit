@@ -140,6 +140,19 @@ class TestExactAndNear:
     def test_too_many_extra_tokens_is_not_near(self, index):
         assert find_candidates(index, "estimatedDepartureDateTimeLocalZone") == []
 
+    def test_min_score_drops_weak_near_matches_but_never_an_exact_one(self, index):
+        weak = find_candidates(index, "estimatedDepartureDateTime")
+        assert weak and weak[0].name == "estimatedDeparture"
+        assert find_candidates(index, "estimatedDepartureDateTime", min_score=0.99) == []
+        [exact] = find_candidates(index, "LEGAL_NAME", min_score=0.99)
+        assert exact.match == "exact"
+
+    def test_one_token_cannot_claim_a_three_token_name(self):
+        index = terms_from_ref_classes([_cls("Transaction", "hasDocument", "documentType")])
+        assert [c.name for c in find_candidates(index, "documentTypeCode")] == ["documentType"]
+        # …but it still claims a two-token one.
+        assert [c.name for c in find_candidates(index, "documentRef")] == ["hasDocument"]
+
     def test_prefix_stripping_turns_a_near_match_exact(self, index):
         [near] = find_candidates(index, "XX_LEGAL_NAME")
         assert (near.name, near.match) == ("legalName", "near")

@@ -41,11 +41,16 @@ shortlist; and the DD-244 disclosure line never counted the classes the shortlis
    camel/snake split, abbreviations expanded) and matched against every property in the
    closure. *Exact* is equality of normalised name or label. *Near* is a token-subset
    match after dropping structural tokens (`has`, `of`), with at most two extra tokens on
-   the longer side; the string similarity is reported for ranking, never used as the
-   gate, because similarity alone accepts `eventReference` for `agentReference`. A name
+   the longer side and the shorter side supplying at least half the tokens; the string
+   similarity is reported for ranking, never used as the gate, because similarity alone
+   accepts `eventReference` for `agentReference`. A name
    made only of generic tokens (`code`, `typeCode`) matches exactly or not at all. Output
    is ordered by score then IRI, so a run is reproducible. A hit is a candidate to
-   confirm, not a mapping.
+   confirm, not a mapping. A consumer with a reviewer in between (the alignment file,
+   the gap sheet, `find-term`) takes every admissible match; one that acts on its own
+   (the integrity warning, a skipped render) applies the precision floor 0.8, measured
+   live: every real duplicate scored 0.84 or more, the noise 0.78 or less, and the
+   hub's warning count went from 109 to 39.
 2. **A candidate is a reason of its own.** Every custom column is looked up after the
    model answers; the candidates travel on the column (`closure_candidates`) into the
    alignment file, and `alignment-report` counts them as
@@ -71,16 +76,21 @@ shortlist; and the DD-244 disclosure line never counted the classes the shortlis
    `generate-bindings` classifies by hub namespace; `validate` reports
    `integrity.local-property-resembles-reference-property` (warning) and
    `integrity.property-outside-hub-namespace` (degradable error for a reference
-   namespace, warning for a sibling hub domain). `find-term` and the MCP `find_term` tool
+   module's namespace, warning for a sibling hub domain; a namespace that is neither is
+   left alone, since a prefix that is the parent path of the ontology IRI is an older
+   valid convention). `find-term` and the MCP `find_term` tool
    expose the same lookup, and the design-domain skill requires it before any property
    is proposed: reuse, or `rdfs:subPropertyOf` with a reason, or a recorded reason why
    no candidate fits. (Third PR.)
 
 ### Consequences
 
-- Recorded alignments are stale by contract and re-run once after upgrade; the next
-  `draft-gap-decisions` on the measured hub should show the `registered-extension`
-  proposals fall from 204 and `held-for-closure-candidate` appear.
+- Recorded alignments are stale by contract and re-run once after upgrade. Measured on
+  the same hub with this decision in place (gpt-5.5, 109 tables, 2026-09-26): 113 gap
+  columns are `closure-candidate-not-shown`; the retry mapped 93 of the 207 columns
+  that had a candidate (45 %); `--accept-proposals` held 13 names for a human; after
+  `--suggest` the model still proposed `registered-extension` for 8 of the 17 candidate
+  names, so the hold, not the prompt wording, is the guard that matters.
 - Existing hubs gain advisory warnings for near-duplicate local properties (about 20 on
   the measured hub) and no namespace errors: every local property there is already in the
   client namespace.

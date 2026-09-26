@@ -27,7 +27,12 @@ kairos-ontology scaffold-domain --domain billing --label "Billing"
 kairos-ontology show-class-inventory --domain billing
 kairos-ontology list-class-properties "https://acme.example/ont/billing#Invoice" --domain billing
 kairos-ontology explain-term "https://acme.example/ont/billing#Invoice" --domain billing
+kairos-ontology find-term invoiceNumber --domain billing
 ```
+
+`find-term` answers by *name*: which closure properties does `invoiceNumber` resemble?
+Run it before proposing a property; a local property that duplicates an inherited one
+is the commonest defect in a hub (DD-248).
 
 Use these rather than opening the `.ttl`. Reading serialised RDF as text does not reveal
 inherited properties, imported terms, or inverse relations (DD-103): a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure.
