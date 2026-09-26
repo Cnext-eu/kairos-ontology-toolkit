@@ -251,7 +251,58 @@ def load_bound_relations(bindings_dir: Path, hub_root: Path) -> set[tuple[str, s
     *hub_root* resolves the binding's repository-relative ``sqlPath``. An unreadable path
     is skipped rather than raised on, matching this function's existing posture toward a
     malformed binding.
+
+    Memoized in-process (#598): the DD-180 gate asks for this hub-wide set once per
+    domain, and on a 15-domain hub that was 690 YAML parses of 46 bindings. A hit is only
+    trusted after re-hashing every file the answer was read from -- each binding, the
+    model directory listing, and every model SQL the walk opened -- so any edit is a miss.
     """
+    key = (str(Path(bindings_dir).resolve()), str(Path(hub_root).resolve()))
+    listing = _inputs_listing(bindings_dir, hub_root)
+    hit = _BOUND_RELATIONS_CACHE.get(key)
+    if hit is not None and hit[2] == listing and _files_unchanged(hit[1]):
+        return set(hit[0])
+    read: dict[Path, str] = {}
+    bound = _load_bound_relations_uncached(bindings_dir, hub_root, read)
+    _BOUND_RELATIONS_CACHE.clear()  # one hub state at a time is all a run needs
+    _BOUND_RELATIONS_CACHE[key] = (frozenset(bound), read, listing)
+    return bound
+
+
+#: ``load_bound_relations`` results: key -> (answer, {file read: sha256}, input listing).
+_BOUND_RELATIONS_CACHE: dict[
+    tuple[str, str], tuple[frozenset[tuple[str, str]], dict[Path, str], tuple[str, ...]]
+] = {}
+
+
+def _digest(path: Path) -> str:
+    import hashlib
+
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _files_unchanged(read: dict[Path, str]) -> bool:
+    return all(_digest(path) == digest for path, digest in read.items())
+
+
+def _inputs_listing(bindings_dir: Path, hub_root: Path) -> tuple[str, ...]:
+    """The files that *could* be read: a new binding or model is a miss even unread."""
+    models_dir = Path(hub_root) / "integration" / "transforms" / "dbt" / "models"
+    names: list[str] = []
+    if bindings_dir.is_dir():
+        names += [str(path) for path in sorted(bindings_dir.glob("*.yaml"))]
+    if models_dir.is_dir():
+        names += [str(path) for path in sorted(models_dir.rglob("*.sql"))]
+    return tuple(names)
+
+
+def _load_bound_relations_uncached(
+    bindings_dir: Path, hub_root: Path, read: dict[Path, str]
+) -> set[tuple[str, str]]:
+    """The implementation :func:`load_bound_relations` memoizes; *read* collects inputs."""
     bound: set[tuple[str, str]] = set()
     if not bindings_dir.is_dir():
         return bound
@@ -259,6 +310,7 @@ def load_bound_relations(bindings_dir: Path, hub_root: Path) -> set[tuple[str, s
     # call, not one per binding.
     model_index: dict[str, list[Path]] | None = None
     for path in sorted(bindings_dir.glob("*.yaml")):
+        read[path] = _digest(path)
         try:
             payload = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception:  # defensive: a malformed binding is the compiler's problem
@@ -273,7 +325,7 @@ def load_bound_relations(bindings_dir: Path, hub_root: Path) -> set[tuple[str, s
             bound.add((system.strip(), table.strip()))
         if model_index is None:
             model_index = _model_index(hub_root)
-        bound |= _dbt_model_source_pairs(source, hub_root, model_index)
+        bound |= _dbt_model_source_pairs(source, hub_root, model_index, read)
     return bound
 
 
@@ -291,6 +343,7 @@ def _dbt_model_source_pairs(
     source: dict[str, Any],
     hub_root: Path,
     model_index: dict[str, list[Path]],
+    read: dict[Path, str] | None = None,
 ) -> set[tuple[str, str]]:
     """Return the source tables a ``source.dbtModel`` binding's own SQL reads.
 
@@ -310,6 +363,10 @@ def _dbt_model_source_pairs(
     pending = [Path(hub_root) / sql_path]
     while pending:
         path = pending.pop()
+        if read is not None:
+            # Recorded before the read, so a path that is missing now and appears later
+            # (digest "" -> a real one) invalidates the memo too.
+            read[path] = _digest(path)
         try:
             key = path.resolve()
             text = path.read_text(encoding="utf-8")

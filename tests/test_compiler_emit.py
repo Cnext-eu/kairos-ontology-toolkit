@@ -744,3 +744,89 @@ def test_stale_shared_path_no_other_manifest_lists_is_removed(tmp_path: Path):
 
     assert not (target / shared).exists()
     assert shared in result.removed
+
+
+class TestEmitBatch:
+    """Several manifests in one transaction: one stage, one swap (#598)."""
+
+    _PARTY = ".kairos-compile-manifest.party.json"
+    _SHARED = ".kairos-compile-manifest.shared.json"
+
+    def _tree(self, target: Path) -> dict[str, bytes]:
+        return {
+            path.relative_to(target).as_posix(): path.read_bytes()
+            for path in target.rglob("*")
+            if path.is_file()
+        }
+
+    def _parts(self, version: str):
+        return [
+            emit_module.EmitPart(
+                {"models/silver/party/customer.sql": f"select {version}"}, self._PARTY
+            ),
+            emit_module.EmitPart(
+                {"dbt_project.yml": f"name: v{version}\n"}, self._SHARED, ("dbt_project.yml",)
+            ),
+        ]
+
+    def test_a_batch_leaves_what_sequential_emits_leave(self, tmp_path: Path):
+        batch, sequential = tmp_path / "batch", tmp_path / "sequential"
+        for version in ("1", "2"):
+            results = emit_module.emit_artifact_batch(self._parts(version), batch)
+            for part in self._parts(version):
+                emit_artifacts(
+                    part.rendered,
+                    sequential,
+                    manifest_name=part.manifest_name,
+                    replace_unowned_paths=part.replace_unowned_paths,
+                )
+        assert self._tree(batch) == self._tree(sequential)
+        assert [result.manifest_path.name for result in results] == [self._PARTY, self._SHARED]
+
+    def test_a_failing_later_part_commits_nothing(self, tmp_path: Path):
+        target = tmp_path / "dbt"
+        emit_module.emit_artifact_batch(self._parts("1"), target)
+        (target / "unowned.sql").write_text("hand-written", encoding="utf-8")
+        before = self._tree(target)
+        parts = [
+            emit_module.EmitPart({"models/silver/party/customer.sql": "select 2"}, self._PARTY),
+            emit_module.EmitPart({"unowned.sql": "select 3"}, self._SHARED),
+        ]
+        with pytest.raises(ArtifactCollisionError):
+            emit_module.emit_artifact_batch(parts, target)
+        assert self._tree(target) == before
+        assert not list(tmp_path.glob(".dbt.kairos-stage-*"))
+
+    def test_a_later_part_sees_what_an_earlier_part_wrote(self, tmp_path: Path):
+        """A file the first part just took ownership of collides with the second part,
+        exactly as it would after the first part's sequential commit."""
+        target = tmp_path / "dbt"
+        parts = [
+            emit_module.EmitPart({"models/a.sql": "select 1"}, self._PARTY),
+            emit_module.EmitPart({"models/a.sql": "select 2"}, self._SHARED),
+        ]
+        with pytest.raises(ArtifactCollisionError):
+            emit_module.emit_artifact_batch(parts, target)
+        assert not target.exists()
+
+    def test_a_manifest_named_twice_is_rejected(self, tmp_path: Path):
+        parts = [
+            emit_module.EmitPart({"models/a.sql": "select 1"}, self._PARTY),
+            emit_module.EmitPart({"models/b.sql": "select 2"}, self._PARTY),
+        ]
+        with pytest.raises(EmissionError, match="appears twice"):
+            emit_module.emit_artifact_batch(parts, tmp_path / "dbt")
+
+    def test_one_stage_per_batch(self, tmp_path: Path, monkeypatch):
+        target = tmp_path / "dbt"
+        emit_module.emit_artifact_batch(self._parts("1"), target)
+        staged: list[Path] = []
+        original = emit_module._stage_from_target
+
+        def counting(source: Path, stage: Path) -> None:
+            staged.append(stage)
+            original(source, stage)
+
+        monkeypatch.setattr(emit_module, "_stage_from_target", counting)
+        emit_module.emit_artifact_batch(self._parts("2"), target)
+        assert len(staged) == 1

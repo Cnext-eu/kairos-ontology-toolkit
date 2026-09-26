@@ -63,6 +63,21 @@ def cache_write_scope(enabled: bool):
 # lifetime -- cleared implicitly on exit, never persisted.
 _IN_PROCESS_CACHE: dict[tuple[Any, ...], "OntologyLoadResult"] = {}
 
+# Tier A2: parsed source graphs, keyed on the file's content hash and RDF format (#598).
+# Every domain's closure imports the same shared modules, and the reference corpus walk
+# loads ~80 closures over one set of files, so without this each file was re-parsed (from
+# Tier B's N-Triples, or from Turtle) once per closure that reached it -- 630 parses of
+# ~140 files on a 15-domain hub. Content-addressed like Tier B, so a changed file is a miss
+# by construction; in-process only, so nothing here outlives the command. The graphs are
+# shared read-only: closures copy triples out with ``+=`` and never write back.
+_SOURCE_GRAPH_CACHE: dict[tuple[str, str], Graph] = {}
+
+
+def reset_in_process_caches() -> None:
+    """Drop Tier A and A2; for tests and embedders that edit files between loads."""
+    _IN_PROCESS_CACHE.clear()
+    _SOURCE_GRAPH_CACHE.clear()
+
 
 class SemanticProfile(str, Enum):
     """Supported ontology interpretation profiles."""
@@ -505,7 +520,11 @@ def _load_ontology_uncached(
 
         rdf_format = _get_rdf_format(path)
         digest = _source_hash(path)
-        source_graph = _load_cached_source_graph(stable_root, digest, rdf_format)
+        memo_key = (digest, rdf_format)
+        source_graph = _SOURCE_GRAPH_CACHE.get(memo_key) if CACHE_ENABLED else None
+        from_memory = source_graph is not None
+        if source_graph is None:
+            source_graph = _load_cached_source_graph(stable_root, digest, rdf_format)
         parsed_fresh = source_graph is None
         if source_graph is None:
             source_graph = Graph()
@@ -563,6 +582,16 @@ def _load_ontology_uncached(
         )
         if parsed_fresh:
             _store_cached_source_graph(stable_root, digest, rdf_format, source_graph)
+        elif (
+            from_memory
+            and CACHE_WRITE_ENABLED
+            and not _parse_cache_path(stable_root, digest, rdf_format).is_file()
+        ):
+            # Parsed earlier in this process for another closure or another hub; Tier B is
+            # per hub, so this hub's cache still needs the entry to be warm next time.
+            _store_cached_source_graph(stable_root, digest, rdf_format, source_graph)
+        if CACHE_ENABLED and not from_memory:
+            _SOURCE_GRAPH_CACHE[memo_key] = source_graph
 
         imports = sorted({str(value) for value in source_graph.objects(predicate=OWL.imports)})
         for import_uri in imports:
