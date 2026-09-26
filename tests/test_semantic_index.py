@@ -248,3 +248,80 @@ def test_unattached_domains_stay_out_of_the_serialized_index(tmp_path):
 
     assert index.unattached_property_domains  # precondition: there is something to leak
     assert "unattached_property_domains" not in index.to_dict()
+
+
+def _scan_provenance(result, subject, predicate=None, obj=None):
+    """The pre-#598 implementation: scan the sources in closure order, first match wins."""
+    for source in result.sources:
+        if predicate is None:
+            if any(source.graph.triples((subject, None, None))):
+                return source.manifest.source_identity, source.manifest.import_depth
+        elif (subject, predicate, obj) in source.graph:
+            return source.manifest.source_identity, source.manifest.import_depth
+    return result.manifest[0].source_identity, result.manifest[0].import_depth
+
+
+def test_indexed_provenance_matches_a_source_scan(tmp_path):
+    """#598: provenance is looked up in a per-result index; the answer must not move.
+
+    A two-file closure where the import also states facts about a root class, so "first
+    source in closure order" is actually exercised.
+    """
+    from rdflib import RDF, RDFS, URIRef
+
+    from kairos_ontology.core import semantic_index
+
+    (tmp_path / "base.ttl").write_text(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+        "<urn:base> a owl:Ontology .\n"
+        "<urn:Thing> a owl:Class .\n"
+        '<urn:Party> rdfs:comment "stated by the import too" .\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "catalog.xml").write_text(
+        '<?xml version="1.0"?>\n<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+        '  <uri name="urn:base" uri="base.ttl"/>\n</catalog>\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "root.ttl"
+    root.write_text(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+        "<urn:root> a owl:Ontology ; owl:imports <urn:base> .\n"
+        "<urn:Party> a owl:Class ; rdfs:subClassOf <urn:Thing> .\n",
+        encoding="utf-8",
+    )
+    result = load_ontology(
+        root, catalog_path=tmp_path / "catalog.xml", profile=SemanticProfile.RDFS
+    )
+    assert len(result.sources) == 2, "the import must resolve for this test to mean anything"
+    subjects = {s for s in result.graph.subjects()} | {URIRef("urn:Absent")}
+    for subject in subjects:
+        got = semantic_index._term_provenance(result, subject)
+        assert (got.source_identity, got.import_depth) == _scan_provenance(result, subject)
+    for triple in list(result.graph) + [(URIRef("urn:Party"), RDF.type, URIRef("urn:Nope"))]:
+        got = semantic_index._term_provenance(result, *triple)
+        assert (got.source_identity, got.import_depth) == _scan_provenance(result, *triple)
+        assert semantic_index._is_asserted(result, *triple) == any(
+            triple in source.graph for source in result.sources
+        )
+    assert semantic_index._is_asserted(
+        result, URIRef("urn:Party"), RDFS.subClassOf, URIRef("urn:Thing")
+    )
+
+
+def test_only_owl_rl_copies_the_closure_graph(tmp_path):
+    """#598: the read-only profiles index the load result's own graph; OWL RL expands a
+    copy, so the load result is never mutated."""
+    from kairos_ontology.core import semantic_index
+
+    path = tmp_path / "model.ttl"
+    path.write_text(ONTOLOGY, encoding="utf-8")
+    result = load_ontology(path, profile=SemanticProfile.RDFS)
+    assert semantic_index._semantic_graph(result, SemanticProfile.RDFS) is result.graph
+    before = len(result.graph)
+    expanded = semantic_index._semantic_graph(result, SemanticProfile.OWL_RL)
+    assert expanded is not result.graph
+    assert len(result.graph) == before
+    assert len(expanded) > before
