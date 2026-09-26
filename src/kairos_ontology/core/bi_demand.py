@@ -141,3 +141,94 @@ def load_bi_demand(hub_root: Path) -> BiDemand:
                 if column:
                     demand._add(BiReference(model, table_name, column, KIND_RELATIONSHIP))
     return demand
+
+
+@dataclass(frozen=True, slots=True)
+class UnboundDemandedProperty:
+    """A hub property a BI model uses by name that no EntityBinding populates (#942)."""
+
+    property_iri: str
+    domain: str
+    references: tuple[str, ...]
+
+    @property
+    def local_name(self) -> str:
+        return self.property_iri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "code": "bi-demand.property-unbound",
+            "property": self.property_iri,
+            "domain": self.domain,
+            "references": list(self.references),
+            "message": self.message,
+        }
+
+    @property
+    def message(self) -> str:
+        return (
+            f"{self.domain}: {self.local_name} is declared and a Power BI model uses a "
+            f"column of that name ({'; '.join(self.references)}), but no binding "
+            "populates it, so Silver never carries it."
+        )
+
+
+def _bound_properties(hub_root: Path, files) -> set[str]:
+    """Every property IRI an EntityBinding field or relationship names."""
+    from .class_disposition import resolve_class_token
+
+    bound: set[str] = set()
+    bindings_dir = Path(hub_root) / "integration" / "bindings"
+    if not bindings_dir.is_dir():
+        return bound
+    for path in sorted(bindings_dir.glob("*.yaml")):
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue  # a malformed binding is the compiler's to report
+        if not isinstance(payload, dict):
+            continue
+        metadata = payload.get("metadata") or {}
+        domain = str(metadata.get("domain") or "") if isinstance(metadata, dict) else ""
+        for section in ("fields", "relationships"):
+            for entry in payload.get(section) or []:
+                if isinstance(entry, dict) and entry.get("property"):
+                    iri = resolve_class_token(str(entry["property"]), files, domain)
+                    if iri:
+                        bound.add(iri)
+    return bound
+
+
+def unbound_demanded_properties(hub_root: Path) -> list[UnboundDemandedProperty]:
+    """Hub properties a BI model names that no binding populates (#942, suggestion 4).
+
+    The case this catches: a domain declared the category property a BI fact splits on,
+    and nothing connected "the report splits on this" to "then a binding must populate
+    it". Matching is by normalised name, so every hit is evidence for a human -- a
+    warning in ``validate``, never an error.
+    """
+    demand = load_bi_demand(hub_root)
+    if not demand:
+        return []
+    from rdflib import RDF, URIRef
+    from rdflib.namespace import OWL
+
+    from .class_disposition import _own_namespaces, load_domain_files
+
+    files = load_domain_files(hub_root)
+    bound = _bound_properties(hub_root, files)
+    found: list[UnboundDemandedProperty] = []
+    for domain, item in sorted(files.items()):
+        namespaces = _own_namespaces(item.graph)
+        for kind in (OWL.DatatypeProperty, OWL.ObjectProperty):
+            for subject in item.graph.subjects(RDF.type, kind):
+                iri = str(subject)
+                if not isinstance(subject, URIRef) or iri in bound:
+                    continue
+                if namespaces and not any(iri.startswith(ns) for ns in namespaces):
+                    continue
+                local = iri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+                references = demand.describe(local, limit=3)
+                if references:
+                    found.append(UnboundDemandedProperty(iri, domain, tuple(references)))
+    return sorted(found, key=lambda entry: (entry.domain, entry.property_iri))

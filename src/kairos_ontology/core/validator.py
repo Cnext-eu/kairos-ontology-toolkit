@@ -2165,6 +2165,20 @@ def run_validation(
             )
             print()
 
+        # A property a Power BI model uses by name that no binding populates (#942). The
+        # imported model says what the hub's consumers need; a declared-but-unbound
+        # property it names is a report that cannot be built. Warnings: a name match.
+        from .bi_demand import unbound_demanded_properties
+
+        unbound_demand = unbound_demanded_properties(ontologies_path.parent.parent)
+        if unbound_demand:
+            print("📊 Power BI demand")
+            print("-" * 50)
+            results["integrity"]["warnings"].extend(item.to_dict() for item in unbound_demand)
+            for item in unbound_demand:
+                print(f"  ⚠ {item.message}")
+            print()
+
         # Cross-domain join keys (#934). `compile` checks an externalReference key only
         # against the parent's Silver contract, which most hubs never author, so it could
         # not tell a join on a column the parent never emits from a correct one. Here the

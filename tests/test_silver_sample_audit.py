@@ -12,6 +12,7 @@ from kairos_ontology.core.silver_sample_audit import (
     load_binding_mappings,
     load_source_samples,
     render_markdown,
+    report_to_dict,
     resolve_v5_column_facts,
     run_silver_sample_audit,
 )
@@ -736,3 +737,84 @@ def test_cli_audit_silver_samples_fail_on_warning_catches_zero_mappings(tmp_path
     result = runner.invoke(cli, ["audit-silver-samples", "--fail-on", "warning"])
 
     assert result.exit_code == 1
+
+
+def _write_bi_model(hub_root, relationships, measures):
+    bi = hub_root / "integration" / "discovery" / "bi"
+    bi.mkdir(parents=True, exist_ok=True)
+    (bi / "Sales-concept-mapping.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1",
+                "model_name": "Sales",
+                "tables": [
+                    {
+                        "tmdl_name": "f_Customer",
+                        "type": "fact",
+                        "columns": ["Colour"],
+                        "measures": measures,
+                    }
+                ],
+                "relationships": relationships,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestBiDemandCoverage:
+    """#942: a hub whose flagship BI fact cannot be built from Silver must not audit clean."""
+
+    def _run(self, tmp_path):
+        sources, mappings, dbt = _write_fixture(tmp_path)
+        return run_silver_sample_audit(
+            sources_dir=sources,
+            mappings_dir=mappings,
+            dbt_output_dir=dbt,
+            hub_root=tmp_path,
+        )
+
+    def test_an_unreachable_grain_column_is_a_warning(self, tmp_path):
+        _write_bi_model(
+            tmp_path,
+            [{"from": "f_Customer.SAILING_DATE", "to": "d_Date.Date"}],
+            [{"name": "Total", "expression": "SUM(f_Customer[Amount])"}],
+        )
+        report = self._run(tmp_path)
+        findings = [f for f in report.findings if f.code == "bi_demand_unreachable"]
+        # One per BI table, not one per column.
+        assert [f.table for f in findings] == ["Sales: d_Date", "Sales: f_Customer"]
+        finding = findings[1]
+        assert finding.severity == "warning"
+        assert "SAILING_DATE" in finding.message
+        assert "Amount" not in finding.message, "mapped by its source name"
+        # SAILING_DATE and Date are demanded and missing; Amount is carried.
+        assert (report.bi_demand_reachable, report.bi_demand_columns) == (1, 3)
+        assert report.bi_demand_coverage_ratio == round(1 / 3, 4)
+
+    def test_a_silver_property_name_counts_as_reachable(self, tmp_path):
+        """`CustomerName` in the BI model is Silver's `customerName` target."""
+        _write_bi_model(
+            tmp_path, [], [{"name": "Names", "expression": "COUNTROWS(f_Customer[CustomerName])"}]
+        )
+        report = self._run(tmp_path)
+        assert not [f for f in report.findings if f.code == "bi_demand_unreachable"]
+        assert report.bi_demand_coverage_ratio == 1.0
+
+    def test_a_column_only_present_in_a_bi_table_is_not_demand(self, tmp_path):
+        _write_bi_model(tmp_path, [], [])
+        report = self._run(tmp_path)
+        assert report.bi_demand_columns == 0
+        assert not [f for f in report.findings if f.code == "bi_demand_unreachable"]
+
+    def test_a_hub_without_bi_evidence_reports_nothing_new(self, tmp_path):
+        report = self._run(tmp_path)
+        assert report.bi_demand_coverage_ratio is None
+        assert "bi_demand_columns" not in report_to_dict(report)["summary"]
+        assert "Power BI demand" not in render_markdown(report)
+
+    def test_the_summary_and_markdown_carry_the_ratio(self, tmp_path):
+        _write_bi_model(tmp_path, [], [{"name": "Total", "expression": "SUM(f_Customer[Missing])"}])
+        report = self._run(tmp_path)
+        assert report_to_dict(report)["summary"]["bi_demand_coverage_ratio"] == 0.0
+        assert "Power BI demand reachable from Silver: 0 of 1 (0%)" in render_markdown(report)
