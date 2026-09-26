@@ -366,6 +366,18 @@ def generate_prompt_artifacts(
             class_uris=[item["uri"] for item in classes],
             selection_rule="projected-class-uri-order",
         )
+        # DD-244: the slice is asked for the local classes only, so it reports no
+        # truncation by construction. The imported classes it leaves out are disclosed.
+        local_uris = {item["uri"] for item in classes}
+        excluded = [item for item in semantic_index.classes if item.uri not in local_uris]
+        metadata = semantic_slice["metadata"]
+        metadata["omitted_class_count"] = len(excluded)
+        if excluded:
+            metadata["truncated"] = True
+            metadata["omitted_modules"] = sorted(
+                set(metadata["omitted_modules"])
+                | {item.provenance.source_identity for item in excluded}
+            )
         indexed_classes = {item.uri: item for item in semantic_index.classes}
         indexed_properties = {item.uri: item for item in semantic_index.properties}
 
@@ -443,24 +455,47 @@ def generate_prompt_artifacts(
     }
     """
 
-    for row in graph.query(query):
-        prop_uri = str(row.property)
+    if semantic_index is not None:
+        # From the index (DD-244): every declared domain, owl:unionOf and
+        # schema:domainIncludes included, where the literal rdfs:domain query saw one.
+        for prop in semantic_index.properties:
+            if prop.property_type != "object":
+                continue
+            domains = [extract_local_name(link.uri) for link in prop.domains] or [None]
+            ranges = [extract_local_name(link.uri) for link in prop.ranges] or [None]
+            for domain_name in domains:
+                for range_name in ranges:
+                    relationships.append(
+                        {
+                            "name": prop.name,
+                            "from": domain_name,
+                            "to": range_name,
+                            "description": prop.comment or prop.label or "",
+                        }
+                    )
+    else:
+        for row in graph.query(query):
+            prop_uri = str(row.property)
 
-        # Graph-only compatibility mode keeps the historical namespace filter.
-        if semantic_index is None and not prop_uri.startswith(namespace):
-            continue
+            # Graph-only compatibility mode keeps the historical namespace filter.
+            if not prop_uri.startswith(namespace):
+                continue
 
-        prop_name = extract_local_name(prop_uri)
-        domain_name = extract_local_name(str(row.domain)) if row.domain else None
-        range_name = extract_local_name(str(row.range)) if row.range else None
+            prop_name = extract_local_name(prop_uri)
+            domain_name = extract_local_name(str(row.domain)) if row.domain else None
+            range_name = extract_local_name(str(row.range)) if row.range else None
 
-        rel_info = {
-            "name": prop_name,
-            "from": domain_name,
-            "to": range_name,
-            "description": str(row.comment) if row.comment else str(row.label) if row.label else "",
-        }
-        relationships.append(rel_info)
+            rel_info = {
+                "name": prop_name,
+                "from": domain_name,
+                "to": range_name,
+                "description": str(row.comment)
+                if row.comment
+                else str(row.label)
+                if row.label
+                else "",
+            }
+            relationships.append(rel_info)
 
     # Create optimized LLM-friendly structure
 
