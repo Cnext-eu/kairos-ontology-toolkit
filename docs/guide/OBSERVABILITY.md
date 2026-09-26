@@ -29,16 +29,36 @@ it once, as before. The record has `event: kairos.diagnostic.reported` and these
 - `diagnostic.code`, `diagnostic.severity`, `diagnostic.rule_id`, `diagnostic.location`,
   `diagnostic.message`;
 - `kairos.task`: the domain, or `gold:<product>`;
-- `kairos.gate`: `compile` or `gold-shape`;
+- `kairos.gate`: the gate that reported it (see [Spans](#spans-dd-242));
+- `kairos.span.id`: the span it was reported in;
 - `kairos.operation.id`.
 
-A run ends with one `kairos.run.summary` record. It holds the counts per task, by
-severity and by code. A multi-domain `compile` in text mode also prints this summary as
-a "Diagnostics by task" table.
+Findings the console prints as plain lines are logged too, under these codes:
+
+| Code | Severity | Reported by |
+|---|---|---|
+| `gold.package-invalid` | error | Fabric package validation (`emit-gold`, `package-powerbi-release`) |
+| `gold.tmdl-invalid` | error | TOM SDK structural validation |
+| `gold.tmdl-unavailable` | info | TOM SDK validation could not run (no `dotnet`) |
+| `gold.profile-missing` | error | `emit-gold` on a domain with no Gold profile |
+| `gold.insights-unusable` | error | a malformed `insights.yaml` |
+| `gold.unresolved-relationship` | warning | a relationship with no target table in the product |
+| `gold.unresolved-bridge` | warning | a bridge endpoint outside the product |
+| `gold.insight-unanswerable` | warning | a confirmed insight the product cannot answer |
+| `compile.gold-note` | warning | a Gold product `compile --check` could not shape-check |
+| `compile.deferred-bridge` | warning | a bridge endpoint outside a single-domain compile |
+| `compile.deferred-reference` | info | a Gold reference to another domain's table |
+| `compile.stale-dependent` | warning | another domain's committed output is stale after a partial emit |
+| `projection.domain-failed` | error | a `project` target that failed for one domain |
+
+A run ends with one `kairos.run.summary` record, on every exit, a failing one included. It
+holds `kairos.outcome` (`ok` or `failed`), `kairos.exit_code`, and the counts per task, by
+severity and by code. A clean `Exit(0)` such as `--help` writes none. A multi-domain
+`compile` in text mode also prints the counts as a "Diagnostics by task" table.
 
 The commands that write keep a **default run log** in JSON lines at
 `<hub>/.kairos/logs/<utc>-<command>-<operation>.jsonl`. They are `compile --emit`,
-`emit-gold` and `package-powerbi-release`.
+`emit-gold`, `package-powerbi-release` and `project`.
 
 - The newest 20 run logs are kept.
 - The directory ignores itself in git.
@@ -47,6 +67,41 @@ The commands that write keep a **default run log** in JSON lines at
 `compile --check` and `--explain` keep no default run log, because they are write-free
 (DD-133/140). Pass `--log-file` to them if you want the same records. `--log-file`
 replaces the default run log, and `KAIROS_RUN_LOG=0` turns it off.
+
+## Spans (DD-242)
+
+A run is a tree of tasks. Each task is a span, and when it ends it writes one
+`kairos.span.completed` record:
+
+| Field | Description |
+|---|---|
+| `span.id`, `span.parent_id` | The span, and the span it ran inside (empty for the run). |
+| `span.kind` | `run`, `domain`, `product`, `gate` or `stage`. |
+| `span.name` | The command, the domain, `gold:<product>`, the gate id, or the stage name. |
+| `span.status` | `ok`, `refused` (a gate said no) or `error` (it failed or raised). |
+| `duration_ms` | How long the task took. |
+| `span.diagnostics` | Diagnostics logged in this span or below it, by severity. |
+
+The gates use their `kairos-ontology gates` ids where they have one:
+- compile runs `discovery.unresolved-judgment`, `alignment.evidence-missing`,
+  `alignment.table-unanchored`, `alignment.gap-column-undecided`, `ontology.integrity` and
+  `compile` per domain;
+- Gold runs `compile`, `gold-shape`, `package-validation` and
+  `gold.tmdl-structural-validation` per product.
+
+The stages are `emit`, `erd`, `archive` and `dbt.<phase>`.
+
+## Reading a run log: `logs show`
+
+```powershell
+kairos-ontology logs show                    # the newest run log of this hub
+kairos-ontology logs show --group-by code    # or: task (default), severity
+kairos-ontology logs show run.jsonl --format json
+```
+
+It prints how the run ended, the span tree with durations, and each diagnostic under the
+task that reported it (or grouped by code or severity). It reads any JSON-lines log,
+including one written with `--log-file PATH --log-format json`, and writes nothing.
 
 ## JSON log shape
 
@@ -103,8 +158,9 @@ exception rendering (unchanged behavior); only the structured copy is redacted.
 
 **Exit codes are unchanged.** The boundary only adds a log record; it re-raises the
 original exception (or `SystemExit`/`ClickException`/`click.Abort`/`KeyboardInterrupt`,
-which are exempted and pass through untouched) so Click's `standalone_mode` still owns
-every exit code.
+which are exempted from this record and pass through untouched) so Click's
+`standalone_mode` still owns every exit code. Every one of those exits still writes the
+run summary and flushes the export (DD-242).
 
 **Limitation — root option parsing and command resolution are not covered.**
 `--help`, `--version`, an unknown subcommand, an invalid `--log-format` value, or a
@@ -203,17 +259,29 @@ uv sync --group otel
 Then opt in via standard `OTEL_*` environment variables:
 
 ```powershell
-$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318"
+$env:OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"   # default; or "grpc" (port 4317)
 $env:OTEL_SERVICE_NAME = "kairos-ontology"
-kairos-ontology --verbose compile party --check
+kairos-ontology compile --all --check
 ```
 
-The bridge installs an OTel `LoggingHandler` on the `kairos_ontology` logger only when
-**both** the extra is importable **and** `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Absence
-of either is a no-op. Export failure is caught and **never changes the command exit
-code**. The handler is flushed before the CLI exits.
+Each command run is then **one trace**:
+- **Spans.** The span tree above is exported, with a child span per domain, product, gate and
+  stage. Each diagnostic becomes a `kairos.diagnostic` event on the span that reported it.
+- **Trace id.** The trace id is the run's operation id. Take the `kairos.operation.id` from
+  any log record, or the `operation_id` from `compile --format json`, and you have the trace
+  to open.
+- **Log records.** They are exported too, at INFO and above whatever the console level, and
+  carry the trace and span context. They pass the same redaction filter as the console and
+  the log file. Nested values such as `kairos.summary` are sent as JSON strings.
+
+Nothing is installed unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, and nothing from
+OpenTelemetry is imported without it. Without the extra it is a no-op too. Export
+failure is caught and **never changes the command exit code**. Everything buffered is
+flushed before the CLI exits, whichever way it exits.
 
 ## Design reference
 
-See [DD-151](../dev/toolkit-design-decisions.md) for the full decision, scope, and
-rejected alternatives.
+See [DD-151](../dev/toolkit-design-decisions.md) for the logging foundation, and
+[DD-242](../dev/decisions/dd-242-one-command-run-is-one-trace-of-task-spans-and-opentelemetry-export-is-opt-in.md)
+for spans, the run record on every exit, and the OpenTelemetry export.

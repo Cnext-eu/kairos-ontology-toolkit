@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-98 commands.
+100 commands.
 
 ## Index
 
@@ -81,6 +81,8 @@ not reasoning.
 | [`inverse-scan`](#inverse-scan) | Find candidate source tables for a class via deterministic column-name matching. |
 | [`list-class-properties`](#list-class-properties) | List direct and inherited class properties, including effective ranges. |
 | [`list-patterns`](#list-patterns) | Surface the reference-models pattern library for the design-domain skill (#262 §3). |
+| [`logs`](#logs) | Read the run logs that writing commands keep in <hub>/.kairos/logs/. |
+| [`logs show`](#logs-show) | Show one run log: how the run ended, its tasks and durations, and its diagnostics. |
 | [`mdm-validate`](#mdm-validate) | Validate MDM extension policy (``*-mdm-ext.ttl``) for each domain. |
 | [`migrate`](#migrate) | Move an existing ontology hub from the flat layout to the grouped layout. |
 | [`new-repo`](#new-repo) | Create a new ontology hub GitHub repository. |
@@ -1084,6 +1086,34 @@ kairos-ontology list-patterns [OPTIONS]
 | `--coverage` |  | Print the toolkit's enforcement-coverage ledger instead of the pattern bodies. |
 | `--refmodels-root` |  | Reference-models checkout (default: $KAIROS_REFMODELS_ROOT or sibling scan). |
 | `--format` | `json` | Machine-output format on stdout (default: json). |
+
+
+## logs
+
+Read the run logs that writing commands keep in <hub>/.kairos/logs/.
+
+```
+kairos-ontology logs [OPTIONS] COMMAND [ARGS]...
+```
+
+
+## logs show
+
+Show one run log: how the run ended, its tasks and durations, and its diagnostics. Reads PATH, or with no PATH (or --last) the newest log in <hub>/.kairos/logs/. Works on any JSON-lines log, including one written with --log-file and --log-format json.  Examples: kairos-ontology logs show kairos-ontology logs show --group-by code kairos-ontology logs show run.jsonl --format json
+
+```
+kairos-ontology logs show [OPTIONS] [PATH]
+```
+
+| Argument | Arity |
+|---|---|
+| `PATH` | optional |
+
+| Option | Default | Description |
+|---|---|---|
+| `--last` |  | Show the newest run log of this hub (the default when no PATH is given). |
+| `--group-by` | `task` | task: the span tree with each diagnostic under the task that reported it. code / severity: diagnostics grouped by that field, with counts. |
+| `--format` | `text` |  |
 
 
 ## mdm-validate

@@ -1086,6 +1086,23 @@ def run_projections(
             except Exception as e:
                 print(f"  [{onto_name}] ✗ Failed: {e}")
                 _tb.print_exc()
+                # Not fatal to the run, which is why it must at least reach the run log.
+                from types import SimpleNamespace
+
+                from .observability import events
+
+                events.log_diagnostic(
+                    SimpleNamespace(
+                        code="projection.domain-failed",
+                        severity="error",
+                        message=f"{target_name}: {type(e).__name__}: {e}",
+                        rule_id="",
+                        location="",
+                    ),
+                    command="project",
+                    domain=onto_name,
+                    gate=target_name,
+                )
 
         if check_only:
             continue

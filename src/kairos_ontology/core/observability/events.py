@@ -15,6 +15,9 @@ from contextlib import contextmanager
 from time import perf_counter
 from typing import Final, Iterator
 
+from . import spans
+from .context import CONSOLE_ATTR
+
 logger = logging.getLogger("kairos_ontology.dbt")
 
 #: The stable event-name catalogue for offline dbt validation (DD-151).
@@ -46,10 +49,6 @@ COMPILE_DOMAIN_COMPLETED: Final[str] = "kairos.compile.domain.completed"
 #: were gone; these put every one in the run log, attributed to its task and gate.
 DIAGNOSTIC_REPORTED: Final[str] = "kairos.diagnostic.reported"
 RUN_SUMMARY: Final[str] = "kairos.run.summary"
-
-#: A record carrying this attribute set to False is for the run log only: the command
-#: already printed it, and the console handler must not print it twice.
-CONSOLE_ATTR: Final[str] = "kairos.console"
 
 _diagnostic_logger = logging.getLogger("kairos_ontology.diagnostics")
 _SEVERITY_LEVELS: Final[dict[str, int]] = {
@@ -87,6 +86,9 @@ def log_diagnostic(
     task = f"gold:{product}" if product else (domain or command)
     code = str(getattr(diagnostic, "code", ""))
     _run_diagnostics.append((task, gate, severity, code))
+    rule_id = str(getattr(diagnostic, "rule_id", "") or "")
+    span = spans.current_span()
+    spans.count_diagnostic(severity)
     fields: dict[str, object] = {
         "event": DIAGNOSTIC_REPORTED,
         CONSOLE_ATTR: False,
@@ -95,9 +97,12 @@ def log_diagnostic(
         "kairos.gate": gate,
         "diagnostic.code": code,
         "diagnostic.severity": severity,
-        "diagnostic.rule_id": str(getattr(diagnostic, "rule_id", "") or ""),
+        "diagnostic.rule_id": rule_id,
         "diagnostic.location": rendered,
     }
+    if span is not None:
+        # Groups the record under its task: `logs show` and a trace backend both nest it.
+        fields["kairos.span.id"] = span.span_id
     if domain:
         fields["kairos.domain"] = domain
     if product:
@@ -111,6 +116,20 @@ def log_diagnostic(
         else f"[{severity}] {code}: {getattr(diagnostic, 'message', '')}"
     )
     fields["diagnostic.message"] = str(getattr(diagnostic, "message", ""))
+    if span is not None and span.otel_span is not None:
+        try:
+            span.otel_span.add_event(
+                "kairos.diagnostic",
+                attributes={
+                    "diagnostic.code": code,
+                    "diagnostic.severity": severity,
+                    "diagnostic.rule_id": rule_id,
+                    "diagnostic.location": rendered,
+                    "diagnostic.message": fields["diagnostic.message"],
+                },
+            )
+        except Exception:  # pragma: no cover - telemetry must not break a run
+            pass
     _diagnostic_logger.log(_SEVERITY_LEVELS.get(severity, logging.WARNING), message, extra=fields)
 
 
@@ -124,18 +143,24 @@ def run_summary() -> dict[str, dict[str, object]]:
     return dict(sorted(summary.items()))
 
 
-def log_run_summary(command: str) -> None:
-    """Write the run's diagnostic summary to the run log; nothing when it had none."""
+def log_run_summary(command: str, *, exit_code: int = 0) -> None:
+    """Write the run's outcome and diagnostic summary to the run log.
+
+    Written for every run, a clean one included: a refusal that carries no diagnostic
+    (a Gold contract error, say) still has to say how the run ended (DD-242).
+    """
     summary = run_summary()
-    if not summary:
-        return
     total = sum(sum(entry["severity"].values()) for entry in summary.values())
+    outcome = "ok" if exit_code == 0 else "failed"
     _diagnostic_logger.info(
-        f"{command}: {total} diagnostic(s) across {len(summary)} task(s)",
+        f"{command} {outcome} (exit {exit_code}): "
+        f"{total} diagnostic(s) across {len(summary)} task(s)",
         extra={
             "event": RUN_SUMMARY,
             CONSOLE_ATTR: False,
             "kairos.command": command,
+            "kairos.outcome": outcome,
+            "kairos.exit_code": exit_code,
             "kairos.summary": summary,
         },
     )
@@ -187,6 +212,13 @@ def timed_phase(
     started = DBT_VALIDATION_STARTED if phase == "validation" else DBT_PHASE_STARTED
     emit(started, logging.INFO, f"dbt {phase} started", **fields)
     start = perf_counter()
+    with spans.task_span("stage", f"dbt.{phase}"):
+        yield from _timed_phase_body(phase, start, fields)
+
+
+def _timed_phase_body(
+    phase: str, start: float, fields: dict[str, object]
+) -> Iterator[logging.Logger]:
     try:
         yield logger
     except Exception as exc:
@@ -231,6 +263,7 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 __all__ = [
+    "CONSOLE_ATTR",
     "DBT_ENVIRONMENT_BLOCKED",
     "DBT_PHASE_COMPLETED",
     "DBT_PHASE_FAILED",
