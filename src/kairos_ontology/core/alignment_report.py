@@ -505,17 +505,25 @@ def domain_imports(hub_root: Path) -> dict[str, set[str]]:
         ontologies = Path(hub_root) / "model" / "ontologies"
     if not ontologies.is_dir():
         return imports
-    pattern = re.compile(r"owl:imports\s+<([^>]+)>")
+    from rdflib import OWL, Graph
+
+    pattern = re.compile(r"<([^>]+)>")
     for path in sorted(ontologies.glob("*.ttl")):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        # Skip commented-out example imports, which the scaffold ships by default.
-        found = {
-            match.group(1)
-            for line in text.splitlines()
-            if not line.lstrip().startswith("#")
-            for match in [pattern.search(line)]
-            if match
-        }
+        # The authored owl:imports edges, read as RDF so `owl:imports <a>, <b>` and a
+        # prefixed name both count; a file that does not parse falls back to the
+        # text, where only IRIs in angle brackets can be recognised (DD-243). Direct
+        # imports only: that is what constrains alignment.
+        try:
+            graph = Graph()
+            graph.parse(path, format="turtle")
+            found = {str(target) for target in graph.objects(None, OWL.imports)}
+        except Exception:  # noqa: BLE001 - a report survives an unparseable domain file
+            found = set()
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.lstrip()
+                if stripped.startswith("#") or "owl:imports" not in stripped:
+                    continue
+                found.update(pattern.findall(stripped.split("owl:imports", 1)[1]))
         if found:
             imports[path.stem] = found
     return imports

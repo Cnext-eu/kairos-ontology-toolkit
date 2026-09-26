@@ -700,14 +700,8 @@ class TestResolveAlignmentClassSheetFallback:
 
 
 def test_no_raw_ttl_reads_in_design_landscape_module():
-    from tests.test_ttl_access_boundary import _find_violations
+    """DD-243: the module is absent from the package-wide parse inventory scan."""
+    from tests.test_dd103_closure_boundary import PACKAGE, scan_parse_sites
 
-    module_path = (
-        Path(__file__).resolve().parent.parent
-        / "src"
-        / "kairos_ontology"
-        / "core"
-        / "design_landscape.py"
-    )
-    assert module_path.is_file()
-    assert _find_violations(module_path) == []
+    assert (PACKAGE / "core" / "design_landscape.py").is_file()
+    assert "core/design_landscape.py" not in scan_parse_sites()

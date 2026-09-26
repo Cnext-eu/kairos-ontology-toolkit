@@ -1433,10 +1433,18 @@ def run_projections(
         from .projections.report_projector import generate_domain_overview_report
 
         ontology_dir = hub_root / "model" / "ontologies" if hub_root else None
+        # The closure results loaded above, so the reports read what compile reads
+        # and pay for no second load (DD-243).
+        report_load_results = {
+            Path(item["file"]): item["load_result"]
+            for item in ontology_graphs
+            if item.get("load_result") is not None
+        }
         if ontology_dir and ontology_dir.is_dir():
             overview_artifacts = generate_domain_overview_report(
                 ontology_dir=ontology_dir,
                 template_dir=template_base,
+                load_results=report_load_results,
             )
             for fname, content in overview_artifacts.items():
                 out_file = report_output / fname
@@ -1454,6 +1462,7 @@ def run_projections(
                 mappings_dir=mappings_dir,
                 ontology_dir=ontology_dir,
                 template_dir=template_base,
+                load_results=report_load_results,
             )
             for fname, content in landscape_artifacts.items():
                 out_file = report_output / fname
@@ -1471,6 +1480,7 @@ def run_projections(
                 mappings_dir=mappings_dir,
                 ontology_dir=ontology_dir,
                 template_dir=template_base,
+                load_results=report_load_results,
             )
             for fname, content in progress_artifacts.items():
                 out_file = report_output / fname

@@ -48,6 +48,9 @@ erDiagram
 ## {{ domain.label }}
 
 > {{ domain.comment }}
+{% if not domain.import_complete %}
+> ⚠️ The import closure of this domain did not fully resolve; properties inherited from the missing modules are not shown.
+{% endif %}
 
 **Version:** {{ domain.version }} · **Classes:** {{ domain.classes | length }} · **Properties:** {{ domain.data_properties_count }} data + {{ domain.object_properties_count }} object
 
@@ -76,7 +79,7 @@ _Extends: `{{ cls.parent }}`_
 | Property | Type | Description |
 |----------|------|-------------|
 {% for prop in cls.data_properties -%}
-| `{{ prop.name }}` | {{ prop.range_short }} | {{ prop.comment }} |
+| `{{ prop.name }}` | {{ prop.range_short }} | {{ prop.comment }}{% if prop.inherited %} _(inherited from {{ prop.inherited_from }})_{% endif %} |
 {% endfor %}
 {% endfor %}
 ---
