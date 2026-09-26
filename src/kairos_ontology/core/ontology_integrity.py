@@ -688,11 +688,19 @@ def check_blueprint_boundaries(
 def check_reference_model_shadowing(
     ontologies: dict[str, DomainOntology],
     module_terms: dict[str, dict[str, set[str]]],
+    *,
+    closure_imports: Optional[dict[str, set[str]]] = None,
 ) -> list[IntegrityDiagnostic]:
     """Flag a local term duplicating, by name, a term in a module the file imports.
 
     *module_terms* maps a module IRI (no trailing ``#``/``/``) to
     ``{"classes": {...}, "properties": {...}}`` of local names it declares.
+
+    *closure_imports* maps a domain to every module in its resolved ``owl:imports``
+    closure (DD-243). With it, a local class that repeats the name of a class two
+    imports away is flagged too: the merged graph carries both, and they are just as
+    invisible to each other. Without it, only the file's direct imports are compared,
+    which is all the audit can see without a catalog.
 
     A hub that imports ``bsp/party`` and then declares its own ``contactEmail`` has not
     reused the reference model — it has shadowed it, and the two terms are invisible to
@@ -704,7 +712,11 @@ def check_reference_model_shadowing(
     for domain, onto in sorted(ontologies.items()):
         imported_classes: dict[str, str] = {}
         imported_properties: dict[str, str] = {}
-        for module in onto.imports:
+        direct = {module.rstrip("#/") for module in onto.imports}
+        modules = list(onto.imports)
+        if closure_imports and closure_imports.get(domain):
+            modules += sorted(closure_imports[domain] - direct)
+        for module in modules:
             terms = module_terms.get(module)
             if not terms:
                 continue
@@ -716,20 +728,23 @@ def check_reference_model_shadowing(
         for name, uri in sorted(onto.classes.items()):
             module = imported_classes.get(name)
             if module and name not in onto.anchored_classes:
+                transitive = module.rstrip("#/") not in direct
+                how = "imported transitively" if transitive else "imported"
+                add_import = f"add `owl:imports <{module}>` and " if transitive else ""
                 diagnostics.append(
                     IntegrityDiagnostic(
                         level="warning",
                         code="integrity.local-class-shadows-reference-model",
                         message=(
-                            f"Local class '{name}' has the same name as a class in imported "
-                            f"module <{module}>, with no rdfs:subClassOf or owl:equivalentClass "
-                            "link to it."
+                            f"Local class '{name}' has the same name as a class in {how} "
+                            f"module <{module}>, with no rdfs:subClassOf link to it "
+                            "(owl:equivalentClass does not anchor, #730)."
                         ),
                         domain=domain,
                         term_uri=uri,
                         remediation=(
-                            f"Reuse <{module}#{name}> directly, or declare the local class "
-                            "rdfs:subClassOf it when the hub genuinely constrains it."
+                            f"{add_import}Reuse <{module}#{name}> directly, or declare the "
+                            "local class rdfs:subClassOf it when the hub genuinely constrains it."
                         ),
                     )
                 )
@@ -737,19 +752,22 @@ def check_reference_model_shadowing(
         for name, uri in sorted(onto.properties.items()):
             module = imported_properties.get(name)
             if module and name not in onto.anchored_properties:
+                transitive = module.rstrip("#/") not in direct
+                how = "imported transitively" if transitive else "imported"
+                add_import = f"add `owl:imports <{module}>` and " if transitive else ""
                 diagnostics.append(
                     IntegrityDiagnostic(
                         level="warning",
                         code="integrity.local-property-shadows-reference-model",
                         message=(
                             f"Local property '{name}' has the same name as a property in "
-                            f"imported module <{module}>, with no rdfs:subPropertyOf link."
+                            f"{how} module <{module}>, with no rdfs:subPropertyOf link."
                         ),
                         domain=domain,
                         term_uri=uri,
                         remediation=(
-                            f"Reuse <{module}#{name}>, or declare the local property "
-                            "rdfs:subPropertyOf it."
+                            f"{add_import}Reuse <{module}#{name}>, or declare the local "
+                            "property rdfs:subPropertyOf it."
                         ),
                     )
                 )
@@ -1009,10 +1027,40 @@ def check_deprecated_reference_classes(
 # ---------------------------------------------------------------------------
 
 
-def _module_terms(catalog_path: Optional[Path]) -> dict[str, dict[str, set[str]]]:
-    """Read materialized reference inventories into ``{module_iri: {classes, properties}}``.
+def _closure_imports(
+    ontologies: dict[str, DomainOntology], catalog_path: Optional[Path]
+) -> Optional[dict[str, set[str]]]:
+    """Every module in each domain's resolved ``owl:imports`` closure, or ``None``.
 
-    Returns ``{}`` when inventories are absent — the shadowing check then silently
+    Loaded under the RDFS profile, degraded: ``compile`` and ``validate`` load the same
+    domain the same way just before this audit, so it is an in-process cache hit there,
+    and a domain whose closure cannot resolve falls back to its direct imports rather
+    than failing an audit that never needed the closure before DD-243.
+    """
+    if catalog_path is None or not Path(catalog_path).is_file():
+        return None
+    from .ontology_loader import SemanticProfile, load_ontology
+
+    closure: dict[str, set[str]] = {}
+    for domain, onto in ontologies.items():
+        try:
+            loaded = load_ontology(
+                onto.path, catalog_path=catalog_path, profile=SemanticProfile.RDFS, degraded=True
+            )
+        except Exception:  # noqa: BLE001 - the audit falls back to direct imports
+            continue
+        closure[domain] = {
+            (entry.import_uri or entry.ontology_iri or "").rstrip("#/")
+            for entry in loaded.manifest
+            if entry.import_depth > 0 and (entry.import_uri or entry.ontology_iri)
+        }
+    return closure
+
+
+def _module_terms(catalog_path: Optional[Path]) -> dict[str, dict[str, set[str]]]:
+    """Resolve the reference corpus live (DD-173) into ``{module_iri: {classes, properties}}``.
+
+    Returns ``{}`` when no catalog resolves — the shadowing check then silently
     reports nothing rather than guessing.
     """
     from .class_anchoring import read_reference_terms
@@ -1145,7 +1193,11 @@ def audit_ontology_integrity(
     diagnostics.extend(check_cross_domain_duplicates(ontologies))
     diagnostics.extend(check_declared_exclusions(ontologies))
     diagnostics.extend(check_blueprint_boundaries(ontologies, data_domains or {}))
-    diagnostics.extend(check_reference_model_shadowing(ontologies, module_terms))
+    diagnostics.extend(
+        check_reference_model_shadowing(
+            ontologies, module_terms, closure_imports=_closure_imports(ontologies, catalog_path)
+        )
+    )
     diagnostics.extend(check_unused_imports(ontologies))
     diagnostics.extend(check_collapsed_value_objects(ontologies))
     diagnostics.extend(check_unanchored_classes(ontologies))

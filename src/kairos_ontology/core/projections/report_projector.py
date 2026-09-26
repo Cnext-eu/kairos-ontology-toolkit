@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from jinja2 import Environment, FileSystemLoader
 from rdflib import Graph, Namespace, RDF, RDFS, OWL
@@ -1165,14 +1165,185 @@ def _range_short(range_uri: str) -> str:
     return local if local else "string"
 
 
+def _domain_closures(
+    ontology_dir: Path, load_results: Mapping[Path, Any] | None
+) -> list[tuple[Path, Any]]:
+    """Every authored domain file with its closure-aware load result (DD-243)."""
+    pairs = []
+    for ttl in sorted(ontology_dir.rglob("*.ttl")):
+        if ttl.name.startswith("_"):
+            continue
+        loaded = _closure_for(ttl, load_results)
+        if loaded is not None:
+            pairs.append((ttl, loaded))
+    return pairs
+
+
+def _ontology_label(ttl: Path, loaded: Any) -> str:
+    root = loaded.sources[0].graph if loaded.sources else loaded.graph
+    for s in root.subjects(RDF.type, OWL.Ontology):
+        return str(root.value(s, RDFS.label) or ttl.parent.name.capitalize())
+    return ttl.parent.name.capitalize()
+
+
+def _ontology_namespace(ttl: Path, loaded: Any) -> str:
+    root = loaded.sources[0].graph if loaded.sources else loaded.graph
+    for s in root.subjects(RDF.type, OWL.Ontology):
+        uri = str(s)
+        return uri + "#" if "#" not in uri else uri
+    return ""
+
+
+def _closure_for(ttl: Path, load_results: Mapping[Path, Any] | None) -> Any | None:
+    """The closure-aware load result for *ttl*: the caller's, or a degraded load.
+
+    A report must still render when one import cannot be resolved, so the fallback loads
+    degraded and the result carries ``complete=False`` for the report to disclose
+    (DD-103). ``None`` when the file itself does not parse, which the old per-file path
+    also skipped.
+    """
+    target = ttl.resolve()
+    for key, value in (load_results or {}).items():
+        if Path(key).resolve() == target:
+            return value
+    from ..ontology_loader import SemanticProfile, load_ontology
+
+    try:
+        return load_ontology(ttl, profile=SemanticProfile.KAIROS_DESIGN, degraded=True)
+    except Exception as exc:  # noqa: BLE001 - a report skips a file it cannot load, as before
+        logger.warning("Could not load %s: %s", ttl.name, exc)
+        return None
+
+
+def _overview_domain(ttl: Path, loaded: Any) -> dict:
+    """One domain's overview rows from its closure index (see the report function)."""
+    index = loaded.semantic_index
+    root = loaded.sources[0].graph if loaded.sources else loaded.graph
+
+    ont_uri = None
+    ont_label = ttl.parent.name.capitalize()
+    ont_comment = ""
+    ont_version = "0.1.0"
+    imports: list[dict] = []
+    for s in root.subjects(RDF.type, OWL.Ontology):
+        ont_uri = str(s)
+        ont_label = str(root.value(s, RDFS.label) or ont_label)
+        ont_comment = str(root.value(s, RDFS.comment) or "")
+        ont_version = str(root.value(s, OWL.versionInfo) or ont_version)
+        for imp in root.objects(s, OWL.imports):
+            imp_str = str(imp)
+            imports.append(
+                {
+                    "uri": imp_str,
+                    "local_name": _extract_local_name(imp_str),
+                    "standard": _detect_standard(imp_str),
+                }
+            )
+        break
+    domain_ns = ont_uri + "#" if ont_uri and "#" not in ont_uri else (ont_uri or "")
+
+    classes: list[dict] = []
+    for record in index.classes:
+        if domain_ns and not record.uri.startswith(domain_ns):
+            continue
+        comment_short = record.comment.split("\n")[0][:120] if record.comment else ""
+        parent = None
+        if record.ancestors:
+            nearest = min(record.ancestors, key=lambda link: (link.distance, link.uri))
+            parent = _extract_local_name(nearest.uri)
+        data_props: list[dict] = []
+        for row in index.class_properties(record.uri):
+            if row["property_type"] != "datatype":
+                continue
+            prop = index.property_by_uri(row["property_uri"])
+            pcomment = prop.comment if prop else ""
+            prange = row["ranges"][0] if row["ranges"] else "xsd:string"
+            inherited = row["origin"] == "inherited"
+            data_props.append(
+                {
+                    "name": row["name"],
+                    "label": prop.label if prop else row["name"],
+                    "comment": pcomment.split("\n")[0][:100] if pcomment else "",
+                    "range": prange,
+                    "range_short": _range_short(prange),
+                    "inherited": inherited,
+                    "inherited_from": (
+                        _extract_local_name(
+                            index.inherited_from(record.uri, row["property_uri"]) or ""
+                        )
+                        if inherited
+                        else ""
+                    ),
+                }
+            )
+        classes.append(
+            {
+                "uri": record.uri,
+                "name": record.name,
+                "label": record.label,
+                "comment": comment_short,
+                "parent": parent,
+                "data_properties": sorted(data_props, key=lambda p: p["name"]),
+            }
+        )
+
+    object_props: list[dict] = []
+    cross: list[dict] = []
+    intra: list[dict] = []
+    for prop in index.properties:
+        if prop.property_type != "object" or (domain_ns and not prop.uri.startswith(domain_ns)):
+            continue
+        for domain_link in prop.domains:
+            for range_link in prop.ranges:
+                rel = {
+                    "name": prop.name,
+                    "domain_class": _extract_local_name(domain_link.uri),
+                    "range_class": _extract_local_name(range_link.uri),
+                    "from_class": _extract_local_name(domain_link.uri),
+                    "to_class": _extract_local_name(range_link.uri),
+                    "property_name": prop.name,
+                }
+                object_props.append(rel)
+                if domain_ns and not range_link.uri.startswith(domain_ns):
+                    cross.append(rel)
+                else:
+                    intra.append(rel)
+
+    data_prop_count = sum(len(c["data_properties"]) for c in classes)
+    return {
+        "uri": ont_uri,
+        "label": ont_label,
+        "comment": ont_comment.split("\n")[0][:200] if ont_comment else "",
+        "version": ont_version,
+        "imports": imports,
+        "classes": sorted(classes, key=lambda c: c["name"]),
+        "object_properties": object_props,
+        "data_properties_count": data_prop_count,
+        "object_properties_count": len(object_props),
+        "import_complete": bool(loaded.complete),
+        "_cross_domain_rels": cross,
+        "_intra_domain_rels": intra,
+    }
+
+
 def generate_domain_overview_report(
     ontology_dir: Path,
     template_dir: Path,
+    *,
+    load_results: Mapping[Path, Any] | None = None,
 ) -> dict[str, str]:
     """Generate a domain model overview report for business analysts.
 
-    Reads all domain ontology TTL files, extracts classes, properties,
-    and relationships, then renders to Markdown with Mermaid diagrams.
+    Reads every domain ontology through its ``owl:imports`` closure (DD-103, DD-243):
+    each class lists the properties it declares and the ones it inherits from the
+    modules it imports, marked with their origin, and relationships come from every
+    declared domain (``owl:unionOf`` and ``schema:domainIncludes`` included). Before
+    DD-243 this parsed each file alone and reported a class with a reference-model
+    parent as having no properties at all.
+
+    *load_results* maps a domain file to the ``OntologyLoadResult`` the caller already
+    holds (``run_projections`` loads every domain once); a file not in it is loaded here,
+    degraded, and the report says so.
 
     Returns:
         Dictionary of ``{filename: md_content}``.
@@ -1193,145 +1364,26 @@ def generate_domain_overview_report(
     for ttl in sorted(ontology_dir.rglob("*.ttl")):
         if ttl.name.startswith("_"):
             continue
-
-        g = Graph()
-        try:
-            g.parse(ttl, format="turtle")
-        except (SyntaxError, ValueError) as exc:
-            logger.warning("Could not parse %s: %s", ttl.name, exc)
+        loaded = _closure_for(ttl, load_results)
+        if loaded is None:
             continue
-
-        # Get ontology metadata
-        ont_uri = None
-        ont_label = ttl.parent.name.capitalize()
-        ont_comment = ""
-        ont_version = "0.1.0"
-        imports: list[dict] = []
-
-        for s in g.subjects(RDF.type, OWL.Ontology):
-            ont_uri = str(s)
-            ont_label = str(g.value(s, RDFS.label) or ont_label)
-            ont_comment = str(g.value(s, RDFS.comment) or "")
-            ont_version = str(g.value(s, OWL.versionInfo) or ont_version)
-            for imp in g.objects(s, OWL.imports):
-                imp_str = str(imp)
-                standard = _detect_standard(imp_str)
-                reference_models.add(standard)
-                imports.append(
-                    {
-                        "uri": imp_str,
-                        "local_name": _extract_local_name(imp_str),
-                        "standard": standard,
-                    }
-                )
-            break
-
-        domain_ns = ont_uri + "#" if ont_uri and "#" not in ont_uri else (ont_uri or "")
-
-        # Extract classes
-        classes: list[dict] = []
-        for cls_uri in g.subjects(RDF.type, OWL.Class):
-            uri_str = str(cls_uri)
-            if domain_ns and not uri_str.startswith(domain_ns):
-                continue
-            name = _extract_local_name(uri_str)
-            label = str(g.value(cls_uri, RDFS.label) or name)
-            comment = str(g.value(cls_uri, RDFS.comment) or "")
-            # Trim multi-line comments for table display
-            comment_short = comment.split("\n")[0][:120] if comment else ""
-
-            parent = None
-            for sc in g.objects(cls_uri, RDFS.subClassOf):
-                parent = _extract_local_name(str(sc))
-                break
-
-            # Collect data properties for this class
-            cls_data_props: list[dict] = []
-            for prop_uri in g.subjects(RDFS.domain, cls_uri):
-                if (prop_uri, RDF.type, OWL.DatatypeProperty) not in g:
-                    continue
-                pname = _extract_local_name(str(prop_uri))
-                plabel = str(g.value(prop_uri, RDFS.label) or pname)
-                pcomment = str(g.value(prop_uri, RDFS.comment) or "")
-                pcomment_short = pcomment.split("\n")[0][:100] if pcomment else ""
-                prange = str(g.value(prop_uri, RDFS.range) or "xsd:string")
-                cls_data_props.append(
-                    {
-                        "name": pname,
-                        "label": plabel,
-                        "comment": pcomment_short,
-                        "range": prange,
-                        "range_short": _range_short(prange),
-                    }
-                )
-
-            classes.append(
-                {
-                    "uri": uri_str,
-                    "name": name,
-                    "label": label,
-                    "comment": comment_short,
-                    "parent": parent,
-                    "data_properties": sorted(cls_data_props, key=lambda p: p["name"]),
-                }
-            )
-
-            all_glossary.append(
-                {
-                    "label": label,
-                    "domain": ont_label,
-                    "type": "Class",
-                    "comment": comment_short,
-                }
-            )
-
-        # Extract object properties
-        domain_obj_props: list[dict] = []
-        for prop_uri in g.subjects(RDF.type, OWL.ObjectProperty):
-            uri_str = str(prop_uri)
-            if domain_ns and not uri_str.startswith(domain_ns):
-                continue
-            pname = _extract_local_name(uri_str)
-            domain_cls = g.value(prop_uri, RDFS.domain)
-            range_cls = g.value(prop_uri, RDFS.range)
-            if domain_cls and range_cls:
-                domain_name = _extract_local_name(str(domain_cls))
-                range_name = _extract_local_name(str(range_cls))
-                rel = {
-                    "name": pname,
-                    "domain_class": domain_name,
-                    "range_class": range_name,
-                    "from_class": domain_name,
-                    "to_class": range_name,
-                    "property_name": pname,
-                }
-                domain_obj_props.append(rel)
-
-                # Determine if cross-domain
-                range_str = str(range_cls)
-                if domain_ns and not range_str.startswith(domain_ns):
-                    cross_domain_rels.append(rel)
-                else:
-                    intra_domain_rels.append(rel)
-
-        total_classes += len(classes)
-        data_prop_count = sum(len(c["data_properties"]) for c in classes)
-        total_data_props += data_prop_count
-        total_obj_props += len(domain_obj_props)
-
-        domains.append(
+        domain = _overview_domain(ttl, loaded)
+        reference_models.update(imp["standard"] for imp in domain["imports"])
+        all_glossary.extend(
             {
-                "uri": ont_uri,
-                "label": ont_label,
-                "comment": ont_comment.split("\n")[0][:200] if ont_comment else "",
-                "version": ont_version,
-                "imports": imports,
-                "classes": sorted(classes, key=lambda c: c["name"]),
-                "object_properties": domain_obj_props,
-                "data_properties_count": data_prop_count,
-                "object_properties_count": len(domain_obj_props),
+                "label": cls["label"],
+                "domain": domain["label"],
+                "type": "Class",
+                "comment": cls["comment"],
             }
+            for cls in domain["classes"]
         )
+        cross_domain_rels.extend(domain.pop("_cross_domain_rels"))
+        intra_domain_rels.extend(domain.pop("_intra_domain_rels"))
+        total_classes += len(domain["classes"])
+        total_data_props += domain["data_properties_count"]
+        total_obj_props += domain["object_properties_count"]
+        domains.append(domain)
 
     if not domains:
         return {}
@@ -1364,6 +1416,8 @@ def generate_source_landscape_report(
     mappings_dir: Path,
     ontology_dir: Path,
     template_dir: Path,
+    *,
+    load_results: Mapping[Path, Any] | None = None,
 ) -> dict[str, str]:
     """Generate a source system landscape report for business analysts.
 
@@ -1459,19 +1513,8 @@ def generate_source_landscape_report(
     # Get domain list
     domains: list[dict] = []
     if ontology_dir and ontology_dir.is_dir():
-        for ttl in sorted(ontology_dir.rglob("*.ttl")):
-            if ttl.name.startswith("_"):
-                continue
-            g = Graph()
-            try:
-                g.parse(ttl, format="turtle")
-            except (SyntaxError, ValueError):
-                continue
-            for s in g.subjects(RDF.type, OWL.Ontology):
-                label = str(g.value(s, RDFS.label) or ttl.parent.name.capitalize())
-                slug = ttl.parent.name
-                domains.append({"label": label, "slug": slug})
-                break
+        for ttl, loaded in _domain_closures(ontology_dir, load_results):
+            domains.append({"label": _ontology_label(ttl, loaded), "slug": ttl.parent.name})
 
     # Determine per-source domain coverage
     sources_with_table = 0
@@ -1544,6 +1587,8 @@ def generate_mapping_progress_report(
     mappings_dir: Path,
     ontology_dir: Path,
     template_dir: Path,
+    *,
+    load_results: Mapping[Path, Any] | None = None,
 ) -> dict[str, str]:
     """Generate a mapping progress dashboard for project tracking.
 
@@ -1634,33 +1679,28 @@ def generate_mapping_progress_report(
     # Domain progress
     domains: list[dict] = []
     if ontology_dir and ontology_dir.is_dir():
-        for ttl in sorted(ontology_dir.rglob("*.ttl")):
-            if ttl.name.startswith("_"):
-                continue
-            g = Graph()
-            try:
-                g.parse(ttl, format="turtle")
-            except (SyntaxError, ValueError):
-                continue
-            for s in g.subjects(RDF.type, OWL.Ontology):
-                dlabel = str(g.value(s, RDFS.label) or ttl.parent.name.capitalize())
-                slug = ttl.parent.name
-                # Count properties
-                props = list(g.subjects(RDF.type, OWL.DatatypeProperty)) + list(
-                    g.subjects(RDF.type, OWL.ObjectProperty)
-                )
-                domains.append(
-                    {
-                        "label": dlabel,
-                        "slug": slug,
-                        "total_properties": len(props),
-                        "properties_covered": 0,
-                        "sources_mapped": 0,
-                        "sources_total": len(sources),
-                        "coverage_pct": 0,
-                    }
-                )
-                break
+        for ttl, loaded in _domain_closures(ontology_dir, load_results):
+            # The domain's own properties: what a mapping can cover. Counted from the
+            # closure index so an owl:unionOf or schema:domainIncludes declaration counts.
+            namespace = _ontology_namespace(ttl, loaded)
+            index = loaded.semantic_index
+            own = [
+                prop
+                for prop in index.properties
+                if prop.property_type in {"datatype", "object"}
+                and (not namespace or prop.uri.startswith(namespace))
+            ]
+            domains.append(
+                {
+                    "label": _ontology_label(ttl, loaded),
+                    "slug": ttl.parent.name,
+                    "total_properties": len(own),
+                    "properties_covered": 0,
+                    "sources_mapped": 0,
+                    "sources_total": len(sources),
+                    "coverage_pct": 0,
+                }
+            )
 
     # Priority list (sorted by column count desc — biggest systems first)
     priority_list: list[dict] = []

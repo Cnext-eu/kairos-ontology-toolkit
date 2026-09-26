@@ -177,6 +177,23 @@ class SemanticIndex:
             or next((item for item in self.individuals if item.uri == uri), None)
         )
 
+    def inherited_from(self, class_uri: str, property_uri: str) -> str | None:
+        """The nearest ancestor of *class_uri* that declares *property_uri* directly.
+
+        ``None`` when the class declares it itself or no ancestor does. Readers that
+        show an inherited property say where it comes from (DD-243).
+        """
+        record = self.class_by_uri(class_uri)
+        if record is None:
+            return None
+        for ancestor in sorted(record.ancestors, key=lambda link: (link.distance, link.uri)):
+            owner = self.class_by_uri(ancestor.uri)
+            if owner is not None and any(
+                link.uri == property_uri for link in owner.direct_properties
+            ):
+                return owner.uri
+        return None
+
     def class_properties(self, class_uri: str) -> list[dict[str, Any]]:
         """Return direct and inherited properties with effective ranges."""
         cls = self.class_by_uri(class_uri)

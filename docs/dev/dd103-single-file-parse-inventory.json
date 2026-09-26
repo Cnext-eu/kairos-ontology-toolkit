@@ -36,6 +36,11 @@
       "reason": "bronze-vocabulary"
     },
     {
+      "module": "core/alignment_report.py",
+      "function": "domain_imports",
+      "reason": "imports"
+    },
+    {
       "module": "core/analyse_sources.py",
       "function": "_find_ontology_package_dirs",
       "reason": "iri"
@@ -232,21 +237,13 @@
     },
     {
       "module": "core/projections/report_projector.py",
-      "function": "generate_domain_overview_report",
-      "reason": "single-file-semantics",
-      "tracked_by": "DD-243"
-    },
-    {
-      "module": "core/projections/report_projector.py",
       "function": "generate_mapping_progress_report",
-      "reason": "single-file-semantics",
-      "tracked_by": "DD-243"
+      "reason": "bronze-vocabulary"
     },
     {
       "module": "core/projections/report_projector.py",
       "function": "generate_source_landscape_report",
-      "reason": "single-file-semantics",
-      "tracked_by": "DD-243"
+      "reason": "bronze-vocabulary"
     },
     {
       "module": "core/projections/shared.py",
@@ -321,8 +318,8 @@
     {
       "module": "core/validator.py",
       "function": "validate_gdpr",
-      "reason": "single-file-semantics",
-      "tracked_by": "DD-243"
+      "reason": "declaration",
+      "note": "content-string path for direct callers; run_gdpr_validation passes the closure (DD-243)"
     },
     {
       "module": "core/validator.py",

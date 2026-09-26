@@ -427,6 +427,7 @@ def validate_gdpr(
     extension_content: Optional[str] = None,
     *,
     source_evidence: Optional[dict[str, list[tuple[str, str, str]]]] = None,
+    loaded: Any = None,
 ) -> dict:
     """Scan an ontology for PII-like properties that lack GDPR satellite protection.
 
@@ -453,13 +454,25 @@ def validate_gdpr(
         source_evidence: Optional ``{class_local_name: [(relation, column, keyword)]}``
             binding-sourced evidence for this domain (see `_binding_source_evidence`).
 
+        loaded: The domain's ``OntologyLoadResult`` when the caller has one (DD-243).
+            Then the scan covers every datatype property a class of this ontology
+            carries, including those inherited from the modules it imports -- a
+            ``bsp:emailAddress`` on a reference parent is PII on the hub's subclass too.
+            Only classes in this ontology's own namespace are judged, so a reference
+            model's own classes are never reported against the hub. Without it, the scan
+            reads *ontology_content* alone, as before.
+
     Returns:
         Dict with ``passed`` (bool — True if no unprotected PII found),
-        ``warnings`` (list of dicts with class, property, keyword), and
+        ``warnings`` (list of dicts with class, property, keyword, and for an
+        inherited property ``origin`` / ``inherited_from``), and
         ``protected_classes`` (list of class URIs that have gdprSatelliteOf).
     """
     graph = Graph()
-    graph.parse(data=ontology_content, format="turtle")
+    if loaded is not None:
+        graph += loaded.graph
+    else:
+        graph.parse(data=ontology_content, format="turtle")
 
     if extension_content:
         graph.parse(data=extension_content, format="turtle")
@@ -477,7 +490,7 @@ def validate_gdpr(
 
     warnings: list[dict] = []
 
-    for prop in graph.subjects(RDF.type, OWL.DatatypeProperty):
+    for prop, cls_uri, origin, inherited_from in _gdpr_candidates(graph, loaded):
         prop_uri = str(prop)
         local = prop_uri.rsplit("#", 1)[-1] if "#" in prop_uri else prop_uri.rsplit("/", 1)[-1]
         snake_local = _camel_to_snake(local)
@@ -504,26 +517,25 @@ def validate_gdpr(
         ):
             continue
 
-        # Find domain class(es) for this property
-        for domain_cls in graph.objects(prop, RDFS.domain):
-            cls_uri = str(domain_cls)
-            # Skip if this class IS a GDPR satellite (it's already protected)
-            if cls_uri in protected_classes:
-                continue
-            # Skip if this class HAS a GDPR satellite (PII should be there)
-            if cls_uri in parents_with_satellite:
-                continue
-            # Unprotected PII
-            cls_local = cls_uri.rsplit("#", 1)[-1] if "#" in cls_uri else cls_uri.rsplit("/", 1)[-1]
-            warnings.append(
-                {
-                    "class": cls_local,
-                    "class_uri": cls_uri,
-                    "property": local,
-                    "property_uri": prop_uri,
-                    "keyword": matched_keyword,
-                }
-            )
+        # Skip if this class IS a GDPR satellite (it's already protected)
+        if cls_uri in protected_classes:
+            continue
+        # Skip if this class HAS a GDPR satellite (PII should be there)
+        if cls_uri in parents_with_satellite:
+            continue
+        # Unprotected PII
+        cls_local = cls_uri.rsplit("#", 1)[-1] if "#" in cls_uri else cls_uri.rsplit("/", 1)[-1]
+        warning = {
+            "class": cls_local,
+            "class_uri": cls_uri,
+            "property": local,
+            "property_uri": prop_uri,
+            "keyword": matched_keyword,
+        }
+        if origin == "inherited":
+            warning["origin"] = "inherited"
+            warning["inherited_from"] = inherited_from
+        warnings.append(warning)
 
     if source_evidence:
         flagged_classes = {w["class"] for w in warnings}
@@ -561,6 +573,44 @@ def validate_gdpr(
     }
 
 
+def _gdpr_candidates(graph: Graph, loaded: Any) -> list[tuple[URIRef, str, str, str]]:
+    """``(property, class_uri, origin, inherited_from)`` pairs the PII scan judges.
+
+    With a load result: every datatype property each own-namespace class carries per the
+    closure index, direct or inherited. Without one: every datatype property in the graph
+    against its literal ``rdfs:domain``, the pre-DD-243 reading.
+    """
+    index = getattr(loaded, "semantic_index", None)
+    if loaded is None or index is None:
+        return [
+            (prop, str(domain_cls), "direct", "")
+            for prop in graph.subjects(RDF.type, OWL.DatatypeProperty)
+            for domain_cls in graph.objects(prop, RDFS.domain)
+        ]
+    root = loaded.sources[0].graph if loaded.sources else loaded.graph
+    root_iri = ""
+    for ont in root.subjects(RDF.type, OWL.Ontology):
+        root_iri = str(ont).rstrip("#/")
+        break
+    candidates: list[tuple[URIRef, str, str, str]] = []
+    for record in index.classes:
+        if root_iri and not (
+            record.uri.startswith(root_iri + "#") or record.uri.startswith(root_iri + "/")
+        ):
+            continue
+        for row in index.class_properties(record.uri):
+            if row["property_type"] != "datatype":
+                continue
+            inherited_from = ""
+            if row["origin"] == "inherited":
+                owner = index.inherited_from(record.uri, row["property_uri"]) or ""
+                inherited_from = owner.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+            candidates.append(
+                (URIRef(row["property_uri"]), record.uri, row["origin"], inherited_from)
+            )
+    return candidates
+
+
 def run_gdpr_validation(
     ontologies_path: Path,
     catalog_path: Optional[Path] = None,
@@ -574,8 +624,9 @@ def run_gdpr_validation(
 
     Args:
         ontologies_path: Directory to scan for domain ontology files.
-        catalog_path: Unused by this scan (accepted for call-site symmetry with the
-            other ``run_*_validation`` entry points).
+        catalog_path: The hub catalog. With it, each domain is loaded through its
+            ``owl:imports`` closure so inherited PII properties are scanned too
+            (DD-243); without it, each file is scanned alone.
         hub_root: Root of the ontology hub, used to resolve ``integration/bindings`` and
             ``integration/sources`` for binding-sourced evidence. Defaults to
             ``ontologies_path.parent.parent`` (the ``<hub>/model/ontologies`` convention)
@@ -612,7 +663,10 @@ def run_gdpr_validation(
         source_evidence = _binding_source_evidence(
             resolved_hub_root, domain_name, corpus=binding_corpus
         )
-        result = validate_gdpr(ontology_content, ext_content, source_evidence=source_evidence)
+        loaded = _gdpr_closure(ontology_file, catalog_path)
+        result = validate_gdpr(
+            ontology_content, ext_content, source_evidence=source_evidence, loaded=loaded
+        )
         total_domains += 1
 
         if result["warnings"]:
@@ -626,8 +680,13 @@ def run_gdpr_validation(
                         "without gdprSatelliteOf (canonical property name does not)"
                     )
                 else:
+                    origin = (
+                        f" (inherited from {w['inherited_from']})"
+                        if w.get("origin") == "inherited"
+                        else ""
+                    )
                     print(
-                        f"     {w['class']}.{w['property']} \u2014 "
+                        f"     {w['class']}.{w['property']}{origin} \u2014 "
                         f"PII keyword '{w['keyword']}' without gdprSatelliteOf"
                     )
 
@@ -639,6 +698,29 @@ def run_gdpr_validation(
         print("  \u2705 No unprotected PII detected")
 
     return total_warnings
+
+
+def _gdpr_closure(ontology_file: Path, catalog_path: Optional[Path]) -> Any:
+    """The domain's closure for the PII scan, or ``None`` to scan the file alone.
+
+    Degraded on purpose: a missing import must not turn a PII scan into a load failure,
+    and the file-only reading is what the scan did before DD-243.
+    """
+    if catalog_path is None or not Path(catalog_path).is_file():
+        # Callers pass the conventional catalog location whether or not it exists.
+        return None
+    from .ontology_loader import SemanticProfile, load_ontology
+
+    try:
+        return load_ontology(
+            ontology_file,
+            catalog_path=catalog_path,
+            profile=SemanticProfile.KAIROS_DESIGN,
+            degraded=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - a scan reports PII, never a loader problem
+        logger.debug("GDPR scan reads %s alone: closure load failed: %s", ontology_file, exc)
+        return None
 
 
 _PASCAL_CASE_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")

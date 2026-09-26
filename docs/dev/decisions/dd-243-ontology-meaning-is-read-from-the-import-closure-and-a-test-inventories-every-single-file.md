@@ -83,3 +83,9 @@ None of this was caught by a test, so the next reader, prompt or skill would rep
   Files stay readable; the closure-aware path is made the obvious one (the skills follow-up)
   and, later, a tool (DD-245).
 - Amends DD-103 by adding the enforcement it lacked; does not change its contract.
+- Supersedes the two earlier guards for the same rule, retired with the readers
+  follow-up: `tests/test_ttl_access_boundary.py` (2026-08; top-level `core/*.py` only, a
+  per-module allowlist, no reasons) and the module allow-list in
+  `tests/test_semantic_loading_boundary.py` (a `.parse(` string grep over `core/**`). Every
+  module they listed is a row in the inventory, which is per function and gives a reason;
+  three guards for one rule would drift.

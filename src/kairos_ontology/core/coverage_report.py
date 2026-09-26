@@ -139,17 +139,17 @@ def parse_domain_ontology(
         for sa in g.objects(cls_uri, RDFS.seeAlso):
             see_also.append(str(sa))
 
+        # Every property the class carries -- declared on it, on an owl:unionOf or
+        # schema:domainIncludes that names it (DD-131), or inherited from an ancestor in
+        # the closure (DD-243). A literal rdfs:domain walk saw only the first kind.
         properties: list[dict[str, Any]] = []
-        for prop_uri in g.subjects(RDFS.domain, cls_uri):
-            if not isinstance(prop_uri, URIRef):
-                continue
-            prop_name = prop_uri.split("#")[-1].split("/")[-1]
+        rows = semantic_index.class_properties(str(cls_uri)) if semantic_index else []
+        for row in rows:
+            prop_uri = URIRef(row["property_uri"])
+            prop_name = row["name"]
             prop_label = str(g.value(prop_uri, RDFS.label) or prop_name)
             prop_see_also = [str(sa) for sa in g.objects(prop_uri, RDFS.seeAlso)]
 
-            # Collect directly-asserted rdfs:subPropertyOf links via the canonical
-            # SemanticIndex (DD-103) rather than re-walking the raw graph — this
-            # is the same closure-aware mechanism used elsewhere in the toolkit.
             # Only distance == 1 (asserted) superproperties are taken; deeper,
             # transitively-inferred hops are not treated as an explicit alignment
             # declaration.
@@ -159,12 +159,19 @@ def parse_domain_ontology(
                 if prop_record
                 else []
             )
+            inherited_from = (
+                semantic_index.inherited_from(str(cls_uri), str(prop_uri))
+                if row["origin"] == "inherited"
+                else None
+            )
             properties.append(
                 {
                     "name": prop_name,
                     "label": prop_label,
                     "see_also": prop_see_also,
                     "sub_property_of": prop_sub_property_of,
+                    "origin": row["origin"],
+                    "inherited_from": inherited_from,
                 }
             )
 
@@ -182,6 +189,15 @@ def parse_domain_ontology(
         "domain_name": domain_name,
         "file": ttl_path.name,
         "imports": imports,
+        # Every module in the resolved closure, direct or transitive, so the "imported"
+        # tier below can ask whether the matched reference class is actually reachable.
+        "closure_modules": sorted(
+            {
+                (entry.import_uri or entry.ontology_iri or "").rstrip("#/")
+                for entry in loaded.manifest
+                if entry.import_depth > 0 and (entry.import_uri or entry.ontology_iri)
+            }
+        ),
         "classes": classes,
         "semantic_profile": loaded.profile.value,
         "closure_hash": loaded.closure_hash,
@@ -247,6 +263,12 @@ def align_classes_deterministic(
     by_name = ref_index["by_name"]
     by_uri = ref_index["by_uri"]
     imports = set(ont_data.get("imports", []))
+    # "imported" used to mean "the domain imports anything at all" (DD-144 §6 asked for
+    # this to be confirmed). It now means the matched reference class's own module is in
+    # the domain's resolved import closure; a reference class without a URI falls back to
+    # the old test.
+    closure_modules = {module.rstrip("#/") for module in ont_data.get("closure_modules", [])}
+    closure_modules |= {module.rstrip("#/") for module in imports}
 
     results: list[dict[str, Any]] = []
 
@@ -275,7 +297,14 @@ def align_classes_deterministic(
             cls_lower = cls["name"].lower()
             if cls_lower in by_name:
                 ref_cls = by_name[cls_lower]
-                if imports:
+                ref_uri = str(ref_cls.get("uri") or "")
+                ref_module = (
+                    ref_uri.split("#")[0].rstrip("/")
+                    if "#" in ref_uri
+                    else ref_uri.rsplit("/", 1)[0]
+                )
+                reachable = ref_module in closure_modules if ref_uri else bool(imports)
+                if reachable:
                     alignment = "imported"
                     confidence = 0.8
                 else:
