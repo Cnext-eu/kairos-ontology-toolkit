@@ -248,10 +248,9 @@ class TestProductCollisions:
 class TestSoleDeclaration:
     """One participating domain declares the calendar; the product inherits it (#744).
 
-    Exercised directly rather than through a hub: a `CalendarProfile` is only valid with
-    `rolePlayingDate` bindings onto an emitted fact column, so a second domain declaring
-    one blocks its *own* compile long before product assembly runs. The rule under test
-    is the assembly rule, and this is where it lives.
+    Exercised directly rather than through a hub: the rule under test is the assembly
+    rule, and this is where it lives. (A role on another domain's fact is deferred on the
+    single-domain compile since #1003; `test_gold_cross_domain_references` covers that.)
     """
 
     @staticmethod

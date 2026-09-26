@@ -65,11 +65,12 @@ def _sql_comment(value: str) -> str:
     return " ".join(value.replace("--", "—").split())
 
 
-def _column_fragment(column) -> str:
+def _column_fragment(column, separator: str = "") -> str:
+    # The separator precedes the comment; after it, SQL would comment it out (#1005).
     nullability = "NULL" if column.nullable else "NOT NULL"
     default = f" DEFAULT {column.default_expression}" if column.default_expression else ""
     comment = f" -- {_sql_comment(column.comment)}" if column.comment else ""
-    return f"    {column.name} {column.physical_type}{default} {nullability}{comment}"
+    return f"    {column.name} {column.physical_type}{default} {nullability}{separator}{comment}"
 
 
 def _constraint_comment(constraint: SilverConstraintPhysicalPlan) -> str:
@@ -148,7 +149,11 @@ def _render_ddl(plan: SilverPhysicalPlan, models: tuple[SilverModelSpec, ...]) -
                 else (f"CREATE TABLE IF NOT EXISTS {physical.schema_name}.{physical.model_name} (")
             )
             lines.append(create)
-            lines.append(",\n".join(_column_fragment(column) for column in physical.columns))
+            last = len(physical.columns) - 1
+            lines.extend(
+                _column_fragment(column, "" if index == last else ",")
+                for index, column in enumerate(physical.columns)
+            )
             lines.append(")" + (" USING DELTA" if plan.adapter == "databricks" else "") + ";")
         if physical.constraints:
             lines.extend(_constraint_comment(item) for item in physical.constraints)

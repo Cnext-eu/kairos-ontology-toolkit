@@ -15,7 +15,7 @@ Kairos judges every emitted semantic model against Microsoft's Best Practice Ana
 
 Targets: **fabric** is Direct Lake over OneLake; **databricks** is DirectQuery over `Databricks.Catalogs`, published to a Power BI workspace.
 
-An exception is authored in the Gold extension on the `owl:Ontology` resource, and is emitted as the `BestPracticeAnalyzer_IgnoreRules` annotation that Tabular Editor honours; the dataplatform's post-deploy notebook applies it to Semantic Link Labs findings, which ignore it:
+An exception is authored in the Gold extension on an `owl:Ontology` resource (the domain's, or the extension file's own; both are read), and is emitted as the `BestPracticeAnalyzer_IgnoreRules` annotation that Tabular Editor honours; the dataplatform's post-deploy notebook applies it to Semantic Link Labs findings, which ignore it:
 
 ```turtle
 <ontology> kairos-ext:bpaIgnoreRule "DAX_COLUMNS_FULLY_QUALIFIED on measure sales.margin: reason the rule does not hold here" .
