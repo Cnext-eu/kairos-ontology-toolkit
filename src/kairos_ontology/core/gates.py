@@ -412,6 +412,11 @@ UNGATED_FLAGS: dict[str, str] = {
     ),
     "--force-managed": "Hidden maintenance flag for toolkit-managed file rewrites.",
     "--no-cache": "Performance. Forces a clean reparse; the answer is unchanged.",
+    "--no-closure-retry": (
+        "Cost. Skips the one extra alignment call per table that re-offers closure "
+        "candidates (DD-248 §4); the candidates are still recorded on every column and "
+        "still reach the report and the gap sheet, so nothing is hidden from a reviewer."
+    ),
     "--no-compile": (
         "`next` is advisory (DD-137) and reports downstream readiness as indeterminate "
         "when this is passed, so the weakened result says so itself."

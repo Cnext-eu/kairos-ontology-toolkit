@@ -600,6 +600,9 @@ class ColumnAlignment:
     # when set, so default (home-only) output stays byte-identical.
     ref_module: str | None = None
     ref_module_uri: str | None = None
+    # DD-248 §4: the mapping came from the closure retry, not the first pass. Emitted
+    # only when true.
+    closure_retry: bool | None = None
     belongs_to_domain: str | None = None
     belongs_to_domains: list[str] | None = None
 
@@ -3166,6 +3169,101 @@ def closure_candidates_for_result(
     return out
 
 
+def closure_retry_plan(
+    candidates_by_column: dict[str, list[dict[str, Any]]],
+    ref_classes: list[dict[str, Any]],
+    *,
+    anchor_class: str,
+    max_classes: int = MAX_REF_CLASSES_PER_PROMPT,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The focused pool and the columns for one closure retry (DD-248 §4).
+
+    Returns ``(pool, columns)``: the anchor class first, then the classes that own the
+    candidate properties, ranked by how many columns they serve, then best score, then
+    key, cut at *max_classes*. Inside each class the candidate properties are moved to
+    the front of ``properties`` so the prompt's cut cannot drop them again -- that is the
+    whole point of the retry. The dicts are shallow copies of *ref_classes* entries, so
+    ``ref_class_id`` and module tags survive for the cross-module resolver.
+
+    Empty when the anchor is not a class of *ref_classes*: with no class to pin, a retry
+    would re-open STEP 1, which is a different question.
+    """
+    anchor = next((c for c in ref_classes if str(c.get("name") or "") == anchor_class), None)
+    if anchor is None or not candidates_by_column:
+        return [], []
+    owners: dict[str, list[dict[str, Any]]] = {}
+    for cls in ref_classes:
+        for prop in cls.get("properties") or ():
+            if prop.get("uri"):
+                owners.setdefault(str(prop["uri"]), []).append(cls)
+    stats: dict[str, dict[str, Any]] = {}
+    wanted: set[str] = set()
+    for column, candidates in candidates_by_column.items():
+        for candidate in candidates:
+            uri = str(candidate.get("uri") or "")
+            for cls in owners.get(uri, ()):
+                entry = stats.setdefault(
+                    _class_key(cls), {"cls": cls, "columns": set(), "best": 0.0}
+                )
+                entry["columns"].add(column)
+                entry["best"] = max(entry["best"], float(candidate.get("score") or 0.0))
+                wanted.add(uri)
+    if not stats:
+        return [], []
+    ranked = sorted(
+        stats.values(), key=lambda s: (-len(s["columns"]), -s["best"], _class_key(s["cls"]))
+    )
+    chosen: list[dict[str, Any]] = [anchor]
+    for entry in ranked:
+        if len(chosen) >= max_classes:
+            break
+        if _class_key(entry["cls"]) != _class_key(anchor):
+            chosen.append(entry["cls"])
+    chosen_keys = {_class_key(c) for c in chosen}
+    pool: list[dict[str, Any]] = []
+    for cls in chosen:
+        props = list(cls.get("properties") or [])
+        first = [p for p in props if str(p.get("uri") or "") in wanted]
+        rest = [p for p in props if str(p.get("uri") or "") not in wanted]
+        pool.append({**cls, "properties": first + rest} if first else cls)
+    columns = sorted(
+        column
+        for column, candidates in candidates_by_column.items()
+        if any(
+            _class_key(cls) in chosen_keys
+            for candidate in candidates
+            for cls in owners.get(str(candidate.get("uri") or ""), ())
+        )
+    )
+    return pool, columns
+
+
+def merge_closure_retry(
+    result: dict[str, Any], retry: dict[str, Any], retry_columns: list[str]
+) -> dict[str, Any]:
+    """Fold a closure retry into the first-pass result (DD-248 §4).
+
+    A retry answer that maps a column replaces the first-pass ``custom`` entry and is
+    flagged ``closure_retry``; a retry answer of ``custom`` leaves the first-pass entry,
+    with its candidates, exactly as it was. The table-level verdict is the first pass's.
+    """
+    mapped: dict[str, dict[str, Any]] = {}
+    for ca in retry.get("column_alignments") or []:
+        column = str(ca.get("column") or "")
+        if column in retry_columns and ca.get("alignment") != "custom" and ca.get("ref_property"):
+            mapped[column] = {**ca, "closure_retry": True}
+    merged = dict(result)
+    merged["column_alignments"] = [
+        mapped.get(str(ca.get("column") or ""), ca) for ca in result.get("column_alignments") or []
+    ]
+    merged["closure_candidates"] = {
+        column: candidates
+        for column, candidates in (result.get("closure_candidates") or {}).items()
+        if column not in mapped
+    }
+    return merged
+
+
 def _build_custom_column(
     ca: dict[str, Any],
     col_data_type: str,
@@ -4384,6 +4482,7 @@ def _propose_alignments(
     max_prompt_classes: int = MAX_REF_CLASSES_PER_PROMPT,
     retry_min_confidence: float = RETRY_MIN_CONFIDENCE,
     retry_min_mapped_ratio: float = RETRY_MIN_MAPPED_RATIO,
+    closure_retry: bool = True,
     max_workers: int = DEFAULT_MAX_WORKERS,
     force: bool = False,
     cost_warning: bool = False,
@@ -4418,6 +4517,8 @@ def _propose_alignments(
         max_prompt_classes: Max number of reference classes in first pass prompt.
         retry_min_confidence: Retry threshold for ref class confidence.
         retry_min_mapped_ratio: Retry threshold for mapped column ratio.
+        closure_retry: DD-248 §4 -- re-offer closure candidates to the model in one
+            further call per table with the class pinned (default on).
         max_workers: Max concurrent per-table LLM calls (CR-1). ``1`` reproduces
             the legacy fully-serial path exactly.
         force: When True, bypass both cache layers (domain-level ``affinity_sha256``
@@ -4994,6 +5095,9 @@ def _propose_alignments(
             "max_prompt_classes": max_prompt_classes,
             "retry_min_confidence": retry_min_confidence,
             "retry_min_mapped_ratio": retry_min_mapped_ratio,
+            # DD-248 §4: a table aligned with and without the closure retry are two
+            # different results.
+            "closure_retry": bool(closure_retry),
             "ref_signature": ref_signature,
         }
         if cross_module:
@@ -5324,6 +5428,35 @@ def _propose_alignments(
                     result["closure_candidates"] = closure_candidates_for_result(
                         result, closure_index, shown_pool=pool_used, columns=columns
                     )
+                # DD-248 §4: one more call for those columns only, with the class pinned
+                # and the candidate classes as the pool, candidates listed first. A
+                # targeted retry, not a wider prompt; the merged result is what gets
+                # cached, so the cost is paid once per table.
+                if closure_retry and result.get("closure_candidates"):
+                    focused_pool, retry_columns = closure_retry_plan(
+                        result["closure_candidates"],
+                        property_ref_classes,
+                        anchor_class=str(result.get("ref_class") or ""),
+                        max_classes=max_prompt_classes,
+                    )
+                    if retry_columns:
+                        retry = align_table(
+                            client,
+                            model,
+                            table,
+                            [c for c in columns if str(c.get("name") or "") in retry_columns],
+                            focused_pool,
+                            anchor_override=str(result.get("ref_class") or ""),
+                            anchor_status=anchor_status,
+                            anchor_confidence=result.get("ref_class_confidence"),
+                            class_cautions=class_cautions,
+                            glossary_terms=glossary_terms,
+                            glossary_records=glossary_records,
+                            trace_session_id=trace_session_id,
+                            omitted_classes=len(property_ref_classes) - len(focused_pool),
+                        )
+                        if retry.get("generation_outcome") == OUTCOME_SEMANTIC_SUCCESS:
+                            result = merge_closure_retry(result, retry, retry_columns)
             except Exception as exc:  # noqa: BLE001 — isolate a single table failure
                 logger.warning("Alignment failed for %s.%s: %s", system, table, exc)
                 result = {
@@ -5469,6 +5602,7 @@ def _propose_alignments(
                         alignment=ca["alignment"],
                         confidence=ca["confidence"],
                         rationale=ca.get("rationale", ""),
+                        closure_retry=True if ca.get("closure_retry") else None,
                     )
                     # DD-075/DD-205: default-on sample evidence for the mapper.
                     # Issue #562: PII masking on this human-facing artifact field
@@ -5792,11 +5926,15 @@ def _propose_alignments(
             for cc in ta.custom_columns
             if cc.get("closure_candidates")
         ]
-        if with_candidates:
+        retry_mapped = sum(
+            1 for ta in alignment.tables for col in ta.columns if col.closure_retry
+        )
+        if with_candidates or retry_mapped:
             report(
                 f"     🔎 closure candidates: {len(with_candidates)} custom column(s) in "
-                f"{len({t for t, _ in with_candidates})} table(s) have a same-named "
-                "property in the import closure that the prompt did not show"
+                f"{len({t for t, _ in with_candidates})} table(s) still have a same-named "
+                "property in the import closure that the prompt did not show; "
+                f"the closure retry mapped {retry_mapped} column(s)"
             )
 
         # Build reference rollup (home-domain classes only — DD-070 keeps cross-
@@ -6291,6 +6429,9 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
             if ca.review:
                 col_dict["review"] = True
                 col_dict["review_reason"] = ca.review_reason
+            # DD-248 §4: emit only when the closure retry made the mapping
+            if ca.closure_retry:
+                col_dict["closure_retry"] = True
             # DD-070: emit cross-module tags only when set (default unchanged)
             if ca.ref_module:
                 col_dict["ref_module"] = ca.ref_module
