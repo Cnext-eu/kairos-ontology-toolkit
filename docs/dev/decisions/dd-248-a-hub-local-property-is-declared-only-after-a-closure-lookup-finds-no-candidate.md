@@ -85,9 +85,12 @@ shortlist; and the DD-244 disclosure line never counted the classes the shortlis
 
 ### Consequences
 
-- Recorded alignments are stale by contract and re-run once after upgrade; the next
-  `draft-gap-decisions` on the measured hub should show the `registered-extension`
-  proposals fall from 204 and `held-for-closure-candidate` appear.
+- Recorded alignments are stale by contract and re-run once after upgrade. Measured on
+  the same hub with this decision in place (gpt-5.5, 109 tables, 2026-09-26): 113 gap
+  columns are `closure-candidate-not-shown`; the retry mapped 93 of the 207 columns
+  that had a candidate (45 %); `--accept-proposals` held 13 names for a human; after
+  `--suggest` the model still proposed `registered-extension` for 8 of the 17 candidate
+  names, so the hold, not the prompt wording, is the guard that matters.
 - Existing hubs gain advisory warnings for near-duplicate local properties (about 20 on
   the measured hub) and no namespace errors: every local property there is already in the
   client namespace.
