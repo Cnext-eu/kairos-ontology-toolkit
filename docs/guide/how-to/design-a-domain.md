@@ -25,12 +25,14 @@ kairos-ontology scaffold-domain --domain billing --label "Billing"
 
 ```bash
 kairos-ontology show-class-inventory --domain billing
-kairos-ontology list-class-properties "https://acme.example/ont/billing#Invoice"
-kairos-ontology explain-term "https://acme.example/ont/billing#Invoice"
+kairos-ontology list-class-properties "https://acme.example/ont/billing#Invoice" --domain billing
+kairos-ontology explain-term "https://acme.example/ont/billing#Invoice" --domain billing
 ```
 
 Use these rather than opening the `.ttl`. Reading serialised RDF as text does not reveal
-inherited properties, imported terms, or inverse relations (DD-103).
+inherited properties, imported terms, or inverse relations (DD-103): a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure.
+`list-class-properties` marks each property `direct` or `inherited` with the class it
+comes from and how many hops away.
 
 ## Align to reference models
 

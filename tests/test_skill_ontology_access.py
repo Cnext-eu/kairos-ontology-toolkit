@@ -33,14 +33,7 @@ LAYOUT_ONLY = {"kairos-setup-config", "kairos-setup-init"}
 
 #: Managed skills that still say "read the ontology" without naming the command. The
 #: skills PR (DD-243 follow-up) removes each of these; nothing may be added.
-KNOWN_GAPS = {
-    "kairos-design-discovery",
-    "kairos-design-silver",
-    "kairos-develop-dbt-transformation",
-    "kairos-execute-project",
-    "kairos-execute-report",
-    "kairos-setup-migrate",
-}
+KNOWN_GAPS: set[str] = set()
 
 
 def _unmanaged() -> set[str]:

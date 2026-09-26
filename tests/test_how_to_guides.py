@@ -189,3 +189,27 @@ class TestRecipesActuallyRun:
 
         guide = (_HOW_TO / "create-a-hub.md").read_text(encoding="utf-8")
         assert "No business discovery evidence found" in guide
+
+
+#: Inspection commands whose scope is one of two options Click cannot mark required.
+_SCOPED_COMMANDS = {"list-class-properties", "explain-term", "show-class-inventory", "fit-report"}
+
+
+@pytest.mark.parametrize("guide", _guides(), ids=lambda p: p.name)
+def test_inspection_commands_name_their_scope(guide: Path):
+    """`list-class-properties <IRI>` without `--domain` or `--ontology` is a UsageError at
+    run time, which the flag check above cannot see because both flags default to None.
+    A guide invoking a scoped inspection command must pass one of them (DD-243)."""
+    text = guide.read_text(encoding="utf-8")
+    offenders = []
+    for tokens in _invocations(text):
+        command, rest, path = _resolve(tokens)
+        if command is None or path.split()[-1] not in _SCOPED_COMMANDS:
+            continue
+        flags = {token.split("=", 1)[0] for token in rest if token.startswith("--")}
+        if not flags & {"--domain", "--ontology"}:
+            offenders.append(" ".join(tokens))
+    assert not offenders, (
+        f"{guide.name} invokes an inspection command with no --domain/--ontology:\n"
+        + "\n".join(offenders)
+    )

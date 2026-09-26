@@ -123,7 +123,10 @@ who is not invoking the LLM yet), but it must be green before any LLM step.
 Before proposing a binding:
 
 1. read the selected source vocabulary or dbt output contract;
-2. read the target ontology import closure;
+2. read the target ontology import closure through
+   `show-class-inventory --domain <domain>` and
+   `list-class-properties <IRI> --domain <domain>` (direct and inherited properties,
+   with origin) — never the `.ttl` as text: a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure (DD-103);
 3. verify the selected source contains the required relation and columns;
 4. enumerate whether other Bronze sources under `integration/sources/` also
    plausibly target the same canonical class — check today either with
@@ -588,7 +591,7 @@ out-of-scope work. Artifact generation is a separate execution step.
 - Exposing unredacted samples to the LLM or committed files.
 - Reading a raw ontology serialization (`.ttl`/`.rdf`/`.owl`) as text; use
   `resolve-ontology`, `show-class-inventory`, `list-class-properties`, or
-  `explain-term` instead.
+  `explain-term` instead — a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure.
 
 ## Related skills
 

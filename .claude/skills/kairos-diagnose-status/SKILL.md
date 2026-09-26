@@ -33,7 +33,7 @@ Report each input as present, missing, or unreadable exactly as returned. Never
 treat file presence as completeness, or output files as proof about authored
 inputs. Confirm ontology/SHACL inputs by presence only — never read a raw
 `.ttl`/`.rdf`/`.owl` file as text; use `resolve-ontology`, `show-class-inventory`,
-`list-class-properties`, or `explain-term` if semantic detail is needed.
+`list-class-properties`, or `explain-term` if semantic detail is needed — a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure.
 
 ## Current compiler diagnostics
 

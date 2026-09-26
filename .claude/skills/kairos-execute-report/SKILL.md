@@ -7,8 +7,9 @@ description: Review authored EntityBindings and canonical compiler explanations.
 
 Produce an on-demand, read-only review from authored inputs and canonical compiler output.
 
-1. Inventory `integration/sources/`, `model/ontologies/`, and
-   `integration/bindings/*.binding.yaml`.
+1. Inventory `integration/sources/`, `model/ontologies/` (by file presence — never read a
+   `.ttl` as text; `show-class-inventory --domain <domain>` is the closure-aware view,
+   DD-103), and `integration/bindings/*.binding.yaml`.
 2. For each bound domain run
    `kairos-ontology compile <domain> --explain --format json` with
    `KAIROS_SKILL_CONTEXT=1`.

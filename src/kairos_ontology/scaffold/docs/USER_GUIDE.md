@@ -63,6 +63,15 @@ Multi-source entities use separate bindings joined by one explicit conformance c
 V5 does not author claims, preparation/Silver extension policy, lifecycle/readiness state,
 transformation evidence registries, release baselines, or generated output.
 
+### Read the ontology through the CLI
+
+A domain `.ttl` carries only its own triples; the parents, inherited properties and
+inverse relations live in the modules it `owl:imports`. Inspect meaning with
+`kairos-ontology show-class-inventory --domain <domain>`,
+`list-class-properties <IRI> --domain <domain>` and `explain-term <IRI> --domain <domain>`,
+which resolve that closure; never read the file as text to answer a semantic question
+(DD-103). The same holds for an AI agent working in the hub.
+
 ## 3. Configure the adapter
 
 `ontology-hub/kairos.yaml` is the authority:

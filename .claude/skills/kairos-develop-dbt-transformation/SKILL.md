@@ -211,8 +211,9 @@ entry for an `int_merged__` model, and returning to kairos-design-mapping to wir
 
 ## Workflow
 
-1. Read the target ontology, source vocabulary, PII-safe samples, current binding,
-   and existing dbt project files.
+1. Read the target ontology through `list-class-properties <IRI> --domain <domain>`
+   (never the `.ttl` as text: a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure, DD-103), then the source vocabulary,
+   PII-safe samples, current binding, and existing dbt project files.
 2. Confirm one output row grain and its physical key columns.
 3. Present the proposed `source()`/`ref()` graph, relational operations, null and
    error behavior, deterministic ordering, and adapter assumptions. Obtain the

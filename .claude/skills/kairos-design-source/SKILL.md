@@ -31,7 +31,10 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
 
 ## Workflow
 
-1. Inspect the supplied CSV, Excel, Parquet, extracted YAML, DDL, API schema, or existing TTL, and
+1. Inspect the supplied CSV, Excel, Parquet, extracted YAML, DDL, API schema, or existing
+   source-vocabulary TTL under `integration/sources/` (a Bronze vocabulary has no imports and
+   may be read; canonical ontologies under `model/ontologies/` are never read as text — use
+   `show-class-inventory` or `explain-term`, DD-103), and
    enumerate every source available for import (each `.input/` file or per-source subfolder, each
    extracted schema YAML, or DDL) so the full candidate set is known before importing anything.
 2. When more than one source is available, ask the user whether to import all sources in one batch
