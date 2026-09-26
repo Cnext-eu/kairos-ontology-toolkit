@@ -217,8 +217,8 @@ which facts share which dimensions, and which dimensions no fact uses.
 
 When a rule genuinely does not hold for one object, record it rather than working around it:
 `kairos-ext:practiceException "semantic-model.fact-to-fact on relationship
-fact_charge.consignment_id -> fact_consignment.consignment_id: <reason>"` on the
-`owl:Ontology` resource. BPA rules use the same form
+fact_charge.consignment_id -> fact_consignment.consignment_id: <reason>"` on an
+`owl:Ontology` resource: the domain's, or the Gold extension's own (both are read). BPA rules use the same form
 (`"DAX_COLUMNS_FULLY_QUALIFIED on measure sales.margin: <reason>"`), and
 `kairos-ext:bpaIgnoreRule` keeps working as its original name. The reason is mandatory. An
 exception that excuses nothing fails the check that would have made the finding, so it cannot
