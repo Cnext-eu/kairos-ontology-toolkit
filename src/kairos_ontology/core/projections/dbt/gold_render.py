@@ -1433,6 +1433,18 @@ def gold_product_report(
             if spec.unresolved_bridges
             else {}
         ),
+        # Authored references to another domain's table -- a calendar role, a primary
+        # relationship, a cross-filter or an exception target -- that a single-domain
+        # compile cannot check (#1003, #1012). Checked when the product is shaped.
+        **(
+            {
+                "deferred_references": [
+                    {"term": term, "value": value} for term, value in spec.deferred_references
+                ]
+            }
+            if spec.deferred_references
+            else {}
+        ),
         # The relationships the projector deactivated to leave one filter path
         # between any two tables (#792). Reported because the choice is a modelling
         # decision the report depends on -- the active date role is the one time

@@ -65,6 +65,16 @@ load-bearing, not stylistic: `_shape_measures` raises on a DAX reference to a ta
 another domain, and `_shape_calendar` and `_shape_security` raise on a binding to a column
 in one. Every one of those would have fired before a merge could see the union.
 
+*Amended (#1003, #1012).* The single-domain compile runs the same shaper over a union of
+one, so a calendar `rolePlayingDate` or a `goldPrimaryRelationship` that names another
+domain's table could never be authored: the owning domain's compile failed before the
+product was shaped. Both now follow the #763 bridge-endpoint contract. On the single-domain
+compile a reference to a table outside the shaping is recorded as a `deferred_references`
+entry, printed by `compile` and carried in the JSON payload and the product report. When the
+product is shaped it is checked fail-closed. A reference to a table that *is* in the shaping
+still fails per domain. The existing silent deferrals of `goldRelationshipCrossFilter` and
+`bpaIgnoreRule` targets now land in the same list.
+
 **A dangling foreign key is reported, not dropped.** Where #207's fix skipped silently,
 `unresolved_relationships` now records `(property, source_table, target_class)` for any
 foreign key whose join column was materialized but whose target is not in the product. It

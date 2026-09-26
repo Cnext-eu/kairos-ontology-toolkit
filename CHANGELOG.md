@@ -90,6 +90,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `practiceException`, the profile, schema, measure, calendar and security links) is now
   read from both nodes. A hub that authored terms on the extension node may see those
   terms take effect on the next compile.
+- **A calendar role or primary relationship can name another domain's table** (#1003,
+  #1012). A product's one calendar is authored in one domain, but each domain's own
+  `compile` shaped it against that domain's tables only. So a `kairos-ext:rolePlayingDate`
+  on another domain's fact failed with `calendar.missing-role-column`, and a
+  `goldPrimaryRelationship` to another domain's dimension, or to a bridge edge, failed with
+  `gold.unknown-primary-relationship`. Both now follow the cross-domain bridge contract
+  (#763):
+  - the single-domain compile records the reference, prints it, and carries it as
+    `deferred_references` in the JSON payload and the product report;
+  - the product check (`compile --all --check`, `emit-gold`) enforces it fail-closed.
+
+  A reference to a table that is in the domain's own shaping still fails there.
+  `calendar.missing-role-column` now names every bad role, not only the first. The
+  already-deferred `goldRelationshipCrossFilter` and `bpaIgnoreRule` targets are now
+  reported in the same list instead of being skipped silently.
 
 ## [5.23.0] — 2026-09-25
 
