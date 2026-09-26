@@ -74,6 +74,270 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -->
 ## [Unreleased]
 
+## [5.24.0rc1] — 2026-09-26
+
+First release candidate for 5.24.0. It adds:
+
+- **Closure-aware ontology reading (DD-243, DD-244, DD-245, #937):**
+  - the toolkit's readers and AI prompts read the whole `owl:imports` closure, and a prompt
+    says what it left out;
+  - `kairos-ontology mcp serve` offers the inspection commands as MCP tools;
+  - on Claude Code, a raw read of a domain `.ttl` is followed by what the file does not
+    contain.
+- **`AGENTS.md` as the agent-instruction file** in hubs and dataplatforms (DD-246, #1031).
+- **Run logs as a tree of task spans**, with `kairos-ontology logs show` and a working
+  OpenTelemetry export (DD-242, #1011).
+- **Speed:** `compile --all --emit`, `emit-gold` and the semantic index are two to 2.5 times
+  faster (#598).
+- **Gold:** only a genuinely ambiguous relationship is deactivated (#1012), plus fixes to
+  emit idempotence and cross-domain Gold terms.
+
+**Upgrade notes.**
+
+- `update` adds `AGENTS.md` and shortens `.github/copilot-instructions.md` to a pointer.
+  - Only the block between the `managed-begin` and `managed-end` markers is the toolkit's.
+    An `AGENTS.md` you already have keeps its text below that block.
+  - If the repo has a `CLAUDE.md`, add the line `@AGENTS.md` to it; `update` reminds you
+    until you do.
+- In hubs, `update` also:
+  - creates `.mcp.json` and `.vscode/mcp.json`;
+  - delivers a new `.claude/settings.json` generation with `Read` hooks. A hand-edited
+    settings file gets an advisory instead.
+
+  The MCP server needs `uv sync --extra mcp`. Dataplatforms receive none of these files.
+- Gold models with a bus-matrix square (two facts sharing two dimensions) keep more
+  relationships active after re-emit. Republish the model.
+
+### Added
+- **A run log is now a tree of tasks, with durations (#1011, DD-242).** Every command run
+  writes a `kairos.span.completed` record for each task: the run, each domain or Gold
+  product, each gate (`alignment.table-unanchored`, `compile`, `gold-shape`,
+  `package-validation`, `gold.tmdl-structural-validation`, ...) and each stage (`emit`,
+  `erd`, `archive`). Each record carries its parent, status (`ok`, `refused`, `error`),
+  duration and diagnostic counts. Every diagnostic record names the span that reported it
+  (`kairos.span.id`), so a run's findings group under the domain, product and gate that
+  produced them.
+- **`kairos-ontology logs show`.** It reads the newest run log in `<hub>/.kairos/logs/`
+  (or a PATH) back as the span tree with each diagnostic under its task. `--group-by code`
+  and `--group-by severity` group the diagnostics instead, and `--format json` is available.
+  It reads any `--log-file PATH --log-format json` log, too.
+- **`project` keeps a default run log**, like the other writing commands.
+- **The toolkit now checks that ontology meaning is read from the `owl:imports` closure (DD-243).**
+  A domain `.ttl` read alone is missing the classes and properties it imports. Three tests
+  enforce the DD-103 contract from now on:
+  - every rdflib parse in production code is inventoried with a reason
+    (`docs/dev/dd103-single-file-parse-inventory.json`); a new single-file parse fails the
+    suite until it goes through `load_ontology` or is listed;
+  - every AI prompt call site is inventoried (`docs/dev/ai-prompt-inventory.json`); a prompt
+    that lists ontology terms must render them through the new `core.prompt_context` helper,
+    which reads the closure index, marks inherited properties with their origin and discloses
+    any cut;
+  - a managed skill that talks about the ontology names a closure-aware inspection command.
+- **`SemanticIndex.carries(field)` and a `coverage` map in `slice()` metadata (#937, part).**
+  They say which profile-dependent fields (`inherited_properties`, `equivalent_classes`,
+  `restrictions`, `inverse_properties`, …) the index's profile populates, so an empty tuple
+  can be read as "declares none" only when the profile looked.
+- **`kairos-ontology mcp serve` — the closure-aware inspection commands as MCP tools (DD-245).**
+  `show_class_inventory`, `list_class_properties`, `explain_term`, `resolve_ontology`,
+  `compile_check`, `compile_explain` and `logs_show`, over stdio, from the hub's own
+  environment. Every description says what the `.ttl` file does not contain, so an agent
+  reaches for the tool rather than the file. Needs the new optional `[mcp]` extra
+  (`uv sync --extra mcp`); without it the command says so.
+- **The hub scaffold registers the server for both IDE agents**: `.mcp.json` (Claude Code)
+  and `.vscode/mcp.json` (Copilot agent mode). `init`, `new-repo` and `update` create them
+  when absent and never overwrite them.
+- **A raw read of a domain `.ttl` corrects itself on Claude Code.** The scaffold's
+  `.claude/settings.json` gains `Read` hooks that run `kairos-ontology hook read-context`:
+  after the read, the model is told which modules the file imports, which of its classes
+  carry inherited properties that are not in the file, and which tool to call before
+  concluding; a read of a reference-model file is denied with the same pointer. The file
+  stays readable — denying `Read` breaks authoring (#659). This is a new settings generation:
+  a hub on the shipped file receives it on `update`; a hand-edited file gets an advisory.
+- The managed skills point at the tools where the server is registered; `kairos-help` lists
+  them.
+
+### Changed
+- **Writing commands name their run log as their last line (#1011).** `compile --emit`,
+  `emit-gold`, `package-powerbi-release` and `project` end with
+  `Run log: .kairos/logs/<utc>-<command>-<id>.jsonl  (kairos-ontology logs show)` on stderr,
+  including when they fail, so the grouped findings are one command away instead of
+  scrolled off the terminal. The line is omitted under `--log-format json`, where stderr is
+  a JSON-lines stream, and when the run log is off (`--log-file`, `KAIROS_RUN_LOG=0`).
+- **`AGENTS.md` now carries the agent instructions in hubs and dataplatforms;
+  `.github/copilot-instructions.md` becomes a short pointer (DD-246).** `AGENTS.md` is read by
+  Copilot (coding agent, CLI, VS Code), Claude Code, Codex, Cursor and Gemini CLI. Before this,
+  Claude Code sessions in a hub read no always-on rules at all. Hubs also stop receiving the
+  toolkit-developer rules the old file carried.
+  - The toolkit owns only the block between the `managed-begin` / `managed-end` markers in
+    `AGENTS.md`. Text outside the block is yours and `update` never touches it.
+  - `update --check` reports drift inside the block only; `--test-ref` / `--restore` cover
+    the file.
+  - **Upgrade:** run `update`. It adds `AGENTS.md`; an `AGENTS.md` you already have keeps its
+    text below the new block. It also shortens `copilot-instructions.md`. If you keep a
+    `CLAUDE.md`, add the line `@AGENTS.md` to it: Claude Code reads `AGENTS.md` only when no
+    `CLAUDE.md` exists. `update` prints a reminder until you do, without failing `--check`.
+- **AI prompts say what they left out (DD-244).**
+  - `propose-alignment` marks inherited properties, says "… N more not listed" on a class it
+    cut and ends with one line telling the model not to read absence from the list as
+    absence from the reference model. Its response schema and pair check are built from the
+    same cut pool, so the model can no longer answer with a property it was never shown.
+    Recorded alignments are stale by contract and re-align on the next run.
+  - `draft-gap-decisions` no longer asserts that a column has "no reference-model property";
+    it says the aligner found no match among the properties it was shown.
+  - `analyse-sources` lists a domain's own classes before imported ones and says
+    "(+N more not listed)" when capped.
+  - `scaffold-domain --ai` shows the model the classes its imports already provide and tells
+    it to subclass rather than redeclare; the call now goes through the traced, redacting
+    wrapper like every other AI call.
+  - The `prompt` projection reports `truncated: true` and the omitted modules when imported
+    classes are left out, and draws relationships from every declared domain.
+- **`explain-term` says which fields the chosen profile does not carry (#937).** Under
+  `--profile rdfs`, `inverse_properties: []` no longer reads as "declares no inverse":
+  `not_carried_by_profile` names it, and `coverage` maps every profile-dependent field.
+  `show-class-inventory --all` now includes each domain's slice metadata.
+
+### Fixed
+- **OpenTelemetry export now exports.** With `OTEL_EXPORTER_OTLP_ENDPOINT` set and the
+  `[otel]` extra installed, the old bridge installed a log handler with no provider, so
+  nothing reached the collector, and there were no spans. Each command run is now one
+  trace:
+  - a child span per domain, product, gate and stage;
+  - diagnostics as span events;
+  - redacted log records carrying the trace context;
+  - the trace id equals the run's operation id.
+
+  `OTEL_EXPORTER_OTLP_PROTOCOL` selects `http/protobuf` (default) or `grpc`. Without the
+  endpoint, nothing from OpenTelemetry is imported.
+- **A failing or refused run now writes its summary.** `Exit`, `ClickException` and
+  `SystemExit` used to skip the observability teardown, so a failing `compile` or a refused
+  `emit-gold` left no `kairos.run.summary` and flushed nothing. The summary is now written
+  on every exit, even for a clean run. It carries `kairos.outcome` and `kairos.exit_code`.
+- **Findings that were printed but never logged now reach the run log.** These are:
+  - compile gate refusals;
+  - Fabric package and TMDL failures, and an unavailable TOM SDK;
+  - `emit-gold`'s unresolved-relationship, unresolved-bridge and insight-gap reports;
+  - compile's deferred-bridge and stale-dependent notes;
+  - `project`'s per-domain failures.
+
+  The findings that are not compiler diagnostics get stable codes (`gold.package-invalid`,
+  `gold.tmdl-invalid`, `compile.stale-dependent`, ...; see `docs/guide/OBSERVABILITY.md`).
+  `package-powerbi-release` now attributes a blocked member's diagnostics to that domain.
+- **`update` no longer installs hub-only agent files into dataplatform repos.** It used to
+  create `.claude/settings.json` and the MCP server registrations (`.mcp.json`,
+  `.vscode/mcp.json`) in dataplatforms, which `init-dataplatform` never installs.
+  - In a dataplatform, every Claude Code file read started `kairos-ontology hook read-context`
+    twice, for no benefit.
+  - The registered `kairos` MCP server has no hub to serve there and normally cannot start.
+  - `update --check` told dataplatform operators to install the settings file.
+  - Files an earlier `update` already created are left in place. Delete them by hand if you
+    have not extended them.
+- **Glossary `rdfs:seeAlso` links written as prefixed names are read.** The regex only saw
+  `<iri>` forms, so such concepts reached the alignment prompt without their reference link.
+- **Four readers now see the `owl:imports` closure instead of one file (DD-243).** A domain
+  `.ttl` carries only its own triples; these read it alone and reported a class with a
+  reference-model parent as having no properties.
+  - **`project --target report`**: the domain overview lists each class's inherited properties,
+    marked `(inherited from <Class>)`, and draws a relationship for every declared domain,
+    `owl:unionOf` and `schema:domainIncludes` included. It reuses the closures `project`
+    already loaded, and says so when a closure did not fully resolve.
+  - **`coverage-report`**: properties include the inherited and union-declared ones, each with
+    `origin` and `inherited_from`; the `imported` alignment tier now means the matched
+    reference class's module is in the domain's resolved closure, not "the domain imports
+    something" (the confirmation DD-144 §6 asked for).
+  - **`validate --gdpr`**: with the hub catalog, each domain is scanned through its closure,
+    so a PII property inherited from a reference parent is reported on the hub's class,
+    as `Customer.email (inherited from Party)`. Reference-model classes themselves are never
+    judged against the hub.
+  - **`validate`'s reference-model shadowing check**: a local class that repeats the name of a
+    class two imports away is flagged too, with a remediation that names the import to add.
+    The message no longer claims `owl:equivalentClass` would anchor it (#730).
+- **The alignment report reads `owl:imports` as RDF**, so `owl:imports <a>, <b>` on one line
+  counts both; the previous regex kept the first.
+
+### Performance
+- **`compile --all --emit` and `emit-gold` are about twice as fast (#598).** Measured on a
+  15-domain hub. The output is byte-identical.
+
+  | Command | Before | After |
+  |---|---|---|
+  | `compile --all --emit`, warm | 54.6 s | 21.6 s |
+  | `compile --all --emit`, cold (no `.cache/`, as in CI) | 57.6 s | 28.3 s |
+  | `emit-gold`, 15-domain product | 23.5 s | 10.2 s |
+
+  The run log's new per-gate spans (#1011) located the repeated work:
+  - **One emit transaction per domain instead of three.** A domain's own, shared and
+    dependency manifests were three emits, and each one staged and swapped the whole dbt
+    project. They are now one transaction (`emit_artifact_batch`), which commits all three
+    or none. A failing third manifest can no longer leave the first two committed.
+  - **Shared ontology modules are parsed once per command.** Every domain re-parsed the
+    same imported modules, and so did the reference-corpus walk: 630 parses of about 140
+    files. Parsed graphs are now kept in memory for the run, keyed on each file's content
+    hash.
+  - **One prefix map per ontology closure.** It was rebuilt for every class and property
+    it labelled, 2,204 times.
+  - **Binding coverage is read once per hub state.** The hub-wide set of bound source
+    tables was re-read for each domain, which meant 690 YAML parses of 46 bindings.
+  - **Fewer path resolutions during emit.** Emit checks no longer resolve the same target
+    root, or the same parent directory, for every file.
+
+  Every new cache lives only for one command and is keyed on file content, so an edited
+  input is always a miss. The only caches that persist between runs are the existing
+  content-addressed ones under `.cache/`.
+- **The semantic index builds about 2.5 times faster (#598).** Every domain compile, the Gold
+  shaping in `emit-gold`, and the cold reference-corpus walk build one index per ontology
+  closure. On a 15-domain hub, with byte-identical output:
+
+  | Command | Before | After |
+  |---|---|---|
+  | `compile --all --emit`, warm | 21.3 s | 18.7 s |
+  | `emit-gold`, 15-domain product | 9.9 s | 7.4 s |
+
+  Two changes cover it:
+  - **The closure graph is no longer copied** for profiles that only read it. OWL RL
+    still expands a copy.
+  - **Term provenance is looked up in one per-closure index.** It used to scan every
+    source graph again for each question, about 96,000 scans per run. Closure order is
+    unchanged, so the first match, and therefore the answer, is the same.
+
+### Documentation
+- **The skills and guides use the run log.**
+  - `kairos-execute-project` reviews an emit's findings with `logs show --group-by code`
+    instead of console output.
+  - `kairos-diagnose-status` reads the last run's log when asked how an emit went.
+  - `kairos-design-gold` works through `emit-gold` findings from the log.
+  - `kairos-flow-autopilot` cites run logs in its transparency report.
+  - `kairos-help` and the Copilot instructions list `logs show`.
+  - The compile-and-emit and Gold how-tos, the user guide and `CICD.md` say where the log is
+    and how to read it.
+  - `OBSERVABILITY.md` now ships to hubs under `docs/toolkit/`.
+- **The skills name the closure-aware command where they used to say "read the ontology"
+  (DD-243 follow-up).** `kairos-design-domain`'s reference step and `kairos-design-mapping`'s
+  binding preparation now give the recipe — `show-class-inventory --domain <d>` for the tree,
+  `list-class-properties <IRI> --domain <d>` for direct and inherited properties with their
+  origin, `explain-term <IRI> --domain <d>` for one term — and every skill that carries the
+  "never read a `.ttl` as text" rule now says why: a domain file carries only its own
+  triples; the parents, inherited properties and inverse relations live in the modules it
+  `owl:imports`, and only the CLI resolves that closure. The rule reaches the skills that
+  lacked it (`design-discovery`, `design-source`, `develop-dbt-transformation`,
+  `execute-project`, `execute-report`, `setup-migrate`, `toolkit-ops`, `flow`,
+  `flow-autopilot`). Source vocabularies under `integration/sources/` are explicitly outside
+  the rule.
+- **`docs/guide/how-to/design-a-domain.md`** ran `list-class-properties` and `explain-term`
+  without `--domain`, which is a usage error; fixed, and the how-to test now requires a
+  scope on every inspection command. `USER_GUIDE.md` gains a short "Read the ontology through
+  the CLI" section.
+
+### Notes
+- The readers the audit found (`project --target report`, `coverage-report`, `validate --gdpr`,
+  the reference-model shadowing check) and the prompt builders are listed as known gaps in
+  the inventories and are fixed in follow-up releases.
+- The two earlier guards for the same rule are retired in favour of the DD-243 inventory,
+  which covers the whole package per function with a reason: `tests/test_ttl_access_boundary.py`
+  and the module allow-list in `tests/test_semantic_loading_boundary.py` (its legacy-loader
+  check stays).
+- Three known-gap rows leave the DD-243 parse inventory; `validate_gdpr`'s content-string
+  path stays for direct callers and is listed as such.
+
 ### Changed
 - **Only a genuinely ambiguous relationship is deactivated** (#1012, amends DD-226). The
   projector treated relationships as undirected and kept a spanning forest. That
