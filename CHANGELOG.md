@@ -65,6 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `table-anchors.yaml`, so a hub that never ran `anchor-tables` will stop.
 > `--without-anchors` is the escape hatch and `anchor-tables` is the one-command fix.
 
+<!--
+  Feature and fix PRs: do NOT add entries here. Add a changelog.d/<issue>-<slug>.md
+  fragment instead (see changelog.d/README.md); the release PR collects every fragment
+  into [Unreleased] with `scripts/collect_changelog.py --apply`. Parallel PRs that edit
+  these lines conflict with each other on every merge. CI (version-check.yml) rejects a
+  CHANGELOG.md edit in a PR that does not bump __version__.
+-->
 ## [Unreleased]
 
 ### Changed

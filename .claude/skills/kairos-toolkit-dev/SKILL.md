@@ -29,6 +29,9 @@ modules under `src/kairos_ontology/cli`, MDM under `src/kairos_ontology/mdm`, se
    `src/kairos_ontology/scaffold/skills/<name>/SKILL.md` identically.
 6. For managed scaffold behavior, update scaffold sources and managed mappings/tests.
 7. Run focused pytest, then scaffold sync/reference/managed tests when those surfaces change.
+8. For a user-visible change, add a `changelog.d/<issue>-<slug>.md` fragment
+   (`changelog.d/README.md`). Never edit `CHANGELOG.md` outside a release PR: parallel PRs that
+   edit `[Unreleased]` conflict on every merge, and CI (`version-check.yml`) rejects it.
 
 Use `uv sync`, `uv run pytest`, and `uv build`. Keep lines to 100 characters. Significant
 architecture changes require a design-decision update. Releases update the single package version,

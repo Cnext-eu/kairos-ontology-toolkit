@@ -3,6 +3,8 @@ name: Version check
 on:
   pull_request:
     branches: [main]
+    # labeled/unlabeled: adding or removing `changelog-edit` must re-run the check below.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -45,3 +47,37 @@ jobs:
           fi
 
           echo "✅ CHANGELOG entry present for ${PR_VERSION}"
+
+      # The mirror image of the step above: only a release PR (one that bumps
+      # __version__) may edit CHANGELOG.md. A feature or fix PR adds a changelog.d/
+      # fragment instead (changelog.d/README.md). Five parallel PRs that each edited
+      # the same lines under [Unreleased] conflicted with one another on every merge;
+      # a fragment is its own file, so two PRs never touch the same path. The
+      # `changelog-edit` label is the escape hatch for a deliberate exception, such as
+      # a hotfix back-merge (docs/dev/RELEASING.md).
+      - name: Feature and fix PRs use changelog.d/ fragments, not CHANGELOG.md
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          ALLOW_EDIT: ${{ contains(github.event.pull_request.labels.*.name, 'changelog-edit') }}
+        run: |
+          if ! git diff --name-only "origin/${BASE_REF}...HEAD" | grep -qx 'CHANGELOG.md'; then
+            exit 0
+          fi
+          PR_VERSION=$(grep '__version__' src/kairos_ontology/__init__.py \
+            | sed 's/.*"\(.*\)".*/\1/')
+          BASE_VERSION=$(git show "origin/${BASE_REF}:src/kairos_ontology/__init__.py" \
+            | grep '__version__' | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$PR_VERSION" != "$BASE_VERSION" ]; then
+            echo "Release PR (${BASE_VERSION} -> ${PR_VERSION}): CHANGELOG.md may change."
+            exit 0
+          fi
+          if [ "$ALLOW_EDIT" = "true" ]; then
+            echo "CHANGELOG.md edited under the changelog-edit label."
+            exit 0
+          fi
+          echo "::error::This PR edits CHANGELOG.md but is not a release (__version__ is unchanged)."
+          echo "::error::Move the entry to a changelog.d/<issue>-<slug>.md fragment instead:"
+          echo "::error::see changelog.d/README.md. The release collects fragments with"
+          echo "::error::scripts/collect_changelog.py --apply. Label the PR changelog-edit for a"
+          echo "::error::deliberate exception."
+          exit 1

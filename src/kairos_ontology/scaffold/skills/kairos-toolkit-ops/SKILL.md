@@ -26,7 +26,9 @@ before accepting changed semantics.
 ## Toolkit release
 
 1. Work from a clean feature branch and merge reviewed changes to `main`.
-2. Update `src/kairos_ontology/__init__.py` and `CHANGELOG.md` — promote
+2. Update `src/kairos_ontology/__init__.py` and `CHANGELOG.md`. First collect the
+   `changelog.d/` fragments with `python scripts/collect_changelog.py --apply`; this is the
+   only PR allowed to edit `CHANGELOG.md`, and CI rejects the edit elsewhere. Then promote
    `[Unreleased]` to a dated `## [X.Y.Z]` entry for every bump, RC included, not
    just GA (CI only enforces the entry for GA tags; write one anyway so the
    changelog doesn't read as stale). Run `uv lock` if needed.
