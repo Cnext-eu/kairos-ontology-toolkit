@@ -72,6 +72,11 @@ otel = [
 langfuse = [
     "langfuse>=4.14.0,<5.0.0",
 ]
+# MCP server (DD-245): the closure-aware inspection commands as IDE tools. Opt-in;
+# `kairos-ontology mcp serve` says how to install it when absent.
+mcp = [
+    "mcp>=2.2.0,<3.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
@@ -125,6 +130,11 @@ otel = [
 ]
 langfuse = [
     "langfuse>=4.14.0,<5.0.0",
+]
+# MCP server (DD-245): the closure-aware inspection commands as IDE tools. Opt-in;
+# `kairos-ontology mcp serve` says how to install it when absent.
+mcp = [
+    "mcp>=2.2.0,<3.0.0",
 ]
 
 [build-system]

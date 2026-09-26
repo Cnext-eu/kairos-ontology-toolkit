@@ -307,5 +307,6 @@ during cleanup.
 | [DD-242](decisions/dd-242-one-command-run-is-one-trace-of-task-spans-and-opentelemetry-export-is-opt-in.md) | One command run is one trace of task spans, and OpenTelemetry export is opt-in | Accepted | 2026-09-26 |
 | [DD-243](decisions/dd-243-ontology-meaning-is-read-from-the-import-closure-and-a-test-inventories-every-single-file.md) | Ontology meaning is read from the import closure, and a test inventories every single-file parse | Accepted | 2026-09-26 |
 | [DD-244](decisions/dd-244-an-llm-prompt-states-what-it-omits.md) | An LLM prompt states what it omits | Accepted | 2026-09-26 |
+| [DD-245](decisions/dd-245-ontology-semantics-are-served-through-one-interface-and-a-raw-read-corrects-itself.md) | Ontology semantics are served through one interface, and a raw read corrects itself | Accepted | 2026-09-26 |
 
 ---

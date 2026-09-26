@@ -557,6 +557,7 @@ def init(
             claude_settings_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(claude_settings_src, claude_settings_dst)
             print("  ✓ Installed .claude/settings.json (TTL access boundary)")
+    _install_mcp_registrations(cwd, force=force)
 
     # 4e-bis. Copy .env.example into repo root
     env_example_src = _SCAFFOLD_DIR / ".env.example"
@@ -1419,6 +1420,7 @@ def new_repo(
         claude_settings_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(claude_settings_src, claude_settings_dst)
         print("  ✓ .claude/settings.json (TTL access boundary)")
+    _install_mcp_registrations(repo_dir, force=False)
 
     # Stamp every toolkit-owned document, whatever route wrote it. The per-directory
     # READMEs arrive with the bulk `ontology-hub/` copy, which does not stamp, so
@@ -2376,6 +2378,31 @@ def _imported_class_context(hub: Path, imports: list[dict[str, str]]) -> str:
         )
         parts.append(rendered.text)
     return "\n\n".join(parts)
+
+
+#: ``{scaffold file: repo-relative destination}`` for the MCP server registrations (DD-245).
+MCP_REGISTRATIONS = {
+    "mcp.json": ".mcp.json",
+    "vscode-mcp.json": ".vscode/mcp.json",
+}
+
+
+def _install_mcp_registrations(root: Path, *, force: bool) -> None:
+    """Register the hub's MCP server for Claude Code and Copilot (DD-245).
+
+    Created when absent and otherwise left alone: both files are the operator's to extend
+    with other servers, and `update` treats them the same way.
+    """
+    for source_name, destination in MCP_REGISTRATIONS.items():
+        source = _SCAFFOLD_DIR / source_name
+        target = root / destination
+        if not source.is_file():
+            continue
+        if target.exists() and not force:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        print(f"  ✓ {destination} (Kairos MCP server registration)")
 
 
 def _build_ai_domain_prompt(

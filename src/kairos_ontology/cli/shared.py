@@ -1501,6 +1501,12 @@ _KNOWN_CLAUDE_SETTINGS_GENERATIONS = {
         "domain .ttl or its SHACL structurally impossible (issue #659). If your hub restored "
         "them by hand, that revert is what blocks kairos-design-domain -- let this update land"
     ),
+    "eae2e01e4a9a245b57551a5a576d953851b58cea5f0a6bab2f6fe30056c77bab": (
+        "Read hooks were added (DD-245): after a read of a domain .ttl, Claude Code is told "
+        "which modules the file imports and which classes carry inherited properties the "
+        "file does not contain; a read of a reference-model file is denied. Deny rules are "
+        "unchanged"
+    ),
 }
 
 # Retained for callers that only need membership (e.g. the static boundary test).

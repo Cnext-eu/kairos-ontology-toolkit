@@ -51,6 +51,8 @@ RETAINED_COMMANDS = {
     "list-class-properties",
     "list-patterns",
     "logs",
+    "hook",
+    "mcp",
     "mdm-validate",
     "migrate",
     "new-repo",

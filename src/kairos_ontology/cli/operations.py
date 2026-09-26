@@ -876,6 +876,19 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
                     claude_settings_dst, claude_settings_src
                 )
 
+    # --- MCP server registrations (DD-245) ---------------------------------
+    # Created when absent, never overwritten, never a --check failure: the files are the
+    # operator's to extend with other servers.
+    from .setup import MCP_REGISTRATIONS
+
+    for source_name, destination in MCP_REGISTRATIONS.items():
+        source = _SCAFFOLD_DIR / source_name
+        target = repo_root / destination
+        if source.is_file() and not target.exists() and not check:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            print(f"  ✓ {destination} (Kairos MCP server registration)")
+
     # --- Reconcile .github/workflows/*.yml (issue #658) ----------------------
     # Scaffolded once and never revisited, so a real fix to a workflow template
     # -- e.g. pr-validate.yml's guard against `local:` dbt package pins -- could

@@ -70,7 +70,10 @@ inverse relations live in the modules it `owl:imports`. Inspect meaning with
 `kairos-ontology show-class-inventory --domain <domain>`,
 `list-class-properties <IRI> --domain <domain>` and `explain-term <IRI> --domain <domain>`,
 which resolve that closure; never read the file as text to answer a semantic question
-(DD-103). The same holds for an AI agent working in the hub.
+(DD-103). The same holds for an AI agent working in the hub: the scaffold registers the
+hub's MCP server (`kairos-ontology mcp serve`, `[mcp]` extra) for Claude Code and Copilot,
+so those commands are tools, and on Claude Code a read of a domain `.ttl` is followed by
+a note naming what the file does not contain (DD-245).
 
 ## 3. Configure the adapter
 
