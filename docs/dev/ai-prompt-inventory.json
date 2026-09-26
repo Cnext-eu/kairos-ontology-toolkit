@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "decision": "DD-244",
+  "rule": "Every chat-completion call site is listed. A prompt that carries ontology terms renders them through core.prompt_context (closure index, inherited properties marked, cuts disclosed) or records the gap as a DD. tests/test_prompt_context_contract.py enforces it.",
+  "exempt_modules": [
+    "core/ai_provider.py"
+  ],
+  "sites": [
+    {
+      "module": "cli/setup.py",
+      "function": "_generate_domain_ttl_with_ai",
+      "ontology_terms": true,
+      "known_gap": "DD-244",
+      "raw_sdk": true,
+      "note": "scaffold-domain --ai: import IRIs only, no imported classes; bypasses create_chat_completion"
+    },
+    {
+      "module": "core/ai_preflight.py",
+      "function": "_probe_client",
+      "ontology_terms": false,
+      "raw_sdk": true,
+      "note": "connectivity probe; sends no hub content"
+    },
+    {
+      "module": "core/analyse_sources.py",
+      "function": "analyse_table_single_call",
+      "ontology_terms": true,
+      "known_gap": "DD-244",
+      "note": "18 class labels; accelerator path is a single-file parse by design; cap not disclosed"
+    },
+    {
+      "module": "core/anchor_tables.py",
+      "function": "run_anchor_tables",
+      "ontology_terms": true,
+      "known_gap": "DD-244",
+      "note": "reference class catalog: names + first sentence via read_reference_terms (closure-aware); scope and hub-local exclusion not disclosed"
+    },
+    {
+      "module": "core/conformance_judge.py",
+      "function": "judge_concepts",
+      "ontology_terms": false,
+      "note": "archetype catalogue YAML and source evidence; no ontology"
+    },
+    {
+      "module": "core/gap_decisions.py",
+      "function": "suggest_family_dispositions",
+      "ontology_terms": true,
+      "known_gap": "DD-244",
+      "note": "asserts 'no reference-model property' without showing the model"
+    },
+    {
+      "module": "core/gap_decisions.py",
+      "function": "suggest_loose_dispositions",
+      "ontology_terms": true,
+      "known_gap": "DD-244",
+      "note": "asserts 'no reference-model property' without showing the model"
+    },
+    {
+      "module": "core/propose_alignment.py",
+      "function": "_align_table_once",
+      "ontology_terms": true,
+      "known_gap": "DD-244",
+      "note": "closure index, but 12/60 cut drops inherited properties first with no disclosure; response enum wider than the prompt"
+    }
+  ]
+}

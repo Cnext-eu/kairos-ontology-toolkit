@@ -305,5 +305,6 @@ during cleanup.
 | [DD-240](decisions/dd-240-modelling-best-practices-live-in-one-catalogue-that-the-docs-the-skills-and-the-checks.md) | Modelling best practices live in one catalogue that the docs, the skills and the checks all read | Accepted | 2026-09-24 |
 | [DD-241](decisions/dd-241-relationship-cardinality-is-declared-in-owl-and-each-diagram-draws-what-its-layer.md) | Relationship cardinality is declared in OWL, and each diagram draws what its layer guarantees | Accepted | 2026-09-25 |
 | [DD-242](decisions/dd-242-one-command-run-is-one-trace-of-task-spans-and-opentelemetry-export-is-opt-in.md) | One command run is one trace of task spans, and OpenTelemetry export is opt-in | Accepted | 2026-09-26 |
+| [DD-243](decisions/dd-243-ontology-meaning-is-read-from-the-import-closure-and-a-test-inventories-every-single-file.md) | Ontology meaning is read from the import closure, and a test inventories every single-file parse | Accepted | 2026-09-26 |
 
 ---

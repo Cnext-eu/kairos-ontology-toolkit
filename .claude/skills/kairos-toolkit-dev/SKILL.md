@@ -17,6 +17,12 @@ modules under `src/kairos_ontology/cli`, MDM under `src/kairos_ontology/mdm`, se
 - Complex relational inputs are ordinary contracted dbt models.
 - Core never imports MDM. Register optional consumers without reversing this dependency.
 - Use rdflib for RDF and Jinja/templates or typed renderers for output.
+- Ontology meaning is read through `core.ontology_loader.load_ontology` and its
+  `semantic_index` (DD-243). A direct `Graph().parse` is for syntax, IRIs, imports or
+  non-ontology inputs, and every one is listed in
+  `docs/dev/dd103-single-file-parse-inventory.json`. A prompt that lists ontology terms
+  renders them with `core.prompt_context`; check `index.carries(field)` before reading a
+  profile-dependent field.
 
 ## Change workflow
 

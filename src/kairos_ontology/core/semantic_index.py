@@ -16,6 +16,32 @@ from .projections.shared import SCHEMA, effective_domain_classes
 
 SEMANTIC_INDEX_VERSION = "1.0"
 
+#: Record fields whose content depends on the :class:`SemanticProfile` (#937). Under a
+#: profile that does not carry a field, the record holds an empty tuple that says nothing.
+PROFILE_DEPENDENT_FIELDS: tuple[str, ...] = (
+    "inherited_properties",
+    "equivalent_classes",
+    "restrictions",
+    "intersection_members",
+    "union_members",
+    "equivalent_properties",
+    "inverse_properties",
+    "individuals",
+)
+
+_TRANSITIVE_FIELDS = frozenset({"inherited_properties"})
+_DESIGN_FIELDS = frozenset(PROFILE_DEPENDENT_FIELDS) - _TRANSITIVE_FIELDS
+
+#: Which of :data:`PROFILE_DEPENDENT_FIELDS` each profile populates. Mirrors the
+#: ``transitive`` / ``design`` switches in :func:`build_semantic_index`; a test pins the two
+#: together so they cannot drift.
+PROFILE_COVERAGE: dict[SemanticProfile, frozenset[str]] = {
+    SemanticProfile.ASSERTED: frozenset(),
+    SemanticProfile.RDFS: _TRANSITIVE_FIELDS,
+    SemanticProfile.KAIROS_DESIGN: _TRANSITIVE_FIELDS | _DESIGN_FIELDS,
+    SemanticProfile.OWL_RL: _TRANSITIVE_FIELDS | _DESIGN_FIELDS,
+}
+
 
 def _local_name(uri: str) -> str:
     return uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
@@ -118,6 +144,23 @@ class SemanticIndex:
     #: baseline -- it describes what the closure *failed* to contain, not what it holds.
     unattached_property_domains: tuple[tuple[str, str], ...] = ()
 
+    def carries(self, field: str) -> bool:
+        """Whether this index's profile populates *field* at all (#937, DD-243).
+
+        ``inherited_properties`` is empty under ASSERTED; ``equivalent_classes``,
+        ``restrictions``, ``inverse_properties`` and the other design-level fields are empty
+        under ASSERTED and RDFS. An empty tuple therefore means "declares none" only when
+        the profile carries the field; otherwise it means "not looked at". A consumer
+        reads a profile-dependent field only after asking this.
+        """
+        return field in PROFILE_COVERAGE[self.profile]
+
+    @property
+    def coverage(self) -> dict[str, bool]:
+        """Every profile-dependent field and whether this profile populates it."""
+        carried = PROFILE_COVERAGE[self.profile]
+        return {field: field in carried for field in PROFILE_DEPENDENT_FIELDS}
+
     def class_by_uri(self, uri: str) -> ClassRecord | None:
         """Return a class by full URI."""
         return next((item for item in self.classes if item.uri == uri), None)
@@ -200,6 +243,8 @@ class SemanticIndex:
                 "selection_rule": selection_rule,
                 "truncated": len(included) < len(candidates),
                 "omitted_modules": omitted_modules,
+                # Which fields this profile fills, so an empty tuple can be read correctly.
+                "coverage": self.coverage,
             },
             "classes": [self._class_slice_dict(item) for item in included],
         }
