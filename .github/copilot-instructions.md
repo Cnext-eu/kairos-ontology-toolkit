@@ -81,6 +81,9 @@ Passing compilation does not replace downstream dbt, adapter, deployment, securi
   `owl:imports` chain, or equivalence/inverse relationships from serialized RDF. Use the CLI's
   semantic commands instead: `kairos-ontology resolve-ontology`, `kairos-ontology
   show-class-inventory`, `kairos-ontology explain-term`, `kairos-ontology list-class-properties`.
+  Where the hub's MCP server is registered (`.vscode/mcp.json`, `.mcp.json`), the same
+  commands are tools — `explain_term`, `list_class_properties`, `show_class_inventory` —
+  and the tool is the preferred path (DD-245).
 - Where a hub provisions a `.claude/settings.json` deny-list (see
   `scaffold/claude-settings.json`), it is the source of truth for the enforced deny rules for
   Claude Code sessions in that repo; consult it rather than this document for the exact guarded

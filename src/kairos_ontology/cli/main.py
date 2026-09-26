@@ -42,7 +42,9 @@ from .package_powerbi_release import package_powerbi_release_cmd
 from .decisions import decision
 from .feedback import feedback
 from .gates import gates_cmd
+from .hook import hook_group
 from .logs import logs_group
+from .mcp_server import mcp_group
 from .promote_transform import promote_transform_cmd
 from .validation import (
     validate_dbt_cmd,
@@ -390,6 +392,8 @@ def register_commands(group: click.Group) -> None:
     group.add_command(decision)
     group.add_command(gates_cmd)
     group.add_command(logs_group)
+    group.add_command(mcp_group)
+    group.add_command(hook_group)
     group.add_command(feedback)
     group.add_command(validate_dbt_cmd)
     group.add_command(validate_dbt_contracts_cmd)

@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "kairos": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "kairos-ontology",
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}

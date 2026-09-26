@@ -18,29 +18,5 @@
       "Write(/ontology-hub-publish/**)",
       "Write(./ontology-hub-publish/**)"
     ]
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run kairos-ontology hook read-context"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run kairos-ontology hook read-context"
-          }
-        ]
-      }
-    ]
   }
 }

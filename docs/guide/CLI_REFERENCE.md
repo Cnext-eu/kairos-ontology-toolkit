@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-100 commands.
+104 commands.
 
 ## Index
 
@@ -73,6 +73,8 @@ not reasoning.
 | [`generate-bindings`](#generate-bindings) | Generate first-draft EntityBindings from the design sheet (DD-191, no LLM). |
 | [`guard-scope`](#guard-scope) | Deterministic 'no unexpected file changed' guard for a bounded skill gate. |
 | [`harvest-gold`](#harvest-gold) | Diff an edited semantic model against this hub and propose the authoring. |
+| [`hook`](#hook) | Claude Code hooks the hub scaffold wires (DD-245). |
+| [`hook read-context`](#hook-read-context) | Answer a Claude Code Read hook from the JSON on stdin. |
 | [`import-flatfile`](#import-flatfile) | Import CSV/.xlsx/Parquet flat files as source schema documentation. |
 | [`import-source`](#import-source) | Import source schema YAML and generate/refresh bronze vocabulary TTL. |
 | [`import-tmdl`](#import-tmdl) | Import and inventory TMDL/PBIP files for ontology modeling. |
@@ -83,6 +85,8 @@ not reasoning.
 | [`list-patterns`](#list-patterns) | Surface the reference-models pattern library for the design-domain skill (#262 §3). |
 | [`logs`](#logs) | Read the run logs that writing commands keep in <hub>/.kairos/logs/. |
 | [`logs show`](#logs-show) | Show one run log: how the run ended, its tasks and durations, and its diagnostics. |
+| [`mcp`](#mcp) | Serve the closure-aware inspection commands as MCP tools (DD-245). |
+| [`mcp serve`](#mcp-serve) | Start the Kairos MCP server on stdio. |
 | [`mdm-validate`](#mdm-validate) | Validate MDM extension policy (``*-mdm-ext.ttl``) for each domain. |
 | [`migrate`](#migrate) | Move an existing ontology hub from the flat layout to the grouped layout. |
 | [`new-repo`](#new-repo) | Create a new ontology hub GitHub repository. |
@@ -937,6 +941,24 @@ kairos-ontology harvest-gold [OPTIONS] PRODUCT_OR_DOMAIN
 | `--from` | **required** | The edited semantic model: a PBIP export folder, a '<Name>.SemanticModel' folder, or its 'definition/' folder. Power BI Desktop writes this with 'Save as PBIP'; for a Direct Lake model, export it through Fabric git integration instead -- Direct Lake cannot be saved as a PBIP from Desktop. |
 
 
+## hook
+
+Claude Code hooks the hub scaffold wires (DD-245).
+
+```
+kairos-ontology hook [OPTIONS] COMMAND [ARGS]...
+```
+
+
+## hook read-context
+
+Answer a Claude Code Read hook from the JSON on stdin. PostToolUse on a domain `.ttl`: adds context naming the file's imports and the classes whose inherited properties are not in the file. PreToolUse on a reference-model file: denies the read. Anything else, or any failure: `{}`.
+
+```
+kairos-ontology hook read-context [OPTIONS]
+```
+
+
 ## import-flatfile
 
 Import CSV/.xlsx/Parquet flat files as source schema documentation. Reads flat files and produces the standard source schema format (_manifest.yaml + per-table YAML + samples). Use import-source afterwards to generate the bronze vocabulary TTL.  Supported inputs: - Single .csv file → 1 table - Single .xlsx file → 1 table per worksheet - Single .parquet file → 1 table - Directory of .csv/.xlsx/.parquet files → 1 table per file/sheet (non-recursive by default; pass --recursive for nested export trees)  Directory mode tolerates unreadable files: each one is skipped with a warning and the rest are imported (exit 0). If no file in the directory can be read, nothing is written and the exit code is 1. A single file given directly always fails fast. Legacy .xls files are recognized but never readable — convert to .xlsx first.  Examples: kairos-ontology import-flatfile --from exports/customers.csv --system erp kairos-ontology import-flatfile --from data/report.xlsx --system finance kairos-ontology import-flatfile --from exports/orders.parquet --system wms kairos-ontology import-flatfile --from data-exports/ --system legacy-erp kairos-ontology import-flatfile --from nested-exports/ --recursive --system legacy-erp kairos-ontology import-flatfile --from .input/data --system erp \ --exclude-columns "volume,subfolder,table"  Next step after import-flatfile: kairos-ontology import-source --from integration/sources/{system}/
@@ -1114,6 +1136,28 @@ kairos-ontology logs show [OPTIONS] [PATH]
 | `--last` |  | Show the newest run log of this hub (the default when no PATH is given). |
 | `--group-by` | `task` | task: the span tree with each diagnostic under the task that reported it. code / severity: diagnostics grouped by that field, with counts. |
 | `--format` | `text` |  |
+
+
+## mcp
+
+Serve the closure-aware inspection commands as MCP tools (DD-245).
+
+```
+kairos-ontology mcp [OPTIONS] COMMAND [ARGS]...
+```
+
+
+## mcp serve
+
+Start the Kairos MCP server on stdio. Register it once in the hub (`.mcp.json` for Claude Code, `.vscode/mcp.json` for Copilot; the scaffold ships both) and the IDE starts it from the hub's environment. Tools: show_class_inventory, list_class_properties, explain_term, resolve_ontology, compile_check, compile_explain, logs_show. Needs the `[mcp]` extra.
+
+```
+kairos-ontology mcp serve [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--hub` |  | Hub root; found from the working directory when omitted. |
 
 
 ## mdm-validate

@@ -81,6 +81,9 @@ immutable CompilePlan and deterministic downstream artifacts.
 - `CICD.md` / `CONTRIBUTING.md`: managed branching, review, validation, promotion,
   rollback, and hotfix guidance for this repository
 
+When the hub registers its MCP server (`.mcp.json` / `.vscode/mcp.json`, shipped by the scaffold),
+the same commands are tools: `show_class_inventory`, `list_class_properties`, `explain_term`,
+`resolve_ontology`, `compile_check`, `compile_explain`, `logs_show`. Prefer the tool.
 Never read a raw `.ttl`/`.rdf`/`.owl` file as text; use `resolve-ontology`, `show-class-inventory`,
 `list-class-properties`, or `explain-term` if semantic detail is needed: a `.ttl` carries only its own triples; the parents, inherited properties and inverse relations live in the modules it `owl:imports`, and only the CLI resolves that closure (DD-103).
 
@@ -91,6 +94,7 @@ kairos-ontology compile <domain> --check --format json
 kairos-ontology compile <domain> --explain --format json
 kairos-ontology compile <domain> --emit --confirm-emit
 kairos-ontology logs show
+kairos-ontology mcp serve            # the inspection commands as IDE tools (DD-245)
 kairos-ontology decision new
 kairos-ontology validate
 kairos-ontology validate --ddd
