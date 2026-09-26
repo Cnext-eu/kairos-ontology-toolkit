@@ -35,6 +35,7 @@ whichever stage happened to run first.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -984,6 +985,76 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
     }
 
 
+#: ``proposed_by`` value stamped on an entry whose proposal a ``--suggest`` model call
+#: wrote (#1056). An entry without it carries the rule's proposal, which a rebuild redraws.
+PROPOSED_BY_MODEL = "model"
+
+#: The fields a ``--suggest`` answer owns. A rebuild keeps them from the previous sheet
+#: while the evidence the model read is unchanged, and drops them the moment it moves.
+_MODEL_FIELDS = ("coherent", "proposed_disposition", "reasoning", "proposed_by", "evidence")
+
+
+def _fingerprint(evidence: dict[str, Any]) -> str:
+    canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
+def _candidate_uris(entry: dict[str, Any]) -> list[str]:
+    return sorted(
+        {
+            str(c.get("uri") or "")
+            for c in (entry.get("closure_candidates") or [])
+            if isinstance(c, dict)
+        }
+        - {""}
+    )
+
+
+def loose_evidence_fingerprint(entry: dict[str, Any]) -> str:
+    """What a model proposal for one loose name was answered from (#1056).
+
+    The stable, identifying evidence only: the closure candidates it was shown, the
+    Power BI demand, the aligner's drafted properties (name/range/class, not their prose)
+    and the data types. A new closure candidate changes this, so the model's answer --
+    given without that candidate -- stops being carried and the rule's draft stands.
+    """
+    return _fingerprint(
+        {
+            "closure_candidates": _candidate_uris(entry),
+            "bi_demand": sorted(str(d) for d in entry.get("bi_demand") or []),
+            "suggested_properties": sorted(
+                [
+                    str(p.get("name") or ""),
+                    str(p.get("range") or ""),
+                    str(p.get("on_class") or ""),
+                ]
+                for p in entry.get("suggested_properties") or []
+                if isinstance(p, dict)
+            ),
+            "data_types": sorted(str(t) for t in entry.get("data_types") or []),
+        }
+    )
+
+
+def family_evidence_fingerprint(family: dict[str, Any]) -> str:
+    """What a model proposal for one family was answered from (#1056)."""
+    return _fingerprint(
+        {
+            "members": sorted(str(m) for m in family.get("members") or []),
+            "bi_demand_members": sorted(str(m) for m in family.get("bi_demand_members") or []),
+            "closure_candidates": _candidate_uris(family),
+            "members_with_closure_candidates": sorted(
+                str(m) for m in family.get("members_with_closure_candidates") or []
+            ),
+        }
+    )
+
+
+def _stamp_model(entry: dict[str, Any], fingerprint: str) -> None:
+    entry["proposed_by"] = PROPOSED_BY_MODEL
+    entry["evidence"] = fingerprint
+
+
 #: Most single names to characterise in one call. The families call is bounded by how
 #: many groups a sheet forms; a loose list is bounded by nothing, and a strict
 #: response_format names every key in `required`, so a 1,000-name hub would build a
@@ -1166,6 +1237,7 @@ COLUMNS ({len(batch)}):
             described += 1
             entry["proposed_disposition"] = answer.get("proposed_disposition") or ""
             entry["reasoning"] = str(answer.get("reasoning") or "") or entry.get("reasoning", "")
+            _stamp_model(entry, loose_evidence_fingerprint(entry))
 
     flush_tracing()
     return {"names_described": described, "batches": batches}
@@ -1367,6 +1439,7 @@ FAMILIES ({len(families)}):
             incoherent += 1
         family["proposed_disposition"] = s.get("proposed_disposition") or ""
         family["reasoning"] = str(s.get("reasoning") or "")
+        _stamp_model(family, family_evidence_fingerprint(family))
     flush_tracing()
     return {"families_described": described, "flagged_incoherent": incoherent}
 
@@ -1389,10 +1462,11 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
     model depends on is left for one (#942): accepting blanket answers is exactly how a
     report's grain column was deferred. Those are counted as ``held-for-bi-demand``.
 
-    An entry with closure candidates (DD-248) is held too, unless its proposal is a
-    disposition other than ``registered-extension``: a same-named property exists in the
-    closure, so registering an extension duplicates it, and the *deferred* fallback would
-    bury a one-line mapping answer. Counted as ``held-for-closure-candidate``.
+    An entry with closure candidates (DD-248) is held too, whatever its proposal says and
+    however weak the candidate's score (#1057): a same-named property exists in the
+    closure, so registering an extension duplicates it, deferring buries a one-line
+    mapping answer, and ruling it out is a judgement no blanket acceptance can make.
+    Counted as ``held-for-closure-candidate``.
     """
     counts: dict[str, int] = {}
     for entry in list(sheet.get("families") or []) + list(sheet.get("decisions") or []):
@@ -1401,10 +1475,10 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
         if entry.get("bi_demand") or entry.get("bi_demand_members"):
             counts["held-for-bi-demand"] = counts.get("held-for-bi-demand", 0) + 1
             continue
-        proposed = str(entry.get("proposed_disposition") or "").strip()
-        if entry.get("closure_candidates") and proposed in ("", "registered-extension"):
+        if entry.get("closure_candidates") or entry.get("members_with_closure_candidates"):
             counts["held-for-closure-candidate"] = counts.get("held-for-closure-candidate", 0) + 1
             continue
+        proposed = str(entry.get("proposed_disposition") or "").strip()
         decision = proposed or fallback
         entry["decision"] = decision
         entry["decided_by"] = "autopilot"
@@ -1412,34 +1486,67 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
     return counts
 
 
-def write_decision_sheet(hub_root: Path, sheet: dict[str, Any]) -> Path:
-    """Write the sheet, preserving any 'decision' values already filled in."""
+def _carry_entry(new: dict[str, Any], old: dict[str, Any], fingerprint: str) -> None:
+    """Carry what the previous sheet knew about one entry into its rebuilt draft."""
+    if str(old.get("decision") or "").strip():
+        new["decision"] = str(old["decision"])
+        if old.get("decided_by"):
+            new["decided_by"] = str(old["decided_by"])
+    # A fresh model answer already on the rebuilt entry wins; an old one is kept only
+    # while the evidence it was given is the evidence the entry carries now (#1056).
+    if new.get("proposed_by") == PROPOSED_BY_MODEL:
+        return
+    if old.get("proposed_by") != PROPOSED_BY_MODEL or old.get("evidence") != fingerprint:
+        return
+    for key in _MODEL_FIELDS:
+        if key in old:
+            new[key] = old[key]
+
+
+def merge_decision_sheet(hub_root: Path, sheet: dict[str, Any]) -> dict[str, Any]:
+    """Merge the sheet on disk into a freshly built *sheet*, in place; writes nothing.
+
+    Carries each entry's ``decision`` (with its ``decided_by``), keyed ``(domain,
+    column)`` for a loose name and ``(domain, family)`` for a family. A ``--suggest``
+    answer (``proposed_by: model``) is carried too, but only while its ``evidence``
+    fingerprint still matches the rebuilt entry: a rebuild redraws the rule's proposal,
+    and a model proposal lost to it was paid for and silently thrown away (#1056). A
+    rule proposal is never carried -- the rebuild's own draft replaces it.
+    """
     directory = analysis_paths.analysis_dir(Path(hub_root))
     previous_path = analysis_paths.read_hub_path(directory, analysis_paths.GAP_DECISIONS)
+    if not previous_path.is_file():
+        return sheet
+    try:
+        previous = yaml.safe_load(previous_path.read_text(encoding="utf-8")) or {}
+        old_names = {
+            (str(e.get("domain") or ""), str(e.get("column"))): e
+            for e in previous.get("decisions") or []
+            if isinstance(e, dict)
+        }
+        old_families = {
+            (str(f.get("domain") or ""), str(f.get("family"))): f
+            for f in previous.get("families") or []
+            if isinstance(f, dict)
+        }
+        for entry in sheet.get("decisions") or []:
+            old = old_names.get((str(entry.get("domain") or ""), str(entry["column"])))
+            if old:
+                _carry_entry(entry, old, loose_evidence_fingerprint(entry))
+        for entry in sheet.get("families") or []:
+            old = old_families.get((str(entry.get("domain") or ""), str(entry["family"])))
+            if old:
+                _carry_entry(entry, old, family_evidence_fingerprint(entry))
+    except Exception:  # noqa: BLE001 - a broken previous sheet must not lose work
+        logger.warning("Could not merge previous decisions from %s", previous_path)
+    return sheet
+
+
+def write_decision_sheet(hub_root: Path, sheet: dict[str, Any]) -> Path:
+    """Write the sheet, preserving decisions and still-current model proposals."""
+    directory = analysis_paths.analysis_dir(Path(hub_root))
     path = analysis_paths.hub_path(directory, analysis_paths.GAP_DECISIONS)
-    if previous_path.is_file():
-        try:
-            previous = yaml.safe_load(previous_path.read_text(encoding="utf-8")) or {}
-            kept_names = {
-                (str(e.get("domain") or ""), str(e.get("column"))): str(e.get("decision") or "")
-                for e in previous.get("decisions") or []
-                if e.get("decision")
-            }
-            kept_families = {
-                (str(f.get("domain") or ""), str(f.get("family"))): str(f.get("decision") or "")
-                for f in previous.get("families") or []
-                if f.get("decision")
-            }
-            for entry in sheet["decisions"]:
-                key = (entry.get("domain", ""), entry["column"])
-                if key in kept_names:
-                    entry["decision"] = kept_names[key]
-            for entry in sheet["families"]:
-                key = (entry.get("domain", ""), entry["family"])
-                if key in kept_families:
-                    entry["decision"] = kept_families[key]
-        except Exception:  # noqa: BLE001 - a broken previous sheet must not lose work
-            logger.warning("Could not merge previous decisions from %s", previous_path)
+    merge_decision_sheet(hub_root, sheet)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         yaml.safe_dump(sheet, sort_keys=False, allow_unicode=True), encoding="utf-8"
@@ -1454,6 +1561,7 @@ def apply_decision_sheet(
     dry_run: bool = False,
     decided_by: str = "user",
     progress: Callable[[str, int], None] | None = None,
+    sheet: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Apply every filled-in ``decision`` to the ledger, for all its occurrences.
 
@@ -1464,11 +1572,18 @@ def apply_decision_sheet(
     the sheet in; an agent accepting drafted proposals on a human's instruction is
     ``autopilot``, and recording that as ``user`` would put a false attribution in
     a ledger whose whole value is being auditable.
+
+    *sheet*, when given, is applied instead of the file on disk: ``--accept-proposals
+    --dry-run`` accepts in memory and must count what it would apply without writing the
+    sheet first (#1056). Under *dry_run* nothing is written to the ledger.
     """
-    path = analysis_paths.read_hub_path(analysis_paths.analysis_dir(Path(hub_root)), analysis_paths.GAP_DECISIONS)
-    if not path.is_file():
-        raise FileNotFoundError(f"No decision sheet at {path}. Draft one first.")
-    sheet = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if sheet is None:
+        path = analysis_paths.read_hub_path(
+            analysis_paths.analysis_dir(Path(hub_root)), analysis_paths.GAP_DECISIONS
+        )
+        if not path.is_file():
+            raise FileNotFoundError(f"No decision sheet at {path}. Draft one first.")
+        sheet = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     filled: dict[tuple[str, str], str] = {}
     why: dict[tuple[str, str], str] = {}
     drafted: dict[tuple[str, str], dict[str, str]] = {}
@@ -1552,7 +1667,8 @@ def apply_decision_sheet(
             )
     # One write per source system, not one per occurrence: a 1,113-column sheet spent
     # twelve minutes rewriting the whole ledger once per column (#943).
-    record_dispositions(Path(hub_root), pending, progress=progress)
+    if not dry_run:
+        record_dispositions(Path(hub_root), pending, progress=progress)
     return {
         "names_applied": len(filled),
         "families_applied": families_applied,

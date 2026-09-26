@@ -3568,6 +3568,33 @@ def _ledger_progress(system: str, count: int) -> None:
     click.echo(f"   ✎ {system}: {count} decision(s) written to its ledger")
 
 
+def _echo_model_proposals(sheet: dict, *, width: int = 120) -> None:
+    """One line per model-drafted proposal, for ``--suggest --dry-run`` (#1056)."""
+    from ..core.gap_decisions import PROPOSED_BY_MODEL
+
+    rows = [
+        (f.get("domain") or "_", f"family {f.get('family')}", f)
+        for f in sheet.get("families") or []
+        if f.get("proposed_by") == PROPOSED_BY_MODEL
+    ] + [
+        (e.get("domain") or "_", str(e.get("column")), e)
+        for e in sheet.get("decisions") or []
+        if e.get("proposed_by") == PROPOSED_BY_MODEL
+    ]
+    click.echo(f"🧠 {len(rows)} model proposal(s), not written (--dry-run):")
+    for domain, subject, entry in rows:
+        proposed = entry.get("proposed_disposition") or "(left for a human)"
+        reasoning = " ".join(str(entry.get("reasoning") or "").split())
+        line = f"   {domain} :: {subject} -> {proposed}"
+        if entry.get("coherent") is False:
+            line += " [not one concept]"
+        if len(reasoning) > width:
+            reasoning = reasoning[: width - 1].rstrip() + "…"
+        if reasoning:
+            line += f" — {reasoning}"
+        click.echo(line)
+
+
 def _cascade_warning(hub_root, system: str, table: str, disposition: str) -> list[str]:
     """Lines saying what a table-grain disposition just retired from the DD-169 gate.
 
@@ -4378,8 +4405,11 @@ def anchor_tables_cmd(
     "--suggest",
     is_flag=True,
     default=False,
-    help="One model call to characterise each family: names the concept, drafts a "
-    "disposition, and flags families whose members do not belong together.",
+    help="Model calls to characterise each family and single name: names the concept, "
+    "drafts a disposition, and flags families whose members do not belong together. "
+    "Proposals are stamped proposed_by=model and survive a redraft while their evidence "
+    "is unchanged; with --dry-run they are printed, not written. Not combinable with "
+    "--auto or --accept-proposals: run --suggest, read the sheet, then accept.",
 )
 @click.option(
     "--accept-proposals",
@@ -4387,7 +4417,9 @@ def anchor_tables_cmd(
     default=False,
     help="Fill every empty 'decision' from its drafted proposal (empty ones default to "
     "'deferred'), then apply. Recorded as decided_by=autopilot, never as a human "
-    "decision. Use only when you have read the drafts and accept them.",
+    "decision. Entries a Power BI model uses or with closure candidates are held for a "
+    "human. With --dry-run nothing is written. Use only when you have read the drafts "
+    "and accept them.",
 )
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would change.")
 def draft_gap_decisions_cmd(
@@ -4417,9 +4449,21 @@ def draft_gap_decisions_cmd(
         apply_auto_dispositions,
         apply_decision_sheet,
         build_decision_sheet,
+        merge_decision_sheet,
         write_decision_sheet,
     )
     from ..core.hub_utils import find_hub_root
+
+    # --suggest writes model proposals for a human to read; --auto and
+    # --accept-proposals record decisions. One run doing both either dropped --suggest
+    # without a word or would accept answers nobody has seen (#1056).
+    if suggest and (auto or accept_proposals):
+        other = "--auto" if auto else "--accept-proposals"
+        raise click.UsageError(
+            f"--suggest cannot be combined with {other}. Run 'draft-gap-decisions "
+            "--suggest' first, read the proposals in hub.gap-decisions.yaml, then run "
+            f"'draft-gap-decisions {other}'."
+        )
 
     hub = find_hub_root(_Path.cwd(), require_model=True)
     if hub is None:
@@ -4470,26 +4514,30 @@ def draft_gap_decisions_cmd(
     if accept_proposals:
         from ..core.gap_decisions import accept_proposals as _accept
 
-        sheet = build_decision_sheet(hub, min_occurrences=min_occurrences)
-        # Preserve anything already decided, then fill the rest from the drafts.
-        path = write_decision_sheet(hub, sheet)
-        import yaml as _yaml
-
-        sheet = _yaml.safe_load(path.read_text(encoding="utf-8"))
+        # Preserve anything already decided (and any still-current --suggest answer),
+        # then fill the rest from the drafts -- all in memory, so --dry-run writes
+        # nothing and still counts what accepting would apply (#1056).
+        sheet = merge_decision_sheet(
+            hub, build_decision_sheet(hub, min_occurrences=min_occurrences)
+        )
         counts = _accept(sheet)
-        if not dry_run:
-            path.write_text(
-                _yaml.safe_dump(sheet, sort_keys=False, allow_unicode=True), encoding="utf-8"
-            )
+        accepted = "would accept" if dry_run else "accepted"
         click.echo(
-            "🤖 accepted drafted proposals as decisions (decided_by=autopilot): "
+            f"🤖 {accepted} drafted proposals as decisions (decided_by=autopilot): "
             + ", ".join(f"{n} {d}" for d, n in sorted(counts.items(), key=lambda kv: -kv[1]))
         )
+        if not dry_run:
+            write_decision_sheet(hub, sheet)
         stats = apply_decision_sheet(
-            hub, dry_run=dry_run, decided_by="autopilot", progress=_ledger_progress
+            hub,
+            dry_run=dry_run,
+            decided_by="autopilot",
+            progress=_ledger_progress,
+            sheet=sheet,
         )
+        verb = "would apply" if dry_run else "applied"
         click.echo(
-            f"✅ applied {stats['families_applied']} family + {stats['names_applied']} "
+            f"✅ {verb} {stats['families_applied']} family + {stats['names_applied']} "
             f"name-level decision(s) to {stats['columns_written']} source column(s)"
         )
         return
@@ -4507,6 +4555,9 @@ def draft_gap_decisions_cmd(
     if not auto:
         sheet = build_decision_sheet(hub, min_occurrences=min_occurrences)
         if suggest:
+            # Merge first: a name already decided, or already answered by a model call
+            # on the same evidence, is not sent again (#1056).
+            merge_decision_sheet(hub, sheet)
             from ..core.ai_preflight import require_ai_provider
             from ..core.ai_provider import ROLE_JUDGMENT, get_ai_client, resolve_role_model
             from ..core.anchor_tables import load_table_anchors
@@ -4551,6 +4602,9 @@ def draft_gap_decisions_cmd(
         if not dry_run:
             path = write_decision_sheet(hub, sheet)
             click.echo(f"📝 Decision sheet: {path}")
+        elif suggest:
+            # The answers were paid for; a dry run shows them instead of dropping them.
+            _echo_model_proposals(sheet)
         click.echo(
             f"   {s['decisions_to_make']} decision(s) to make "
             f"({s['families']} families + {s['loose_names']} single names), "
