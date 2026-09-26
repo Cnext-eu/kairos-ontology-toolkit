@@ -98,6 +98,13 @@ PROPERTY_LESS_ANCHOR_FLAG = "property-less-anchor"
 #: model-proposed, and recorded beside the class's own comment, which names what to use.
 DEPRECATED_ANCHOR_FLAG = "deprecated-anchor"
 
+#: Deterministic flag for a table whose anchor's module several domains own, none of
+#: them named by affinity, with no hub-subclass or secondary-affinity evidence to choose
+#: between them (DD-247, #1040). The first owner is kept so the table stays in a pool
+#: that reaches its anchor; the flag asks for a ruling (edit the row's domain and set
+#: ``status: edited``) instead of the choice passing unreviewed.
+OWNER_AMBIGUOUS_FLAG = "owner-ambiguous"
+
 
 def sheet_schema_hash(columns: list[str]) -> str:
     """Stable identity of a table's schema for sticky-entry comparison (DD-190).
@@ -1227,6 +1234,9 @@ def derive_domain(
     anchor_name: str,
     catalog: ClassCatalog,
     affinity_domain: str = "",
+    *,
+    secondary_domains: tuple[str, ...] | list[str] = (),
+    hub_subclass_domains: dict[str, set[str]] | None = None,
 ) -> tuple[str, str, list[str], list[str]]:
     """Return ``(domain, basis, owners, bridged_from)`` for an anchored table.
 
@@ -1245,6 +1255,21 @@ def derive_domain(
     Aggregated across *every* copy of the name: duplicate class names span
     modules, and deriving from one arbitrary copy put ``consignments`` in
     ``commercial`` on the live run.
+
+    When several domains own the module and affinity names none of them, the
+    first owner used to win, which is the alphabetically first domain id: every
+    OneRecord ``cargo`` class landed in ``booking`` because ``booking`` sorts
+    before ``reference-data`` (#1040). DD-247 breaks that tie on evidence
+    first, in this order:
+
+    1. ``hub-subclass``: a hub domain whose ontology subclasses the anchor
+       (*hub_subclass_domains*, from :func:`load_hub_subclass_domains`). It may
+       be a non-owner: subclassing means that domain imports the class.
+    2. ``owner+secondary``: the first of the table's affinity
+       *secondary_domains* that is an owner.
+    3. Otherwise the first owner, basis ``owner``, so the table stays in a pool
+       that reaches its anchor; ``run_anchor_tables`` flags it
+       ``owner-ambiguous`` for a ruling instead of choosing silently.
     """
     copies = catalog.index.get(anchor_name) or []
     owner_ids = list(
@@ -1262,6 +1287,21 @@ def derive_domain(
     if affinity_domain and affinity_domain in candidates:
         basis = "owner+affinity" if affinity_domain in owner_ids else "bridge+affinity"
         return affinity_domain, basis, owner_ids, bridge_ids
+    if len(owner_ids) > 1:
+        subclassing = {
+            dom
+            for copy in copies
+            for dom in (hub_subclass_domains or {}).get(copy.get("uri", ""), ())
+        }
+        if subclassing:
+            if affinity_domain in subclassing:
+                chosen = affinity_domain
+            else:
+                chosen = next((d for d in owner_ids if d in subclassing), min(subclassing))
+            return chosen, "hub-subclass", owner_ids, bridge_ids
+        secondary = next((d for d in secondary_domains if d in owner_ids), None)
+        if secondary:
+            return secondary, "owner+secondary", owner_ids, bridge_ids
     if owner_ids:
         return owner_ids[0], "owner", owner_ids, bridge_ids
     if bridge_ids:
@@ -1390,9 +1430,20 @@ def load_affinity_entities(analysis_dir: Path) -> dict[tuple[str, str], str]:
     return {key: value[1] for key, value in _load_affinity(analysis_dir).items()}
 
 
-def _load_affinity(analysis_dir: Path) -> dict[tuple[str, str], tuple[str, str]]:
-    """``(system, table) -> (primary_domain, likely_entity)`` from the affinity artifacts."""
-    out: dict[tuple[str, str], tuple[str, str]] = {}
+def load_affinity_secondary_domains(analysis_dir: Path) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Read ``(system, table) -> secondary_domains`` from the affinity artifacts (DD-247).
+
+    The affinity stage's runner-up domains for a table (DD-042). They break a tie
+    between several domains owning the anchor's module when the primary owns none.
+    """
+    return {key: value[2] for key, value in _load_affinity(analysis_dir).items()}
+
+
+def _load_affinity(
+    analysis_dir: Path,
+) -> dict[tuple[str, str], tuple[str, str, tuple[str, ...]]]:
+    """``(system, table) -> (primary_domain, likely_entity, secondary_domains)``."""
+    out: dict[tuple[str, str], tuple[str, str, tuple[str, ...]]] = {}
     for path in analysis_paths.iter_keyed_paths(Path(analysis_dir), analysis_paths.AFFINITY):
         _state, doc = _read_yaml_artifact(path, what="this affinity prior")
         system = str(doc.get("system") or analysis_paths.key_of(path, analysis_paths.AFFINITY))
@@ -1401,7 +1452,39 @@ def _load_affinity(analysis_dir: Path) -> dict[tuple[str, str], tuple[str, str]]
                 out[(system, str(table["table"]))] = (
                     str(table.get("domain") or ""),
                     str(table.get("likely_entity") or ""),
+                    tuple(str(d) for d in table.get("secondary_domains") or () if d),
                 )
+    return out
+
+
+def load_hub_subclass_domains(
+    hub_root: Path, known_domains: set[str]
+) -> dict[str, set[str]]:
+    """``reference class URI -> hub domains whose ontology subclasses it`` (DD-247).
+
+    A hub domain that declares ``rdfs:subClassOf`` to a reference class has claimed the
+    concept, which is better evidence of where a table anchored to that class belongs
+    than the order owners happen to be listed in. ``owl:equivalentClass`` does not
+    count: it is not a compile anchor (#730). Reads what each domain file itself
+    declares, through the same per-file scan the hub-wide integrity checks use. Only
+    *known_domains* (the blueprint's) are kept, and a missing or unparseable file is
+    simply no evidence.
+    """
+    from .ontology_integrity import scan_domain_ontology
+
+    out: dict[str, set[str]] = {}
+    ontologies = Path(hub_root) / "model" / "ontologies"
+    if not known_domains or not ontologies.is_dir():
+        return out
+    for path in sorted(ontologies.glob("*.ttl")):
+        if path.stem not in known_domains:
+            continue
+        scanned = scan_domain_ontology(path, path.stem)
+        if scanned is None:
+            continue
+        for _local, predicate, target in scanned.external_term_refs:
+            if predicate == "subClassOf":
+                out.setdefault(target, set()).add(path.stem)
     return out
 
 
@@ -1539,6 +1622,13 @@ def run_anchor_tables(
             "warning")
     affinity = load_affinity_domains(analysis_dir)
     affinity_entities = load_affinity_entities(analysis_dir)
+    affinity_secondary = load_affinity_secondary_domains(analysis_dir)
+    # DD-247: which hub domains already subclass which reference classes, to route a
+    # table whose anchor several domains own. Empty on a fresh hub; that is fine.
+    hub_subclass = load_hub_subclass_domains(
+        Path(sources_dir).parent.parent,
+        {dom for owners in catalog.owners.values() for dom in owners},
+    )
     n_classes = catalog.text.count("\n") + 1 if catalog.text else 0
     say(f"  ⚓ Anchoring {len(call_outline)} table(s) against {n_classes} class(es)")
 
@@ -1575,6 +1665,7 @@ def run_anchor_tables(
     unanchored: list[dict[str, Any]] = []
     propertyless: list[dict[str, Any]] = []
     deprecated_anchors: list[dict[str, Any]] = []
+    ambiguous: list[dict[str, Any]] = []
     invented = 0
     dropped_rels = dropped_secondary = 0
     for system, table, cols in outline:
@@ -1608,7 +1699,11 @@ def run_anchor_tables(
             )
             continue
         domain, basis, owner_ids, bridge_ids = derive_domain(
-            anchor, catalog, affinity.get((system, table), "")
+            anchor,
+            catalog,
+            affinity.get((system, table), ""),
+            secondary_domains=affinity_secondary.get((system, table), ()),
+            hub_subclass_domains=hub_subclass,
         )
         # Among duplicate copies of the name, ownership picks the tier and
         # column/property overlap picks within it (#519).
@@ -1687,6 +1782,9 @@ def run_anchor_tables(
         entry["relationships"] = relationships
         entry["secondary_entities"] = secondary
         entry["flags"] = sorted(set(verdict.get("flags") or []) & ALLOWED_SHEET_FLAGS)
+        if basis == "owner" and len(owner_ids) > 1:
+            entry["flags"] = sorted({*entry["flags"], OWNER_AMBIGUOUS_FLAG})
+            ambiguous.append(entry)
         if key in stale_prev:
             entry["status"] = "stale-confirmed"
             prev = stale_prev[key]
@@ -1772,6 +1870,19 @@ def run_anchor_tables(
                 t["anchor_uri"],
                 t["system"],
                 t["table"],
+            )
+
+    if ambiguous:
+        say(
+            f"  ⚓ {len(ambiguous)} table(s) anchor to a class several domains own, with no "
+            "evidence to choose between them; kept in the first owner and flagged "
+            f"'{OWNER_AMBIGUOUS_FLAG}' (DD-247). Rule on each by editing its domain "
+            "(status: edited):"
+        )
+        for t in ambiguous:
+            say(
+                f"       {t['system']}.{t['table']} → {t['anchor']} "
+                f"(owners: {', '.join(t['owners'])}; kept in {t['domain']})"
             )
 
     # What moved since the last run, while the previous artifact is still in hand.
