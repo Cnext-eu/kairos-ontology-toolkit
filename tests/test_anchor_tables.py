@@ -216,7 +216,7 @@ class TestOwnerAmbiguousFlag:
                 catalog_path=tmp_path / "catalog.xml",
                 ref_models_dir=None, accelerator=None,
                 analysis_dir=tmp_path / "_analysis",
-                report=lines.append,
+                report=lambda message, level="info": lines.append((message, level)),
             )
         return yaml.safe_load(out.read_text(encoding="utf-8"))["tables"][0], lines
 
@@ -227,7 +227,7 @@ class TestOwnerAmbiguousFlag:
         assert entry["domain"] == "booking" and entry["domain_basis"] == "owner"
         assert OWNER_AMBIGUOUS_FLAG in entry["flags"]
         assert any("cw.orgaddress" in line and "owners: booking, reference-data" in line
-                   for line in lines)
+                   and level == "warning" for line, level in lines), "survives --quiet"
 
     def test_a_secondary_affinity_resolves_it_without_a_flag(self, tmp_path):
         """The shape analyse-sources writes: one mapping per secondary domain."""
