@@ -72,8 +72,9 @@ into `main`.
 ## Managed files
 
 The toolkit owns these and `update` replaces them, so edits are lost: `CICD.md`,
-`CONTRIBUTING.md`, `.github/copilot-instructions.md`, `.claude/skills/*/SKILL.md`, and the
-per-directory `README.md` guides under `ontology-hub/` and `.import/`. Those READMEs became
+`CONTRIBUTING.md`, `.github/copilot-instructions.md`, `.claude/skills/*/SKILL.md`, the managed
+block of `AGENTS.md` (text outside the block is yours), and the per-directory `README.md`
+guides under `ontology-hub/` and `.import/`. Those READMEs became
 managed in DD-219; before that they were written once at `init` and could never be
 corrected in a hub that already existed.
 

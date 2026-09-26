@@ -39,7 +39,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # Stage any scaffold changes produced by the sync
-git add src/kairos_ontology/scaffold/skills/ src/kairos_ontology/scaffold/copilot-instructions.md 2>/dev/null
+git add src/kairos_ontology/scaffold/skills/ src/kairos_ontology/scaffold/docs/ 2>/dev/null
 
 exit 0
 '@

@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Test that .claude/skills/ and copilot-instructions match scaffold copies.
+"""Test that .claude/skills/ and the user guides match their scaffold copies.
 
 .claude/skills/ is the master source for skills (read directly by both Claude
-Code and GitHub Copilot). .github/copilot-instructions.md is the master source
-for instructions. The scaffold/ folder is the distribution copy sent to hub and
-dataplatform repos. These must stay in sync — this test catches drift.
+Code and GitHub Copilot). The scaffold/ folder is the distribution copy sent to hub
+and dataplatform repos. These must stay in sync — this test catches drift. The agent
+instructions are authored in scaffold/ directly and are not synced (DD-246).
 
 Fix: run `python scripts/sync_dev_skills.py`
 """
@@ -23,7 +23,7 @@ from sync_dev_skills import check_drift, get_sync_pairs  # noqa: E402
 
 
 class TestScaffoldSync:
-    """Verify .claude/skills/ and copilot-instructions.md are in sync with scaffold/."""
+    """Verify .claude/skills/ and the user guides are in sync with scaffold/."""
 
     def test_no_drift(self):
         """All master files must match their scaffold/ counterparts."""
@@ -49,11 +49,15 @@ class TestScaffoldSync:
         pairs = get_sync_pairs()
         assert len(pairs) > 0, "No sync pairs found — check .claude/skills/ exists"
 
-    def test_copilot_instructions_pair(self):
-        """copilot-instructions.md must be in the sync pairs."""
+    def test_agent_instructions_are_not_synced(self):
+        """DD-246: this repo's instructions are for contributors, the scaffold's for hubs.
+
+        Syncing one into the other is what shipped toolkit-developer rules to every hub.
+        """
         pairs = get_sync_pairs()
-        instr_pairs = [(s, d) for s, d in pairs if "copilot-instructions" in s.name]
-        assert len(instr_pairs) == 1
+        names = {path.name for pair in pairs for path in pair}
+        assert "copilot-instructions.md" not in names
+        assert not any(name.startswith("AGENTS") for name in names)
 
     def test_unmanaged_skills_excluded_from_scaffold(self):
         """Contributor-workflow skills (e.g. langfuse) must never reach the scaffold.

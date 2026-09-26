@@ -224,8 +224,8 @@ without re-resolving the channel, removes the table, relocks/resyncs, and
 refreshes released managed files. Do not manually edit this table; nested test
 sessions and restore without valid metadata are rejected.
 
-Expected test-mode changes are `pyproject.toml`, `uv.lock`, and managed
-`.github/copilot-instructions.md` / `.claude/skills/*/SKILL.md`; review
+Expected test-mode changes are `pyproject.toml`, `uv.lock`, the managed block of
+`AGENTS.md`, and managed `.github/copilot-instructions.md` / `.claude/skills/*/SKILL.md`; review
 `git diff` so unrelated hub edits are not mistaken for toolkit changes. On
 Windows, sync and forced refresh run in a detached console after the invoking
 process exits; wait for completion and inspect `.kairos/upgrade-refresh.log`

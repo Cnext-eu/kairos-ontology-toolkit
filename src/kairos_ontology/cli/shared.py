@@ -1062,19 +1062,22 @@ def _dependency_files_transaction(root: Path) -> Iterator[_DependencyFilesSnapsh
 _MANAGED_SKILLS_TREE = ".claude/skills"
 
 
+#: The agent-instruction files a forced refresh rewrites (DD-246 added AGENTS.md).
+_INSTRUCTION_FILES = (".github/copilot-instructions.md", "AGENTS.md")
+
+
 @dataclass(frozen=True)
 class _ManagedFilesSnapshot:
     """Managed-file state that a forced refresh may replace or remove."""
 
     root: Path
-    copilot_content: bytes | None
+    instruction_files: dict[str, bytes | None]
     skill_files: dict[str, bytes | None]
     managed_skill_trees: dict[str, dict[str, bytes]]
 
 
 def _snapshot_managed_files(root: Path) -> _ManagedFilesSnapshot:
     """Capture managed paths without including unrelated custom skill content."""
-    copilot = root / ".github" / "copilot-instructions.md"
     skills_dir = root / _MANAGED_SKILLS_TREE
     skill_files: dict[str, bytes | None] = {}
     managed_skill_trees: dict[str, dict[str, bytes]] = {}
@@ -1097,7 +1100,10 @@ def _snapshot_managed_files(root: Path) -> _ManagedFilesSnapshot:
 
     return _ManagedFilesSnapshot(
         root=root,
-        copilot_content=copilot.read_bytes() if copilot.is_file() else None,
+        instruction_files={
+            rel_path: (root / rel_path).read_bytes() if (root / rel_path).is_file() else None
+            for rel_path in _INSTRUCTION_FILES
+        },
         skill_files=skill_files,
         managed_skill_trees=managed_skill_trees,
     )
@@ -1105,12 +1111,13 @@ def _snapshot_managed_files(root: Path) -> _ManagedFilesSnapshot:
 
 def _restore_managed_files(snapshot: _ManagedFilesSnapshot) -> None:
     """Restore only paths a managed refresh is allowed to touch."""
-    copilot = snapshot.root / ".github" / "copilot-instructions.md"
-    if snapshot.copilot_content is None:
-        copilot.unlink(missing_ok=True)
-    else:
-        copilot.parent.mkdir(parents=True, exist_ok=True)
-        copilot.write_bytes(snapshot.copilot_content)
+    for rel_path, content in snapshot.instruction_files.items():
+        path = snapshot.root / rel_path
+        if content is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
 
     skills_dir = snapshot.root / _MANAGED_SKILLS_TREE
     if skills_dir.is_dir():
@@ -1371,6 +1378,91 @@ _MANAGED_MARKER_RE = re.compile(r"<!-- kairos-ontology-toolkit:managed v([\d]+(?
 
 _MANAGED_MARKER_TEMPLATE = "<!-- kairos-ontology-toolkit:managed v{version} -->"
 
+# DD-246: AGENTS.md is shared with the repository, so the toolkit owns only a delimited region
+# of it. The begin marker says `managed-begin`, never `managed v`, so `_MANAGED_MARKER_RE` does
+# not match it: a hub's AGENTS.md must never look like a whole-file managed file to
+# `_get_managed_version` or to the DD-062 root detection.
+_MANAGED_REGION_BEGIN_TEMPLATE = "<!-- kairos-ontology-toolkit:managed-begin v{version} -->"
+_MANAGED_REGION_END = "<!-- kairos-ontology-toolkit:managed-end -->"
+_MANAGED_REGION_RE = re.compile(
+    r"<!-- kairos-ontology-toolkit:managed-begin v(\S+) -->.*?"
+    + re.escape(_MANAGED_REGION_END)
+    + r"\n?",
+    re.DOTALL,
+)
+
+#: Repo-relative paths whose toolkit content is a managed region, not the whole file.
+_MANAGED_REGION_FILES = frozenset({"AGENTS.md"})
+
+#: What a freshly created AGENTS.md carries below the region: a place for the repo's own notes.
+_REGION_FILE_NOTES = (
+    "## Repository notes\n\n"
+    "<!-- Your own guidance for agents goes here. `kairos-ontology update` never changes "
+    "text outside the managed block above. -->\n"
+)
+
+
+def _render_managed_region(body: str, version: str) -> str:
+    """Wrap *body* in the region markers, ending with one newline."""
+    begin = _MANAGED_REGION_BEGIN_TEMPLATE.format(version=version)
+    return f"{begin}\n{body.strip()}\n{_MANAGED_REGION_END}\n"
+
+
+def _get_region_version(content: str) -> str | None:
+    """Return the toolkit version stamped on a managed region, or *None* if there is none."""
+    m = _MANAGED_REGION_RE.search(content)
+    return m.group(1) if m else None
+
+
+def _managed_region_update(existing: str | None, body: str, version: str) -> str:
+    """Return *existing* with its managed region set to *body*; everything else is kept.
+
+    A missing file gets the region plus an empty notes section. A file without a region
+    gets it prepended, so a repository's own AGENTS.md survives below it byte for byte.
+    """
+    region = _render_managed_region(body, version)
+    if existing is None:
+        return region + "\n" + _REGION_FILE_NOTES
+    if _MANAGED_REGION_RE.search(existing):
+        return _MANAGED_REGION_RE.sub(lambda _: region, existing, count=1)
+    return region + "\n" + existing
+
+
+def _write_managed_region(src: Path, dst: Path) -> bool:
+    """Set *dst*'s managed region from the scaffold *src*; return whether *dst* changed."""
+    existing = dst.read_text(encoding="utf-8") if dst.is_file() else None
+    updated = _managed_region_update(existing, src.read_text(encoding="utf-8"), _toolkit_version)
+    if updated == existing:
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(updated, encoding="utf-8")
+    return True
+
+
+#: The files in which Claude Code looks for project memory. When one exists, Claude Code does
+#: not read AGENTS.md on its own; the file must import it with a `@AGENTS.md` line (DD-246).
+_CLAUDE_MEMORY_FILES = ("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md")
+
+
+def _claude_memory_without_agents_import(root: Path) -> list[str]:
+    """Return the Claude Code memory files under *root* that do not import AGENTS.md."""
+    return [
+        rel_path
+        for rel_path in _CLAUDE_MEMORY_FILES
+        if (root / rel_path).is_file()
+        and "@AGENTS.md" not in (root / rel_path).read_text(encoding="utf-8", errors="replace")
+    ]
+
+
+def _report_claude_memory_without_agents_import(root: Path) -> None:
+    """Advise, without failing anything, when Claude Code would skip AGENTS.md."""
+    for rel_path in _claude_memory_without_agents_import(root):
+        print(
+            f"ℹ  {rel_path} does not import AGENTS.md. Claude Code reads AGENTS.md only when no"
+            f" CLAUDE.md exists, so it will not see the toolkit's agent instructions here."
+            f" Add a line `@AGENTS.md` to {rel_path}."
+        )
+
 # The fresh-hub contract is intentionally narrower than the complete set of
 # directories the toolkit can consume.  These are the directories created by
 # both ``init`` and ``new-repo`` for a v5 hub.
@@ -1579,6 +1671,12 @@ def _managed_scaffold_map() -> dict[str, Path]:
     if ci.is_file():
         result[".github/copilot-instructions.md"] = ci
 
+    # DD-246: the agent instructions. A managed region (see _MANAGED_REGION_FILES), so text the
+    # hub writes outside it is never touched.
+    agents = _SCAFFOLD_DIR / "AGENTS.md.template"
+    if agents.is_file():
+        result["AGENTS.md"] = agents
+
     # User documentation (#739). A scaffolded hub used to carry no route to the user guide,
     # the how-to recipes or the CLI reference: they existed only in the toolkit repository,
     # were not shipped in the wheel, and nothing in the scaffold linked them -- so a hub
@@ -1689,6 +1787,10 @@ def _managed_dataplatform_map() -> dict[str, Path]:
     ci = _SCAFFOLD_DIR / "dataplatform-copilot-instructions.md"
     if ci.is_file():
         result[".github/copilot-instructions.md"] = ci
+
+    agents = _SCAFFOLD_DIR / "dataplatform-AGENTS.md.template"
+    if agents.is_file():
+        result["AGENTS.md"] = agents
 
     skills = _SCAFFOLD_DIR / "skills"
     for skill_name in _DATAPLATFORM_SKILLS:

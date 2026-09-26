@@ -5,6 +5,10 @@ description: Develop and test the Kairos v5 toolkit, compiler, CLI, scaffold, an
 
 # Toolkit Development
 
+The repository rules — changelog fragments, lint, decision-record numbering, issue references,
+code conventions, the DD-243 closure rule, managed workflows — are in the root `AGENTS.md`.
+Read it first; this skill adds the architecture and the change workflow.
+
 Kairos is Python 3.12+ with a src layout. Core code is under `src/kairos_ontology/core`, CLI command
 modules under `src/kairos_ontology/cli`, MDM under `src/kairos_ontology/mdm`, service code under
 `service/app`, and tests under `tests`.
@@ -17,29 +21,25 @@ modules under `src/kairos_ontology/cli`, MDM under `src/kairos_ontology/mdm`, se
 - Complex relational inputs are ordinary contracted dbt models.
 - Core never imports MDM. Register optional consumers without reversing this dependency.
 - Use rdflib for RDF and Jinja/templates or typed renderers for output.
-- Ontology meaning is read through `core.ontology_loader.load_ontology` and its
-  `semantic_index` (DD-243). A direct `Graph().parse` is for syntax, IRIs, imports or
-  non-ontology inputs, and every one is listed in
-  `docs/dev/dd103-single-file-parse-inventory.json`. A prompt that lists ontology terms
-  renders them with `core.prompt_context`; check `index.carries(field)` before reading a
-  profile-dependent field.
+- A direct `Graph().parse` is for syntax, IRIs, imports or non-ontology inputs, and every one
+  is listed in `docs/dev/dd103-single-file-parse-inventory.json` (DD-243, see `AGENTS.md`).
 
 ## Change workflow
 
 1. Inspect the relevant implementation and focused tests.
-2. Make surgical changes. Every modified/new Python file needs Apache-2.0 SPDX and Cnext.eu
-   copyright headers.
+2. Make surgical changes, following the code conventions in `AGENTS.md`.
 3. Add happy-path and edge/error tests; mock external APIs.
 4. For compiler/projection behavior, add scenario coverage and verify deterministic paths/bytes.
 5. For a skill change, edit both `.claude/skills/<name>/SKILL.md` and
    `src/kairos_ontology/scaffold/skills/<name>/SKILL.md` identically.
-6. For managed scaffold behavior, update scaffold sources and managed mappings/tests.
+6. For managed scaffold behavior, update scaffold sources and managed mappings/tests. What a
+   hub's agent reads is `scaffold/AGENTS.md.template` (and the dataplatform variant), authored
+   there, not synced from this repository's `AGENTS.md` (DD-246).
 7. Run focused pytest, then scaffold sync/reference/managed tests when those surfaces change.
-8. For a user-visible change, add a `changelog.d/<issue>-<slug>.md` fragment
-   (`changelog.d/README.md`). Never edit `CHANGELOG.md` outside a release PR: parallel PRs that
-   edit `[Unreleased]` conflict on every merge, and CI (`version-check.yml`) rejects it.
+8. For a user-visible change, add a `changelog.d/<issue>-<slug>.md` fragment; never edit
+   `CHANGELOG.md` outside a release PR (`AGENTS.md`).
 
-Use `uv sync`, `uv run pytest`, and `uv build`. Keep lines to 100 characters. Significant
-architecture changes require a design-decision update. Releases update the single package version,
+Use `uv sync`, `uv run pytest`, and `uv build`. Significant architecture changes require a
+design-decision update. Releases update the single package version,
 changelog, lock, build artifacts, tag, and GitHub workflow verification through
 `kairos-toolkit-ops`.

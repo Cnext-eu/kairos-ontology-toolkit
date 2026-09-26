@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Sync .claude/ skills, copilot-instructions and the user guides to scaffold/.
+"""Sync .claude/ skills and the user guides to scaffold/.
 
 Direction: .claude/skills/ (master) → scaffold/skills/ (distribution copy)
-           .github/copilot-instructions.md (master) → scaffold/ (distribution copy)
            docs/<user guides> (master) → scaffold/docs/ (distribution copy)
+
+The hub and dataplatform agent instructions (`AGENTS.md.template`,
+`copilot-instructions.md` and their dataplatform variants) are authored in scaffold/
+directly, like every other template: they are written for a hub, and this repository's
+own `AGENTS.md` is written for toolkit contributors (DD-246).
 
 .claude/skills/ is the authored source for skills — read directly by Claude Code
 and by GitHub Copilot's Agent Skills support (since Copilot's December 2025
@@ -26,10 +30,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLAUDE_SKILLS = REPO_ROOT / ".claude" / "skills"
 SCAFFOLD_SKILLS = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "skills"
-GITHUB_INSTRUCTIONS = REPO_ROOT / ".github" / "copilot-instructions.md"
-SCAFFOLD_INSTRUCTIONS = (
-    REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "copilot-instructions.md"
-)
 DOCS = REPO_ROOT / "docs" / "guide"
 SCAFFOLD_DOCS = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "docs"
 
@@ -96,10 +96,6 @@ if hasattr(sys.stdout, "reconfigure"):
 def get_sync_pairs() -> list[tuple[Path, Path]]:
     """Build the list of (source, destination) file pairs to sync."""
     pairs: list[tuple[Path, Path]] = []
-
-    # copilot-instructions.md
-    if GITHUB_INSTRUCTIONS.exists():
-        pairs.append((GITHUB_INSTRUCTIONS, SCAFFOLD_INSTRUCTIONS))
 
     # All SKILL.md files and exemplar files (.ttl) in .claude/skills/
     if CLAUDE_SKILLS.is_dir():

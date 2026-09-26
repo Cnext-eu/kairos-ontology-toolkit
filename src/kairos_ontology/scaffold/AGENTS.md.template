@@ -1,0 +1,116 @@
+# Kairos Ontology Hub — Agent instructions
+
+## Session greeting (mandatory)
+
+On the first response of every conversation, display this before answering:
+
+> 👋 Welcome to the **Kairos Ontology Toolkit** — an ontology-driven platform that
+> generates data pipelines, BI models, search indexes, and more from OWL/Turtle
+> domain models.
+>
+> **New here?** Invoke **kairos-help** for an orientation.
+>
+> **Returning?** I can run a read-only hub diagnostic with **kairos-diagnose-status**.
+
+## V5 architecture
+
+Kairos v5 is stateless and has one source-to-canonical execution authority:
+
+```text
+model/ontologies/<domain>.ttl
+model/shapes/
+integration/discovery/
+integration/sources/<source>/
+integration/bindings/<source>-to-<domain>.binding.yaml
+integration/transforms/dbt/models/
+kairos.yaml
+../ontology-hub-publish/
+```
+
+- OWL defines canonical meaning; source TTL defines physical relations and columns.
+- A closed `EntityBinding` YAML document defines one canonical entity from one source relation or
+  one ordinary contracted dbt model. Unknown fields and duplicate YAML keys are errors.
+- Complex joins, windows, aggregations, JSON expansion, fallback logic, or grain changes belong in
+  ordinary dbt SQL plus an enforced dbt properties contract, referenced by `source.dbtModel`.
+- `compile` builds one immutable, graph-free `CompilePlan`. Check, explain, emit, Gold, and MDM
+  consume this plan; they must not independently resolve or rebuild canonical Silver/dbt inputs.
+- `../ontology-hub-publish/` (a sibling of the hub) is derived. Never hand-edit compiler-owned artifacts.
+- V5 is a clean authoring break. Create older hubs again from fresh; do not invent compatibility.
+
+Canonical commands:
+
+```powershell
+kairos-ontology compile <domain> --check --format json
+kairos-ontology compile <domain> --explain --format json
+kairos-ontology compile <domain> --emit --confirm-emit
+kairos-ontology logs show    # what the last writing command reported
+```
+
+Passing compilation does not replace downstream dbt, adapter, deployment, security, or data tests.
+
+## Ontology conventions
+
+- Every ontology declares `owl:Ontology`, `rdfs:label`, and `owl:versionInfo`.
+- Use HTTP(S) namespaces. Classes are PascalCase; properties are camelCase.
+- Every class has a label and comment. Every property has domain, range, and label.
+- Validate syntax before applying ontology changes.
+- Never modify `main` directly; use a feature branch and PR.
+
+## Semantic access (DD-103)
+
+- Never read raw ontology serializations (`.ttl`, `.rdf`, `.owl`) directly as text — an LLM
+  cannot reliably reconstruct prefix-relative IRIs, transitively inherited properties across an
+  `owl:imports` chain, or equivalence/inverse relationships from serialized RDF. Use the CLI's
+  semantic commands instead: `kairos-ontology resolve-ontology`, `kairos-ontology
+  show-class-inventory`, `kairos-ontology explain-term`, `kairos-ontology list-class-properties`.
+  Where the hub's MCP server is registered (`.vscode/mcp.json`, `.mcp.json`), the same
+  commands are tools — `explain_term`, `list_class_properties`, `show_class_inventory` —
+  and the tool is the preferred path (DD-245).
+- This repository's `.claude/settings.json` holds the deny rules and read hooks enforced for
+  Claude Code sessions; consult it rather than this document for the exact guarded paths.
+- This is a guardrail, not a sandbox: shell tools can still reach these files directly, and
+  agents other than Claude Code are bound only by this convention, not by enforcement.
+
+## Skill routing
+
+Every skill below lives at `.claude/skills/<name>/SKILL.md` — one location read directly by both
+Claude Code and GitHub Copilot's Agent Skills support (DD-207). There is no `.github/skills/`
+copy; Copilot resolves the same tree.
+
+| User intent | Skill |
+|---|---|
+| Start, continue, or determine next action | `kairos-flow` |
+| Business context and terminology | `kairos-design-discovery` |
+| Import, document, or analyse source schemas | `kairos-design-source` |
+| Create or change OWL classes/properties | `kairos-design-domain` |
+| Bounded contexts, aggregates, invariants, ubiquitous language, classes deliberately not in Silver | `kairos-design-architecture` |
+| Author source-to-canonical EntityBinding YAML | `kairos-design-mapping` |
+| Create a complex contracted dbt model | `kairos-develop-dbt-transformation` |
+| Design Gold/Power BI products | `kairos-design-gold` |
+| Validate ontology and compile diagnostics | `kairos-execute-validate` |
+| Compile or generate artifacts | `kairos-execute-project` |
+| Review bindings and compiler explanation | `kairos-execute-report` |
+| Detailed read-only hub diagnostic | `kairos-diagnose-status` |
+| Create a fresh hub | `kairos-setup-init` |
+| Configure a hub | `kairos-setup-config` |
+| Create or consume a dataplatform | `kairos-setup-dataplatform`, `kairos-package-dataplatform` |
+| Update toolkit/managed files/reference models | `kairos-toolkit-ops` |
+
+Always invoke the owning skill before a skill-managed command or authored design change. Set
+`KAIROS_SKILL_CONTEXT=1` only while a skill legitimately wraps a command.
+
+## Design interaction
+
+Discovery, source, ontology, architecture, mapping, dbt transformation, Gold, and MDM design are
+interactive by default. An explicit fleet override applies only to the active skill invocation and
+expires when it ends or pauses. Fleet mode keeps all validation and evidence checks, records each
+AI-approved choice with rationale, confidence, and references, and stops for ambiguity, low
+confidence, sensitive or proprietary data, policy choices, and destructive actions.
+
+## Managed block
+
+The text between the `managed-begin` and `managed-end` markers is refreshed by
+`uv run kairos-ontology update`; do not edit it. Put this repository's own guidance for agents
+below the block — `update` never changes text outside it. If this repository keeps a
+`CLAUDE.md`, it must contain the line `@AGENTS.md`: Claude Code reads `AGENTS.md` only when no
+`CLAUDE.md` exists.
