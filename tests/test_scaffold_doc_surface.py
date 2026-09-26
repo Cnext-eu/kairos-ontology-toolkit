@@ -175,6 +175,7 @@ _SHIPPED_USER_DOCS = (
     "docs/toolkit/CONSUMING_COMPILE_PLAN.md",
     "docs/toolkit/how-to/README.md",
     "docs/toolkit/BPA_PROFILE.md",
+    "docs/toolkit/OBSERVABILITY.md",
     # DD-240: the generated best-practice catalogue pages.
     "docs/toolkit/practices/semantic-model.md",
     "docs/toolkit/practices/ddd.md",

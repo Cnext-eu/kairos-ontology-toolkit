@@ -126,3 +126,44 @@ class TestDefaultRunLog:
         (log,) = _run_logs(hub)
         target = hub.parent / "ontology-hub-publish"
         assert target not in log.parents
+
+
+class TestRunLogPointer:
+    """A writing command names its run log as its last stderr line (#1011)."""
+
+    def _emit(self, *args: str):
+        return CliRunner().invoke(
+            cli,
+            [*args, "compile", "--all", "--emit", "--confirm-emit"],
+            env={"KAIROS_SKILL_CONTEXT": "1"},
+        )
+
+    def test_an_emit_names_its_run_log(self, hub):
+        result = self._emit()
+        assert result.exit_code == 0, result.output
+        (log,) = _run_logs(hub)
+        last = result.stderr.strip().splitlines()[-1]
+        assert last == f"Run log: {log.relative_to(hub)}  (kairos-ontology logs show)"
+        assert "Run log:" not in result.stdout
+
+    def test_a_failing_emit_names_it_too(self, hub, monkeypatch):
+        monkeypatch.setattr(
+            "kairos_ontology.cli.compile.check_discovery_gate",
+            lambda hub, domains: ["an unresolved judgment"],
+        )
+        result = self._emit()
+        assert result.exit_code == 1
+        assert "Run log: " in result.stderr
+
+    def test_a_check_names_none(self, hub):
+        result = CliRunner().invoke(cli, ["compile", "billing", "--check"])
+        assert "Run log:" not in result.output
+
+    def test_json_logs_on_stderr_get_no_plain_line(self, hub):
+        result = self._emit("--log-format", "json")
+        assert result.exit_code == 0, result.output
+        assert "Run log:" not in result.stderr
+
+    def test_no_pointer_when_the_log_is_off(self, hub, monkeypatch):
+        monkeypatch.setenv("KAIROS_RUN_LOG", "0")
+        assert "Run log:" not in self._emit().output

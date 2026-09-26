@@ -333,8 +333,9 @@ def test_confirm_emit_announces_success_after_the_write(tmp_path, monkeypatch):
     # nothing follows it but the destinations written. Asserted as "what comes after"
     # rather than a fixed index from the end: the point of #748 is that the line cannot
     # precede the write, and a new destination line must not be able to look like a
-    # regression of that.
-    lines = [line for line in result.output.splitlines() if line.strip()]
+    # regression of that. Stdout only: the run-log pointer (#1011) follows on stderr.
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
     emitted_at = next(i for i, line in enumerate(lines) if line.startswith("✅ Emitted"))
     assert all(line.strip().startswith("→") for line in lines[emitted_at + 1 :]), result.output
     assert lines[-1].strip().startswith("→"), result.output
+    assert "Run log: .kairos" in result.stderr

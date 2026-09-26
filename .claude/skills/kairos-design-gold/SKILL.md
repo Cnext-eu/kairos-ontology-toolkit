@@ -208,7 +208,9 @@ Per target:
   enables would drop those rows. The post-deploy check needs Premium, PPU or Fabric capacity.
 
 The shape rules are reported by `compile --check` once every domain of the product compiles
-in the same run (`--all`, or name them all), and by `emit-gold`. **After `emit-gold`, review
+in the same run (`--all`, or name them all), and by `emit-gold`; `uv run kairos-ontology logs
+show --group-by code` lists every finding of the last `emit-gold` with counts, which is the
+place to work through them from. **After `emit-gold`, review
 `deactivated_relationships` in `<product>-gold-product.json`**
 (`semantic-model.review-deactivated-relationships`): each entry is a relationship that filters
 nothing unless a measure activates it. Fix it or excuse it; do not leave it unexamined. Then

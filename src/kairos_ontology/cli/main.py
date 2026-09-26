@@ -5,6 +5,7 @@
 import logging
 import sys
 import traceback
+from pathlib import Path
 
 import click
 
@@ -279,6 +280,7 @@ def cli(ctx, verbose, debug, log_file, log_format, mode):
         "operation_context_token": token,
         "otel_handler": otel_session,
         "command": command,
+        "log_format": log_format,
     }
     _warn_if_outside_venv()
     _warn_if_version_mismatch()
@@ -350,6 +352,25 @@ def _teardown_observability(  # noqa: ANN001
     # closes the file handler (see reset_logging -> _strip_owned_handlers),
     # which is what flushes --log-file to disk; no separate flush loop needed.
     reset_logging()
+    _announce_run_log(obj)
+
+
+def _announce_run_log(obj: dict) -> None:
+    """Name the run log a writing command just kept, as its last line (#1011).
+
+    The log holds every diagnostic, grouped under the domain, product and gate that
+    reported it, but nobody reads a file they do not know exists. On stderr, after the
+    command's own output, so ``--format json`` keeps stdout a single document; not under
+    ``--log-format json``, where stderr is a JSON-lines stream.
+    """
+    path = _run_log.started_path()
+    if path is None or obj.get("log_format") == "json":
+        return
+    try:
+        shown = path.relative_to(Path.cwd())
+    except ValueError:
+        shown = path
+    click.echo(f"Run log: {shown}  (kairos-ontology logs show)", err=True)
 
 
 @cli.result_callback()

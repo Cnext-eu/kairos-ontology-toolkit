@@ -27,6 +27,10 @@ makes the committed output of every domain that imports it stale. Emitting only 
 domain succeeds and reports success, and the drift gate below — which runs exactly the `--all`
 form — then fails on a hash-only diff.
 
+The emit ends by naming its run log (`Run log: .kairos/logs/...`), which holds every finding
+grouped by domain and gate. `uv run kairos-ontology logs show --group-by code` reads it back;
+the directory is git-ignored, so nothing needs committing.
+
 The pull request must include any release-relevant generated diff required by repository policy.
 CI regenerates the same output and fails on drift. `pr-validate.yml` runs three parallel jobs:
 `validate` (the authored inputs), `compile` (emit, and diff the dbt package and the contract
