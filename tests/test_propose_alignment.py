@@ -46,7 +46,7 @@ from kairos_ontology.core.propose_alignment import (
     _is_projection_part_column,
     _format_source_columns,
     _module_tag,
-    _normalize_property_token,
+    _compact_name,
     _parses_as,
     _relationship_cluster_id,
     _resolve_column_module,
@@ -3242,12 +3242,12 @@ class TestSampleEvidenceIntegration:
 # ---------------------------------------------------------------------------
 class TestNormalizePropertyToken:
     def test_strips_non_alphanumeric_and_lowercases(self):
-        assert _normalize_property_token("CF_String-33") == "cfstring33"
-        assert _normalize_property_token("stageCode") == "stagecode"
+        assert _compact_name("CF_String-33") == "cfstring33"
+        assert _compact_name("stageCode") == "stagecode"
 
     def test_none_and_empty(self):
-        assert _normalize_property_token(None) == ""
-        assert _normalize_property_token("") == ""
+        assert _compact_name(None) == ""
+        assert _compact_name("") == ""
 
 
 class TestNormCanonicalState:
