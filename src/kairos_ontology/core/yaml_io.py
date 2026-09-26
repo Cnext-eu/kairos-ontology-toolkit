@@ -14,9 +14,7 @@ from typing import IO, Any
 
 import yaml
 
-_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-
 
 def safe_load(stream: str | bytes | IO[str] | IO[bytes]) -> Any:
     """``yaml.safe_load``, using the C safe loader when PyYAML has it."""
-    return yaml.load(stream, Loader=_LOADER)  # noqa: S506 - a SafeLoader either way
+    return yaml.safe_load(stream)
