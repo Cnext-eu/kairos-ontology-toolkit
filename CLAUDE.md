@@ -19,6 +19,12 @@ most often missed:
   register forbids gaps (`tests/test_design_decisions_consistency.py`).
 - **Issue references:** a bare `(#123)` in a PR title or body closes the issue on merge
   (`auto-close-issues.yml`). For a partial fix write `(#123 P2)` or `Refs #123`.
+- **Ontology meaning comes from the closure (DD-243).** Read a domain or reference ontology
+  through `core.ontology_loader.load_ontology` and its `semantic_index`, never a bare
+  `Graph().parse` of one file: the file's `owl:imports` carry the parents and inherited
+  properties. `tests/test_dd103_closure_boundary.py` inventories every direct parse; a prompt
+  that lists ontology terms renders them with `core.prompt_context`; read a profile-dependent
+  index field only after `index.carries(field)`.
 - **Managed workflows:** changing a template under `src/kairos_ontology/scaffold/` that is
   registered in `_LIVE_WORKFLOW_TEMPLATE_DIGESTS` (`tests/test_workflow_refresh.py`) means you
   must record the outgoing generation under `scaffold/superseded-workflows/`, register it in

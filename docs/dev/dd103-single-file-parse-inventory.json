@@ -1,0 +1,348 @@
+{
+  "schema_version": 1,
+  "decision": "DD-243",
+  "rule": "Ontology meaning is read through core.ontology_loader.load_ontology and the closure's semantic_index. A direct rdflib parse is for syntax, IRIs, imports, declarations, or non-ontology inputs, and every one is listed here with its reason. tests/test_dd103_closure_boundary.py enforces it.",
+  "exempt_modules": [
+    "core/ontology_loader.py"
+  ],
+  "reasons": {
+    "syntax": "checks that the text parses; reads no meaning from it",
+    "iri": "reads the owl:Ontology IRI or version only",
+    "imports": "reads the authored owl:imports edges only",
+    "declaration": "reports what this one file declares, by design (documented in the function)",
+    "bronze-vocabulary": "a source vocabulary; has no owl:imports",
+    "mapping": "a mapping / SKOS document, not an ontology",
+    "extension": "a kairos-ext, DDD overlay or policy extension merged onto a loaded closure",
+    "shapes": "a SHACL shapes graph",
+    "glossary": "a businessdiscovery glossary",
+    "vocabulary": "a toolkit-shipped vocabulary (kairos-ddd, kairos-bronze, ...)",
+    "legacy-api": "public helper with no internal caller; kept for compatibility",
+    "single-file-semantics": "KNOWN GAP: reads meaning from one file; tracked by a DD"
+  },
+  "sites": [
+    {
+      "module": "cli/setup.py",
+      "function": "_generate_domain_ttl_with_ai",
+      "reason": "syntax"
+    },
+    {
+      "module": "cli/setup.py",
+      "function": "_registration_import_gate",
+      "reason": "imports"
+    },
+    {
+      "module": "cli/setup.py",
+      "function": "init_dataplatform",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/analyse_sources.py",
+      "function": "_find_ontology_package_dirs",
+      "reason": "iri"
+    },
+    {
+      "module": "core/analyse_sources.py",
+      "function": "_resolve_module_classes",
+      "reason": "declaration"
+    },
+    {
+      "module": "core/analyse_sources.py",
+      "function": "parse_source_primary_keys",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/analyse_sources.py",
+      "function": "parse_source_vocabulary",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/authoring_scaffolds.py",
+      "function": "_load_source_graph",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/authoring_scaffolds.py",
+      "function": "build_mapping_scaffold",
+      "reason": "mapping"
+    },
+    {
+      "module": "core/authoring_scaffolds.py",
+      "function": "build_silver_scaffold",
+      "reason": "mapping"
+    },
+    {
+      "module": "core/catalog_utils.py",
+      "function": "_declared_ontology_iri",
+      "reason": "iri"
+    },
+    {
+      "module": "core/catalog_utils.py",
+      "function": "validate_turtle_text",
+      "reason": "syntax"
+    },
+    {
+      "module": "core/compiler/kernel.py",
+      "function": "_parse_source_relations",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/coverage_report.py",
+      "function": "trace_source_evidence",
+      "reason": "mapping"
+    },
+    {
+      "module": "core/ddd.py",
+      "function": "_parse_quietly",
+      "reason": "extension"
+    },
+    {
+      "module": "core/ddd.py",
+      "function": "_run_shapes",
+      "reason": "shapes"
+    },
+    {
+      "module": "core/ddd.py",
+      "function": "build_merged_graph",
+      "reason": "extension"
+    },
+    {
+      "module": "core/ddd.py",
+      "function": "load_ddd_vocabulary",
+      "reason": "vocabulary"
+    },
+    {
+      "module": "core/ddd.py",
+      "function": "validate_ddd_overlay",
+      "reason": "extension"
+    },
+    {
+      "module": "core/ddd.py",
+      "function": "validate_strategic_file",
+      "reason": "extension"
+    },
+    {
+      "module": "core/design_validation.py",
+      "function": "validate_mapping_design",
+      "reason": "mapping"
+    },
+    {
+      "module": "core/design_validation.py",
+      "function": "validate_silver_extension",
+      "reason": "extension"
+    },
+    {
+      "module": "core/draft_model_report.py",
+      "function": "_load_glossary_terms",
+      "reason": "glossary"
+    },
+    {
+      "module": "core/evidence_loaders.py",
+      "function": "load_skos_links",
+      "reason": "mapping"
+    },
+    {
+      "module": "core/import_source.py",
+      "function": "merge_with_existing",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/import_source.py",
+      "function": "split_vocabulary_by_table",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/ontology_integrity.py",
+      "function": "scan_domain_ontology",
+      "reason": "declaration"
+    },
+    {
+      "module": "core/ontology_ops.py",
+      "function": "parse_ontology",
+      "reason": "legacy-api"
+    },
+    {
+      "module": "core/ontology_ops.py",
+      "function": "parse_ontology_content",
+      "reason": "legacy-api"
+    },
+    {
+      "module": "core/ontology_scope.py",
+      "function": "collect_hub_domain_bases",
+      "reason": "iri"
+    },
+    {
+      "module": "core/projections/a2ui_projector.py",
+      "function": "A2UIProjector._get_required_properties",
+      "reason": "shapes"
+    },
+    {
+      "module": "core/projections/concept_guide_projector.py",
+      "function": "load_samples",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/projections/dbt/mapping_bind.py",
+      "function": "bind_mapping_documents",
+      "reason": "mapping"
+    },
+    {
+      "module": "core/projections/dbt/policy_bind.py",
+      "function": "bind_policy_facts",
+      "reason": "extension"
+    },
+    {
+      "module": "core/projections/ddd_context_projector.py",
+      "function": "_union_graph",
+      "reason": "extension"
+    },
+    {
+      "module": "core/projections/ddd_projector.py",
+      "function": "_merge_overlay",
+      "reason": "extension"
+    },
+    {
+      "module": "core/projections/ddd_projector.py",
+      "function": "generate_ddd_artifacts",
+      "reason": "extension"
+    },
+    {
+      "module": "core/projections/erd_projector.py",
+      "function": "generate_erd_artifacts",
+      "reason": "extension"
+    },
+    {
+      "module": "core/projections/medallion_dbt_projector.py",
+      "function": "_extract_shacl_tests",
+      "reason": "shapes"
+    },
+    {
+      "module": "core/projections/medallion_dbt_projector.py",
+      "function": "_load_shacl_graph",
+      "reason": "shapes"
+    },
+    {
+      "module": "core/projections/medallion_dbt_projector.py",
+      "function": "_parse_bronze",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/projections/report_projector.py",
+      "function": "_parse_source_systems",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/projections/report_projector.py",
+      "function": "generate_domain_overview_report",
+      "reason": "single-file-semantics",
+      "tracked_by": "DD-243"
+    },
+    {
+      "module": "core/projections/report_projector.py",
+      "function": "generate_mapping_progress_report",
+      "reason": "single-file-semantics",
+      "tracked_by": "DD-243"
+    },
+    {
+      "module": "core/projections/report_projector.py",
+      "function": "generate_source_landscape_report",
+      "reason": "single-file-semantics",
+      "tracked_by": "DD-243"
+    },
+    {
+      "module": "core/projections/shared.py",
+      "function": "merge_ext_graph",
+      "reason": "extension"
+    },
+    {
+      "module": "core/projections/skos_utils.py",
+      "function": "SKOSParser.load_all_mappings",
+      "reason": "mapping"
+    },
+    {
+      "module": "core/projections/ubiquitous_language_projector.py",
+      "function": "_read_glossary",
+      "reason": "glossary"
+    },
+    {
+      "module": "core/projector.py",
+      "function": "_run_projection",
+      "reason": "extension"
+    },
+    {
+      "module": "core/projector.py",
+      "function": "run_projections",
+      "reason": "iri"
+    },
+    {
+      "module": "core/reference_modules.py",
+      "function": "resolve_reference_modules",
+      "reason": "syntax"
+    },
+    {
+      "module": "core/silver_sample_audit.py",
+      "function": "load_source_samples",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/source_analysis.py",
+      "function": "collect_mapping_records",
+      "reason": "mapping"
+    },
+    {
+      "module": "core/source_catalog.py",
+      "function": "build_source_catalog",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/source_privacy.py",
+      "function": "run_source_privacy",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/suggest_shapes.py",
+      "function": "_parse_source_vocabulary_with_profile",
+      "reason": "bronze-vocabulary"
+    },
+    {
+      "module": "core/validator.py",
+      "function": "_shacl_validate_one",
+      "reason": "shapes"
+    },
+    {
+      "module": "core/validator.py",
+      "function": "run_validation",
+      "reason": "syntax"
+    },
+    {
+      "module": "core/validator.py",
+      "function": "validate_content",
+      "reason": "syntax"
+    },
+    {
+      "module": "core/validator.py",
+      "function": "validate_gdpr",
+      "reason": "single-file-semantics",
+      "tracked_by": "DD-243"
+    },
+    {
+      "module": "core/validator.py",
+      "function": "validate_managed_imports",
+      "reason": "imports"
+    },
+    {
+      "module": "core/validator.py",
+      "function": "validate_naming_conventions",
+      "reason": "declaration"
+    },
+    {
+      "module": "core/validator.py",
+      "function": "validate_whitelist_mapping",
+      "reason": "mapping"
+    },
+    {
+      "module": "mdm/profile_projector.py",
+      "function": "_typed_policy_graph",
+      "reason": "extension"
+    }
+  ]
+}
