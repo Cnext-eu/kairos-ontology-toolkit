@@ -1506,6 +1506,15 @@ def require_business_discovery(why: str, *, escaped: bool) -> None:
     "below this threshold (default: 0.4).",
 )
 @click.option(
+    "--no-closure-retry",
+    "no_closure_retry",
+    is_flag=True,
+    default=False,
+    help="Skip the targeted second pass that re-offers, with the table's class pinned, "
+    "the import-closure properties whose name matches an unmatched column (DD-248, "
+    "#1051). The candidates are still recorded on each column as closure_candidates.",
+)
+@click.option(
     "--max-workers",
     type=int,
     default=None,
@@ -1612,6 +1621,7 @@ def propose_alignment_cmd(
     max_prompt_classes,
     retry_min_confidence,
     retry_min_mapped_ratio,
+    no_closure_retry,
     without_discovery,
     max_workers,
     force,
@@ -1807,6 +1817,7 @@ def propose_alignment_cmd(
             max_prompt_classes=max_prompt_classes,
             retry_min_confidence=retry_min_confidence,
             retry_min_mapped_ratio=retry_min_mapped_ratio,
+            closure_retry=not no_closure_retry,
             max_workers=max_workers,
             force=force,
             cost_warning=not quiet,

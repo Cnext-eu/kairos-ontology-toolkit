@@ -1347,6 +1347,7 @@ kairos-ontology propose-alignment [OPTIONS]
 | `--max-prompt-classes` | `12` | Max reference classes in first-pass table prompt (default: 12). |
 | `--retry-min-confidence` | `0.6` | Retry with full reference inventory when ref_class confidence is below this threshold (default: 0.6). |
 | `--retry-min-mapped-ratio` | `0.4` | Retry with full reference inventory when non-custom mapped column ratio is below this threshold (default: 0.4). |
+| `--no-closure-retry` |  | Skip the targeted second pass that re-offers, with the table's class pinned, the import-closure properties whose name matches an unmatched column (DD-248, #1051). The candidates are still recorded on each column as closure_candidates. |
 | `--max-workers` |  | Max concurrent per-table LLM calls (default: 16, or [tool.kairos].max_workers if set; use 1 for serial). These calls are network-bound, so the useful ceiling is the provider's rate limit rather than the core count. |
 | `--without-discovery` |  | Run even though the hub has no authored business glossary. The proposals will be source-shaped rather than grounded in the business's own vocabulary. |
 | `--force` |  | Bypass caches (domain affinity skip + per-table cache) and re-align all. |
