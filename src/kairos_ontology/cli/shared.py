@@ -1809,6 +1809,13 @@ def _copy_managed(src: Path, dst: Path) -> None:
     dst.write_text(content, encoding="utf-8")
 
 
+def upgrade_refresh_log_path() -> Path:
+    """The Windows refresh transcript, in the repository's one ``.kairos/`` (#1038)."""
+    from .run_log import kairos_dir
+
+    return kairos_dir(Path.cwd()) / "upgrade-refresh.log"
+
+
 def _schedule_windows_refresh(check: bool) -> bool:
     """Schedule a detached managed-file refresh that runs after THIS process exits.
 
@@ -1837,10 +1844,11 @@ def _schedule_windows_refresh(check: bool) -> bool:
     if check:
         update_cmd += " --check"
 
-    log_dir = Path.cwd() / ".kairos"
-    log_path = log_dir / "upgrade-refresh.log"
+    from .run_log import ensure_kairos_dir
+
+    log_path = upgrade_refresh_log_path()
     try:
-        log_dir.mkdir(parents=True, exist_ok=True)
+        ensure_kairos_dir(Path.cwd())
     except OSError:
         pass
 
@@ -1879,7 +1887,7 @@ def _refresh_with_installed_toolkit(check: bool, ref: str) -> int:
                 "could not schedule the Windows managed-file refresh; close any shell "
                 "using the hub environment and retry"
             )
-        log_path = Path.cwd() / ".kairos" / "upgrade-refresh.log"
+        log_path = upgrade_refresh_log_path()
         print(
             "   ↻ Managed-file refresh scheduled — it will run automatically "
             "once this process exits.\n"

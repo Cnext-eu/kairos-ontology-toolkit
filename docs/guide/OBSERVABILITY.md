@@ -57,8 +57,12 @@ severity and by code. A clean `Exit(0)` such as `--help` writes none. A multi-do
 `compile` in text mode also prints the counts as a "Diagnostics by task" table.
 
 The commands that write keep a **default run log** in JSON lines at
-`<hub>/.kairos/logs/<utc>-<command>-<operation>.jsonl`. They are `compile --emit`,
+`<repo>/.kairos/logs/<utc>-<command>-<operation>.jsonl`. They are `compile --emit`,
 `emit-gold`, `package-powerbi-release` and `project`.
+
+- `<repo>` is the repository root, the same `.kairos/` that holds
+  `upgrade-refresh.log`. A flat-layout hub is its own root.
+- `logs show` also reads logs an older toolkit kept under `<hub>/.kairos/logs/`.
 
 - The newest 20 run logs are kept.
 - The directory ignores itself in git.

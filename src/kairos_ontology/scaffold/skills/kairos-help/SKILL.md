@@ -113,7 +113,7 @@ ubiquitous language and the class ledger — `project --target ddd` writes the c
 existing Decision Log bundle.
 
 Every writing command (`compile --emit`, `emit-gold`, `package-powerbi-release`, `project`)
-keeps a run log under `.kairos/logs/` and names it as its last line; `logs show` reads it
+keeps a run log under the repository root's `.kairos/logs/` and names it as its last line; `logs show` reads it
 back as the domains, products and gates of the run with each diagnostic under the one that
 reported it. `--check` writes nothing, so it keeps no log unless given `--log-file`.
 

@@ -28,7 +28,7 @@ kairos-ontology update --check
 
 Do it in an isolated PR. On Windows a version-changing `--upgrade` finishes in a detached
 process, because the running executable holds a lock on itself — wait for it, then check
-`.kairos/upgrade-refresh.log`.
+`.kairos/upgrade-refresh.log` at the repository root.
 
 ## Workflows
 

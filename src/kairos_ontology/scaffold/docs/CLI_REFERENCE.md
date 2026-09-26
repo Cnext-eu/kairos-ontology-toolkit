@@ -83,7 +83,7 @@ not reasoning.
 | [`inverse-scan`](#inverse-scan) | Find candidate source tables for a class via deterministic column-name matching. |
 | [`list-class-properties`](#list-class-properties) | List direct and inherited class properties, including effective ranges. |
 | [`list-patterns`](#list-patterns) | Surface the reference-models pattern library for the design-domain skill (#262 §3). |
-| [`logs`](#logs) | Read the run logs that writing commands keep in <hub>/.kairos/logs/. |
+| [`logs`](#logs) | Read the run logs that writing commands keep in <repo>/.kairos/logs/. |
 | [`logs show`](#logs-show) | Show one run log: how the run ended, its tasks and durations, and its diagnostics. |
 | [`mcp`](#mcp) | Serve the closure-aware inspection commands as MCP tools (DD-245). |
 | [`mcp serve`](#mcp-serve) | Start the Kairos MCP server on stdio. |
@@ -1112,7 +1112,7 @@ kairos-ontology list-patterns [OPTIONS]
 
 ## logs
 
-Read the run logs that writing commands keep in <hub>/.kairos/logs/.
+Read the run logs that writing commands keep in <repo>/.kairos/logs/.
 
 ```
 kairos-ontology logs [OPTIONS] COMMAND [ARGS]...
@@ -1121,7 +1121,7 @@ kairos-ontology logs [OPTIONS] COMMAND [ARGS]...
 
 ## logs show
 
-Show one run log: how the run ended, its tasks and durations, and its diagnostics. Reads PATH, or with no PATH (or --last) the newest log in <hub>/.kairos/logs/. Works on any JSON-lines log, including one written with --log-file and --log-format json.  Examples: kairos-ontology logs show kairos-ontology logs show --group-by code kairos-ontology logs show run.jsonl --format json
+Show one run log: how the run ended, its tasks and durations, and its diagnostics. Reads PATH, or with no PATH (or --last) the newest log in <repo>/.kairos/logs/, or in <hub>/.kairos/logs/ where older toolkits kept them. Works on any JSON-lines log, including one written with --log-file and --log-format json.  Examples: kairos-ontology logs show kairos-ontology logs show --group-by code kairos-ontology logs show run.jsonl --format json
 
 ```
 kairos-ontology logs show [OPTIONS] [PATH]

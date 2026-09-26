@@ -168,15 +168,15 @@ def build_server(hub: Path | None = None):
         """The newest run log of the hub: how the last writing command ended, its tasks
         with durations, and every diagnostic grouped by task, code or severity."""
         from .logs import _groups, _load as _load_log
-        from .run_log import run_log_directory
+        from .run_log import newest_run_log, run_log_directory
 
         root = _hub(hub)
-        logs = sorted(run_log_directory(root).glob("*.jsonl"))
-        if not logs:
+        latest = newest_run_log(root)
+        if latest is None:
             raise ValueError(f"No run logs in {run_log_directory(root)}.")
         if group_by not in {"task", "code", "severity"}:
             raise ValueError("group_by must be task, code or severity")
-        run = _load_log(logs[-1])
+        run = _load_log(latest)
         return {**run, "group_by": group_by, "groups": _groups(run, group_by)}
 
     return server

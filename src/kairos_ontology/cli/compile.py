@@ -1010,7 +1010,8 @@ def compile_cmd(
     # Reading an already-warm ontology-parse cache is never a write, so it is safe to
     # leave enabled process-wide for every mode; only --no-cache turns it off.
     ontology_loader.CACHE_ENABLED = not no_cache
-    hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
+    found_hub = find_hub_root(Path.cwd(), require_model=True)
+    hub = found_hub or Path.cwd()
     # The Silver ERDs rendered by --emit take their layout from kairos.yaml (#855).
     from ..core.projections.shared import configure_mermaid_layout
 
@@ -1048,7 +1049,9 @@ def compile_cmd(
         # The one compile mode that writes, so the one that keeps a default run log.
         from .run_log import start_run_log
 
-        start_run_log(hub, "compile")
+        # Outside a hub no run log is kept, as for emit-gold: the cwd fallback above is
+        # for the compile itself, not a reason to write .kairos/ somewhere arbitrary.
+        start_run_log(found_hub, "compile")
     with ontology_loader.cache_write_scope(not no_cache and mode is CompileMode.EMIT):
         for index, one in enumerate(selected, start=1):
             with spans.task_span("domain", one, **{"kairos.domain": one}) as span:

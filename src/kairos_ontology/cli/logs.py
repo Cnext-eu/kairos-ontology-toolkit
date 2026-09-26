@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """``kairos-ontology logs``: read a run log back in human form (#1011, DD-242).
 
-A writing command keeps a JSON-lines run log under ``<hub>/.kairos/logs/``, and any
+A writing command keeps a JSON-lines run log under ``<repo>/.kairos/logs/`` (#1038), and any
 command writes one with ``--log-file <path> --log-format json``. This reads one back as
 the span tree of the run (command, domain or product, gate, stage, with durations) and
 its diagnostics grouped by task, code or severity. It reads only: nothing is written.
@@ -25,27 +25,26 @@ _SEVERITIES = ("error", "warning", "info")
 
 @click.group(name="logs")
 def logs_group() -> None:
-    """Read the run logs that writing commands keep in <hub>/.kairos/logs/."""
+    """Read the run logs that writing commands keep in <repo>/.kairos/logs/."""
 
 
 def _latest_log() -> Path:
-    from ..core.hub_utils import find_hub_root
-    from .run_log import ENV_RUN_LOG, run_log_directory
+    from .run_log import ENV_RUN_LOG, newest_run_log, run_log_directories
 
-    hub = find_hub_root(Path.cwd())
-    if hub is None:
+    directories = run_log_directories(Path.cwd())
+    if not directories:
         raise click.ClickException(
             "Cannot locate a hub from the current directory; pass the run log's PATH."
         )
-    logs = sorted(run_log_directory(hub).glob("*.jsonl"))
-    if not logs:
+    latest = newest_run_log(Path.cwd())
+    if latest is None:
         raise click.ClickException(
-            f"No run logs in {run_log_directory(hub)}. A run log is kept by compile --emit, "
+            f"No run logs in {directories[0]}. A run log is kept by compile --emit, "
             "emit-gold, package-powerbi-release and project (unless "
             f"{ENV_RUN_LOG}=0); any command writes one with --log-file <path> "
             "--log-format json."
         )
-    return logs[-1]
+    return latest
 
 
 def _read(path: Path) -> list[dict[str, Any]]:
@@ -200,8 +199,9 @@ def _render_tree(run: dict[str, Any]) -> list[str]:
 def logs_show_cmd(path: Path | None, last: bool, group_by: str, output_format: str) -> None:
     """Show one run log: how the run ended, its tasks and durations, and its diagnostics.
 
-    Reads PATH, or with no PATH (or --last) the newest log in <hub>/.kairos/logs/. Works
-    on any JSON-lines log, including one written with --log-file and --log-format json.
+    Reads PATH, or with no PATH (or --last) the newest log in <repo>/.kairos/logs/, or in
+    <hub>/.kairos/logs/ where older toolkits kept them. Works on any JSON-lines log,
+    including one written with --log-file and --log-format json.
 
     \b
     Examples:

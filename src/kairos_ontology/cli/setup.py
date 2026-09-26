@@ -1929,7 +1929,7 @@ def init_dataplatform(name, dest, platform, org_override):
     # Create .gitignore
     gitignore = (
         "target/\ndbt_packages/\nlogs/\n.venv/\n__pycache__/\n*.pyc\n"
-        ".env\nprofiles.yml\n.dbt/profiles.yml\n"
+        ".env\nprofiles.yml\n.dbt/profiles.yml\n.kairos/\n"
     )
     (repo_dir / ".gitignore").write_text(gitignore, encoding="utf-8")
     click.echo("  ✓ .gitignore")
