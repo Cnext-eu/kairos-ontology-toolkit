@@ -74,6 +74,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -->
 ## [Unreleased]
 
+## [5.24.0rc2] — 2026-09-26
+
+Second release candidate for 5.24.0. It fixes four issues found on a real hub after the
+rc1 upgrade:
+
+- `anchor-tables` no longer crashes on a re-run (#1039).
+- A table whose anchor several domains own is routed on evidence, not to the
+  alphabetically first owner (DD-247, #1040).
+- A model that rejects `temperature` no longer floods the terminal with bare
+  `Error code: 400` lines (#1041).
+- Run logs and `upgrade-refresh.log` share one `.kairos/` folder at the repository root
+  (#1038).
+
+**Upgrade notes.**
+
+- New run logs are written to `<repo>/.kairos/logs/`, not `ontology-hub/.kairos/logs/`.
+  `logs show` still reads the old folder, so nothing needs moving.
+- A re-run of `anchor-tables` may move some tables out of the domain they were in. These
+  are tables whose anchor several domains own, and the drift summary lists each move.
+  Where no evidence decides a table, the row is flagged `owner-ambiguous`. Settle it by
+  setting its `domain` and `status: edited`.
+
+### Changed
+- **Run logs now live in the repository root's `.kairos/logs/`, beside
+  `upgrade-refresh.log`.** A scaffolded hub had two `.kairos` folders: `update` wrote its
+  refresh transcript at the repository root, and `compile --emit`, `emit-gold`, `project`
+  and `package-powerbi-release` wrote their run logs inside `ontology-hub/`, where nobody
+  looked. Both now resolve the managed repository root; a flat-layout hub is its own root,
+  so nothing moves there. `logs show` (and the MCP `logs_show` tool) read the new folder and
+  still read logs an older toolkit kept under `ontology-hub/.kairos/logs/`, and now work from
+  any folder inside the repository, not only from its root or the hub. `compile` keeps no
+  run log when it is run outside a hub. The `.kairos/` folder ignores itself in git, which
+  covers dataplatforms, whose `.gitignore` did not list it; new dataplatforms list it too
+  (#1038).
+
+### Fixed
+- **`anchor-tables` no longer crashes on a re-run.** Since the #877 drift summary, every run
+  after the first failed with `report() takes 1 positional argument but 2 were given` — after
+  the anchoring model calls were billed and before `hub.table-anchors.yaml` was written. A
+  skipped design ruling (DD-192) crashed the same way on any run. The CLI callback now takes
+  the level the core passes; drift and skipped-ruling warnings still print under `--quiet`,
+  the "no drift since the last run" line does not (#1039).
+- **`owner-ambiguous` rows from `anchor-tables` are now listed under `--quiet` too.** The
+  DD-247 lines that name each table kept in its first owner were printed at info level, so
+  `--quiet` hid the worklist they exist to show. The `kairos-design-source` skill now says
+  how to settle such a row, and that an anchors run is a draft: pin a judged row with
+  `status: confirmed` or `edited` (#1040 follow-up).
+- **`anchor-tables` no longer routes a table to the alphabetically first owner of its
+  anchor.** When several domains own the anchor class's module and affinity names none of
+  them, the first owner won, which meant the domain id that sorts first. In the logistics
+  pack that sent every table anchored to a OneRecord `cargo` class (Address, Company, Person,
+  CodeListElement, …) to `booking`, overloading its alignment pool. The tie is now broken on
+  evidence (DD-247):
+  1. a hub domain whose ontology subclasses the anchor (`domain_basis: hub-subclass`);
+  2. otherwise one of the table's affinity `secondary_domains` that is an owner
+     (`owner+secondary`);
+  3. otherwise the first owner is kept, flagged `owner-ambiguous` and listed in the run
+     output, so the choice can be ruled on by editing the row (`status: edited`).
+
+  A single owner still wins over affinity, as before (#1040).
+- **A model that rejects `temperature` no longer floods the terminal with `Error code: 400`
+  lines.** On gpt-5.5, `analyse-sources` printed one bare 400 per call already in flight when
+  the first rejection was learnt, 16 with the default worker pool. The rejections were
+  handled and every table was still classified, but they read as failures. Two changes:
+  the first call for a model now runs alone, so the rest of the pool sends the corrected
+  request and a run pays for one rejection instead of one per worker; and the Langfuse
+  tracing wrapper's echo of a parameter rejection the toolkit handles is no longer printed.
+  The single `ℹ … handled` line remains. Capability is still learnt from the provider's own
+  rejection, not from a model-name table, because a Foundry deployment name need not be the
+  model's name (DD-174) (#1041).
+
+### Decisions
+- **DD-247: a shared-owner tie is broken on evidence, not on domain order.**
+
 ## [5.24.0rc1] — 2026-09-26
 
 First release candidate for 5.24.0. It adds:
