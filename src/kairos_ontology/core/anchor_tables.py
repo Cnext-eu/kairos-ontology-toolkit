@@ -1893,12 +1893,14 @@ def run_anchor_tables(
             f"  ⚓ {len(ambiguous)} table(s) anchor to a class several domains own, with no "
             "evidence to choose between them; kept in the first owner and flagged "
             f"'{OWNER_AMBIGUOUS_FLAG}' (DD-247). Rule on each by editing its domain "
-            "(status: edited):"
+            "(status: edited):",
+            "warning",
         )
         for t in ambiguous:
             say(
                 f"       {t['system']}.{t['table']} → {t['anchor']} "
-                f"(owners: {', '.join(t['owners'])}; kept in {t['domain']})"
+                f"(owners: {', '.join(t['owners'])}; kept in {t['domain']})",
+                "warning",
             )
 
     # What moved since the last run, while the previous artifact is still in hand.

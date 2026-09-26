@@ -119,10 +119,18 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
       decided_by: user            # anything else is inert and reported (DD-192)
     ```
 
-    This matters because a hand-edited anchor is undone by the next re-run, which is what
-    makes people stop re-running analysis at all. Three boundaries: a ruling is always
-    human-decided, never introduces a class, and never maps columns. An absent file is a
-    silent no-op, and skipped entries are echoed with reasons.
+    This matters because a hand-edit that is not pinned is undone by the next re-run, which
+    is what makes people stop re-running analysis at all. Three boundaries: a ruling is
+    always human-decided, never introduces a class, and never maps columns. An absent file
+    is a silent no-op, and skipped entries are echoed with reasons.
+
+    Treat each run as a draft. A re-run can anchor a quarter of the tables differently, and
+    it prints a drift summary of what moved. To keep a row you have judged, set its
+    `status` to `confirmed`, or change it and set `edited`: a pinned row whose source schema
+    is unchanged is kept verbatim (DD-190). Settle a row flagged `owner-ambiguous` the same
+    way, by setting its `domain` and `status: edited`, because a ruling cannot choose a
+    domain (DD-247). Churn here reaches only first drafts: `generate-bindings` never
+    overwrites an authored binding.
 
 14. After `propose-alignment`, close the DD-169 gap gate before entity binding. Do not
     review the raw column list — on a real hub that is well over a thousand rows, which
