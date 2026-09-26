@@ -22,6 +22,7 @@ import click
 from .gates import escape_option
 
 from ..core.compiler import build_compile_plan
+from ..core.observability import events
 from ..core.hub_utils import find_hub_root
 
 
@@ -87,6 +88,9 @@ def package_powerbi_release_cmd(
         raise click.ClickException(
             "Cannot locate a hub (model/ + integration/) from the current directory."
         )
+    from .run_log import start_run_log
+
+    start_run_log(hub_root, "package-powerbi-release")
 
     # Declared products first, then every Gold-configured domain no product claims as its
     # own implicit product (#744). A hub that declares nothing packages exactly what it
@@ -119,6 +123,9 @@ def package_powerbi_release_cmd(
             plan = build_compile_plan(hub_root, member)
             if plan.blocked:
                 for diagnostic in plan.diagnostics.ordered:
+                    events.log_diagnostic(
+                        diagnostic, command="package-powerbi-release", gate="compile"
+                    )
                     click.echo(diagnostic.render(), err=True)
                 raise click.ClickException(
                     f"{member}: compile plan is blocked; see diagnostics above"

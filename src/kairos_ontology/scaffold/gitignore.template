@@ -70,6 +70,9 @@ ontology-hub-publish/**
 # cache) -- content-hash keyed, safe to delete anytime, never affects compiled output
 .cache/
 
+# Toolkit run logs and local state (per-run JSON-lines diagnostics, #1011)
+.kairos/
+
 # OS
 .DS_Store
 Thumbs.db

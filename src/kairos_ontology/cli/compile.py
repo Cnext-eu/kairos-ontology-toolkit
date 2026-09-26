@@ -240,6 +240,11 @@ def _gold_product_checks(hub: Path, plans: dict[str, Any]) -> list[tuple[str, li
 def _report_gold_product_checks(
     checked: list[tuple[str, list, str]], payloads: list[dict[str, Any]], output_format: str
 ) -> None:
+    for name, diagnostics, _note in checked:
+        for diagnostic in diagnostics:
+            events.log_diagnostic(
+                diagnostic, command="compile", product=name, gate="gold-shape"
+            )
     if output_format == "json":
         # Additive: each product's findings ride on the payload of its first compiled
         # domain, so neither the single-domain object nor the --all array changes shape.
@@ -1045,6 +1050,11 @@ def compile_cmd(
     # remain write-free. Scoped, not assigned, so the flag cannot leak into unrelated
     # later calls sharing this process.
     total = len(selected)
+    if mode is CompileMode.EMIT:
+        # The one compile mode that writes, so the one that keeps a default run log.
+        from .run_log import start_run_log
+
+        start_run_log(hub, "compile")
     with ontology_loader.cache_write_scope(not no_cache and mode is CompileMode.EMIT):
         for index, one in enumerate(selected, start=1):
             _announce_domain_start(one, index, total, quiet=quiet)
@@ -1105,6 +1115,13 @@ def compile_cmd(
         )
         if failed:
             click.echo(f"  failed: {', '.join(failed)}", err=True)
+        summary = events.render_run_summary()
+        if summary and output_format != "json":
+            # One grouped table after the interleaved per-domain lines, so a CI log
+            # shows where the findings are without scrolling (#1011).
+            click.echo("Diagnostics by task:")
+            for line in summary:
+                click.echo(line)
     if failed:
         raise click.exceptions.Exit(1)
 
@@ -1472,6 +1489,8 @@ def _compile_one_domain(
     # Cache-write permission is opened by the caller, around the whole domain loop, so
     # that it also covers the gates above (see compile_cmd).
     result = compile_domain(hub, domain, mode)
+    for diagnostic in result.diagnostics.ordered:
+        events.log_diagnostic(diagnostic, command="compile", domain=domain, gate="compile")
     if check_mode and explain_mode:
         # Both diagnostics and the explain report are already computed as part of the
         # same plan (CompileResult always carries both), so this is a free relabel —
