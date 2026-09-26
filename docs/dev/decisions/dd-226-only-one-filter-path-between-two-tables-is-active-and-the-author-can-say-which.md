@@ -94,3 +94,12 @@ simultaneously make the only DAX workaround uncompilable.
   `USERELATIONSHIP` is reported as `gold.ambiguous-path` by `compile --check` and
   `emit-gold`, so BPA `INACTIVE_RELATIONSHIPS_THAT_ARE_NEVER_ACTIVATED` is checked rather
   than rejected. The deactivation itself is unchanged.
+- **Amended (#1012)**: `kairos-ext:goldExcludeRelationship "Table.column -> Table.column"`
+  leaves one foreign-key or bridge edge out of a product. It is the Gold term for "remove
+  the redundant route", which before could only be done by deleting a true relationship from
+  the Silver binding. It is fail-closed like `goldExcludeColumn` (DD-217): a malformed value
+  fails every compile, and a stale value fails where both tables are in scope. It is matched
+  on the foreign key's own column name before the emitted-column check, so the column can be
+  excluded as well. `goldPrimaryRelationship` and `goldExcludeRelationship` values that name
+  another domain's table are deferred on the single-domain compile and checked at product
+  level, the #763 bridge contract (see the DD-222 amendment).

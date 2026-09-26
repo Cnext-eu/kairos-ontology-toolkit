@@ -3471,6 +3471,11 @@ def _normalize_gold(
             if values is not None
             for value in values.values
         ),
+        excluded_relationships=(
+            tuple(fact.excluded_relationships.values)
+            if fact.excluded_relationships is not None
+            else ()
+        ),
         relationship_cross_filters=(
             tuple(fact.relationship_cross_filters.values)
             if fact.relationship_cross_filters is not None

@@ -264,6 +264,9 @@ class DimensionalGoldSpec:
     #: reported here, checked fail-closed when the product is shaped. Always empty at
     #: product level.
     deferred_references: tuple[tuple[str, str], ...] = ()
+    #: Authored ``goldExcludeRelationship`` values that removed an edge from this product
+    #: (#1012), as authored. The Silver relationship and its column are untouched.
+    excluded_relationships: tuple[str, ...] = ()
     #: Authored ``kairos-ext:bpaIgnoreRule`` exceptions (DD-238), each resolved to an
     #: object this product emits, with the target spelled as the emitted name.
     bpa_ignores: tuple[BpaIgnore, ...] = ()

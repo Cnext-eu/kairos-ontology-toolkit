@@ -383,6 +383,7 @@ def bind_policy_facts(
         excluded_columns=product(EXT.goldExcludeColumn),
         hidden_columns=product(EXT.goldHideColumn),
         primary_relationships=product(EXT.goldPrimaryRelationship),
+        excluded_relationships=product(EXT.goldExcludeRelationship),
         bpa_ignore_rules=product(EXT.bpaIgnoreRule),
         practice_exceptions=product(EXT.practiceException),
         relationship_cross_filters=product(EXT.goldRelationshipCrossFilter),

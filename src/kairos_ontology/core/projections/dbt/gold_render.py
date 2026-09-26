@@ -1433,6 +1433,12 @@ def gold_product_report(
             if spec.unresolved_bridges
             else {}
         ),
+        # Silver relationships this product leaves out by authored decision (#1012).
+        **(
+            {"excluded_relationships": list(spec.excluded_relationships)}
+            if spec.excluded_relationships
+            else {}
+        ),
         # Authored references to another domain's table -- a calendar role, a primary
         # relationship, a cross-filter or an exception target -- that a single-domain
         # compile cannot check (#1003, #1012). Checked when the product is shaped.

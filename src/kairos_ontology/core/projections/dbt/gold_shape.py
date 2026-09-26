@@ -855,6 +855,46 @@ def _shape_security(
     )
 
 
+def _typed_foreign_key_column(
+    table: GoldTableSpec,
+    property_uri: str,
+    foreign_keys: tuple[SilverForeignKeySpec, ...],
+    *,
+    resource_uri: str = "",
+) -> str | None:
+    """The join column of *property_uri*'s typed Silver foreign key, or None if untyped.
+
+    Whether *table* still emits it is the caller's question: an excluded relationship
+    (#1012) is matched on this name before the emitted-column check can reject it.
+    """
+    typed = [item for item in foreign_keys if item.property_uri == property_uri]
+    if len(typed) > 1:
+        _fail(
+            "gold.relationship-fk-ambiguous",
+            (
+                f"Silver relationship {property_uri!r} resolves to {len(typed)} "
+                f"foreign-key specs on {table.source_model!r}"
+            ),
+            rule_id="DD-112-silver-binding",
+            resource_uri=resource_uri or property_uri,
+        )
+    if not typed:
+        return None
+    descriptor = typed[0]
+    if len(descriptor.columns) != 1 or len(descriptor.referenced_columns) != 1:
+        _fail(
+            "gold.relationship-composite-key-unsupported",
+            (
+                f"Silver relationship {property_uri!r} on {table.source_model!r} is "
+                "a composite-key foreign key, which Gold relationship projection "
+                "does not support yet"
+            ),
+            rule_id="DD-112-silver-binding",
+            resource_uri=resource_uri or property_uri,
+        )
+    return descriptor.columns[0]
+
+
 def _relationship_column(
     table: GoldTableSpec,
     property_uri: str,
@@ -871,31 +911,10 @@ def _relationship_column(
     # now: a match-count column is never recorded there, so it can never displace the
     # real surrogate FK the way the old provenance heuristic allowed (#619 Bug 12
     # regressed by #625).
-    typed = [item for item in foreign_keys if item.property_uri == property_uri]
-    if len(typed) > 1:
-        _fail(
-            "gold.relationship-fk-ambiguous",
-            (
-                f"Silver relationship {property_uri!r} resolves to {len(typed)} "
-                f"foreign-key specs on {table.source_model!r}"
-            ),
-            rule_id="DD-112-silver-binding",
-            resource_uri=resource_uri or property_uri,
-        )
-    if typed:
-        descriptor = typed[0]
-        if len(descriptor.columns) != 1 or len(descriptor.referenced_columns) != 1:
-            _fail(
-                "gold.relationship-composite-key-unsupported",
-                (
-                    f"Silver relationship {property_uri!r} on {table.source_model!r} is "
-                    "a composite-key foreign key, which Gold relationship projection "
-                    "does not support yet"
-                ),
-                rule_id="DD-112-silver-binding",
-                resource_uri=resource_uri or property_uri,
-            )
-        column_name = descriptor.columns[0]
+    column_name = _typed_foreign_key_column(
+        table, property_uri, foreign_keys, resource_uri=resource_uri
+    )
+    if column_name is not None:
         if not any(column.name == column_name for column in table.columns):
             _fail(
                 "gold.relationship-column-not-emitted",
@@ -1002,6 +1021,9 @@ def _shape_relationships(
     tables: tuple[GoldTableSpec, ...],
     descriptors: tuple[ForeignKeyDescriptorSpec, ...],
     silver_models: dict[str, SilverModelSpec],
+    *,
+    excluded: frozenset[tuple[str, str, str, str]] = frozenset(),
+    matched: set[tuple[str, str, str, str]] | None = None,
 ) -> tuple[
     tuple[GoldRelationshipSpec, ...],
     tuple[tuple[str, str, str], ...],
@@ -1017,16 +1039,43 @@ def _shape_relationships(
 
     A descriptor whose *source* is outside the product is not reported: that relationship
     belongs to some other product and is none of this one's business.
+
+    An edge in *excluded* (``goldExcludeRelationship``, #1012) is left out and its key
+    added to *matched*. It is matched on the foreign key's own column name, before the
+    emitted-column check, so the column may also be removed with ``goldExcludeColumn``.
     """
     by_resource = {table.resource_uri: table for table in tables}
     relationships: list[GoldRelationshipSpec] = []
     unresolved: list[tuple[str, str, str]] = []
+    found = matched if matched is not None else set()
+
+    def is_excluded(source_table: str, column: str, target: GoldTableSpec) -> bool:
+        key = (
+            source_table.casefold(),
+            column.casefold(),
+            target.name.casefold(),
+            (target.primary_key or "").casefold(),
+        )
+        if key in excluded:
+            found.add(key)
+            return True
+        return False
+
     for descriptor in descriptors:
         source = by_resource.get(descriptor.source_class)
         target = by_resource.get(descriptor.target_class)
         if source is None:
             continue
         source_model = silver_models.get(source.source_model)
+        if excluded and target is not None:
+            typed_column = _typed_foreign_key_column(
+                source,
+                descriptor.property_uri,
+                source_model.foreign_keys if source_model is not None else (),
+                resource_uri=descriptor.property_uri,
+            )
+            if typed_column is not None and is_excluded(source.name, typed_column, target):
+                continue
         column_name = _relationship_column(
             source,
             descriptor.property_uri,
@@ -1038,6 +1087,8 @@ def _shape_relationships(
             continue
         if target is None:
             unresolved.append((descriptor.property_uri, source.name, descriptor.target_class))
+            continue
+        if excluded and is_excluded(source.name, column_name, target):
             continue
         if (
             source.version_binding is not None
@@ -1093,6 +1144,8 @@ def _shape_relationships(
             target = by_resource.get(endpoint_uri)
             if target is None:
                 continue
+            if excluded and is_excluded(bridge.name, column_name, target):
+                continue
             relationships.append(
                 GoldRelationshipSpec(
                     name=f"{bridge.name}_{target.name}",
@@ -1132,6 +1185,69 @@ _PRIMARY_RELATIONSHIP = re.compile(
     r"\s*->\s*"
     r"(?P<to_table>[A-Za-z_][A-Za-z0-9_]*)\.(?P<to_column>[A-Za-z_][A-Za-z0-9_]*)$"
 )
+
+
+def _excluded_relationship_keys(
+    members: tuple["GoldDomainInput", ...],
+) -> dict[tuple[str, str, str, str], tuple[str, str]]:
+    """Parse every ``goldExcludeRelationship`` into its edge key (#1012).
+
+    Maps the key to ``(value, ontology_uri)`` so a stale value is reported as authored,
+    against the domain that authored it. A malformed value fails on every path: no
+    table is out of scope for a syntax error.
+    """
+    keys: dict[tuple[str, str, str, str], tuple[str, str]] = {}
+    for member in members:
+        for value in tuple(getattr(member.policy.gold, "excluded_relationships", ()) or ()):
+            match = _PRIMARY_RELATIONSHIP.fullmatch(value.strip())
+            if match is None:
+                _fail(
+                    "gold.unknown-excluded-relationship",
+                    f'goldExcludeRelationship {value!r} must use "Table.column -> Table.column"',
+                    rule_id="DD-112-relationship-activation",
+                    resource_uri=member.policy.gold.ontology_uri,
+                )
+            key = (
+                match.group("from_table").casefold(),
+                match.group("from_column").casefold(),
+                match.group("to_table").casefold(),
+                match.group("to_column").casefold(),
+            )
+            keys.setdefault(key, (value.strip(), member.policy.gold.ontology_uri))
+    return keys
+
+
+def _check_excluded_relationships(
+    excluded: dict[tuple[str, str, str, str], tuple[str, str]],
+    matched: set[tuple[str, str, str, str]],
+    *,
+    table_names: frozenset[str],
+    deferred: list[tuple[str, str]] | None,
+) -> None:
+    """Reject a ``goldExcludeRelationship`` that removed nothing (#1012).
+
+    Fail-closed like ``goldExcludeColumn`` (DD-217): the value of the term is that an edge
+    is gone, so a stale one -- after a Silver rename, or a typo -- must not read as
+    success while the edge is back. An edge to another domain's table is deferred on the
+    single-domain compile, like ``goldPrimaryRelationship``.
+    """
+    for key in sorted(set(excluded) - matched):
+        value, ontology_uri = excluded[key]
+        if deferred is not None and not {key[0], key[2]} <= table_names:
+            deferred.append(("goldExcludeRelationship", value))
+            continue
+        hint = (
+            "; a calendar role is removed by dropping its kairos-ext:rolePlayingDate"
+            if key[2] == CALENDAR_TABLE
+            else ""
+        )
+        _fail(
+            "gold.unknown-excluded-relationship",
+            f"goldExcludeRelationship {value!r} names no Silver relationship of this product"
+            + hint,
+            rule_id="DD-112-relationship-activation",
+            resource_uri=ontology_uri,
+        )
 
 
 def _calendar_relationships(
@@ -1963,12 +2079,24 @@ def _shape_dimensional_product(
     if calendar is not None and contributing:
         calendar = replace(calendar, contributing_profiles=contributing)
 
+    excluded_relationships = _excluded_relationship_keys(members)
+    matched_exclusions: set[tuple[str, str, str, str]] = set()
     relationships, unresolved, dropped_relationships = _shape_relationships(
-        ordered, tuple(descriptors), models
+        ordered,
+        tuple(descriptors),
+        models,
+        excluded=frozenset(excluded_relationships),
+        matched=matched_exclusions,
     )
     relationships = relationships + _calendar_relationships(calendar)
     shaped_table_names = frozenset(table.name.casefold() for table in ordered) | (
         {CALENDAR_TABLE.casefold()} if calendar is not None else frozenset()
+    )
+    _check_excluded_relationships(
+        excluded_relationships,
+        matched_exclusions,
+        table_names=shaped_table_names,
+        deferred=deferred,
     )
     declared_primary: frozenset[tuple[str, str, str, str]] = frozenset()
     for member in members:
@@ -2086,6 +2214,12 @@ def _shape_dimensional_product(
         unresolved_relationships=unresolved,
         unresolved_bridges=tuple(sorted(set(unresolved_bridges))),
         deferred_references=tuple(sorted(set(deferred or ()))),
+        excluded_relationships=tuple(
+            sorted(
+                excluded_relationships[key][0]
+                for key in matched_exclusions
+            )
+        ),
         bpa_ignores=bpa_ignores,
         undecided_bridge_filters=undecided_bridge_filters,
         advisories=tuple((item.code, item.message, item.resource_uri) for item in advisories),

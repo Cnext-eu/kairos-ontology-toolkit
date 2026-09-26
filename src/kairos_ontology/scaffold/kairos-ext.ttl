@@ -268,6 +268,12 @@ kairos-ext:goldPrimaryRelationship a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
+kairos-ext:goldExcludeRelationship a owl:AnnotationProperty ;
+    rdfs:label "gold exclude relationship"@en ;
+    rdfs:comment "Leave one Silver relationship out of this Gold product, as \"Table.column -> Table.column\" (issue #1012). The relationship stays a true fact in Silver; the product decision is only that this model filters through another route, e.g. branch through job rather than directly. The foreign-key column is kept (hidden by its role); combine with kairos-ext:goldExcludeColumn to remove it too. This is the tool for the remedy gold.ambiguous-path suggests, \"remove the redundant route\", without deleting a true fact from the binding. Applies to foreign-key and bridge edges; a calendar role is removed by dropping its kairos-ext:rolePlayingDate. Repeatable; set on the owl:Ontology resource. Fail-closed: a value naming no Silver relationship of the product is rejected (gold.unknown-excluded-relationship)."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
 kairos-ext:goldRelationshipCrossFilter a owl:AnnotationProperty ;
     rdfs:label "gold relationship cross filter"@en ;
     rdfs:comment "Declare the filter direction of one emitted relationship, as \"Table.column -> Table.column = both|single\" (DD-238, issue #977). A many-to-many bridge is two many-to-one edges, and a filter on one endpoint only reaches the other -- and the fact -- when the bridge's edge towards the fact side filters both ways. The projector sets that by default when exactly one endpoint is a fact or is joined by one; with none or two it leaves the bridge single-direction and reports it under undecided_bridge_filters, because guessing a direction changes the numbers. This annotation decides it. Repeatable; set on the owl:Ontology resource. Fail-closed: a value naming no emitted relationship is rejected (gold.unknown-relationship-cross-filter)."@en ;

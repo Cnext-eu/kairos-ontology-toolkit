@@ -244,7 +244,8 @@ def check_model_shape(
                 f"already filters {item.source_table} through {via}, and no measure "
                 f"activates it with USERELATIONSHIP, so it filters nothing.{role_note} Keep "
                 "it active with kairos-ext:goldPrimaryRelationship, remove the redundant "
-                "route, add a USERELATIONSHIP measure,"
+                "route with kairos-ext:goldExcludeRelationship, add a USERELATIONSHIP "
+                "measure,"
             ),
         )
 
