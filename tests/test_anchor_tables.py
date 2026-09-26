@@ -12,6 +12,7 @@ moved to the owner (a grain error).
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 from kairos_ontology.core.anchor_tables import (
@@ -426,6 +427,159 @@ class TestCliReRun:
         assert result.exit_code == 0, result.output
         assert "ruling <file> skipped" in result.output
         assert "Anchoring tables in" not in result.output, "info lines stay quiet"
+
+
+class TestOnlyNew:
+    """#1050: adding a source must not re-anchor the tables already done."""
+
+    def _verdict(self, *tables):
+        return {"anchors": {f"qargo.{t}": {
+            "anchor": "TransportCall", "alternate": None, "confidence": 0.9,
+            "grain_columns": [f"{t}_id"], "natural_key": [f"{t}_id"], "load_hint": "scd"}
+            for t in tables}}
+
+    def _run(self, tmp_path, outline, *, only_new=False):
+        import json
+
+        from kairos_ontology.core import anchor_tables as at
+
+        vocab = tmp_path / "sources" / "qargo" / "vocabulary"
+        vocab.mkdir(parents=True, exist_ok=True)
+        client = MagicMock()
+        message = MagicMock()
+        message.content = json.dumps(self._verdict(*(t for _, t, _ in outline)))
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=message)]
+        )
+        lines: list[str] = []
+        with patch.object(at, "build_class_catalog", return_value=catalog()), \
+                patch.object(at, "build_source_outline", return_value=outline):
+            out = at.run_anchor_tables(
+                client=client, model="m",
+                sources_dir=tmp_path / "sources",
+                catalog_path=tmp_path / "catalog.xml",
+                ref_models_dir=None, accelerator=None,
+                analysis_dir=tmp_path / "_analysis",
+                report=_recorder(lines),
+                only_new=only_new,
+            )
+        doc = yaml.safe_load(out.read_text(encoding="utf-8"))
+        return {(t["system"], t["table"]): t for t in doc["tables"]}, doc, client, lines
+
+    STOPS = ("qargo", "stops", ["stops_id", "arrival_time"])
+    ORDERS = ("qargo", "orders", ["orders_id", "customer"])
+
+    def _prompt(self, client):
+        calls = client.chat.completions.create.call_args_list
+        return "\n".join(c.kwargs["messages"][0]["content"] for c in calls)
+
+    def test_an_unchanged_row_is_kept_and_only_the_new_table_is_anchored(self, tmp_path):
+        first, _, _, _ = self._run(tmp_path, [self.STOPS])
+        rows, doc, client, lines = self._run(
+            tmp_path, [self.STOPS, self.ORDERS], only_new=True
+        )
+        assert rows[("qargo", "stops")] == first[("qargo", "stops")], "kept verbatim"
+        assert rows[("qargo", "orders")]["anchor"] == "TransportCall"
+        prompt = self._prompt(client)
+        assert "TABLE qargo.orders" in prompt and "TABLE qargo.stops" not in prompt
+        assert doc["only_new"] is True
+        assert any("--only-new: 1 existing entry kept" in line for line in lines)
+
+    def test_nothing_new_means_no_model_call(self, tmp_path):
+        self._run(tmp_path, [self.STOPS])
+        rows, _, client, _ = self._run(tmp_path, [self.STOPS], only_new=True)
+        assert client.chat.completions.create.call_count == 0
+        assert ("qargo", "stops") in rows
+
+    def test_a_changed_schema_is_re_anchored(self, tmp_path):
+        self._run(tmp_path, [self.STOPS])
+        changed = ("qargo", "stops", ["stops_id", "arrival_time", "departure_time"])
+        _, _, client, _ = self._run(tmp_path, [changed], only_new=True)
+        assert "TABLE qargo.stops" in self._prompt(client)
+
+    def test_a_rejected_row_is_re_anchored(self, tmp_path):
+        self._run(tmp_path, [self.STOPS])
+        path = tmp_path / "_analysis" / ANCHORS_FILENAME
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        doc["tables"][0]["status"] = "rejected"
+        path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+        _, _, client, _ = self._run(tmp_path, [self.STOPS], only_new=True)
+        assert "TABLE qargo.stops" in self._prompt(client)
+
+    def test_a_default_run_still_re_proposes_every_unpinned_row(self, tmp_path):
+        self._run(tmp_path, [self.STOPS])
+        _, doc, client, _ = self._run(tmp_path, [self.STOPS])
+        assert "TABLE qargo.stops" in self._prompt(client)
+        assert "only_new" not in doc, "a full run's artifact is unchanged"
+
+    @pytest.mark.parametrize("confirm", [False, True])
+    def test_an_exclusion_recorded_after_anchoring_keeps_the_row(
+        self, tmp_path, monkeypatch, confirm
+    ):
+        """The schema hash is the SOURCE schema. It used to hash the outline after the
+        disposition ledger's exclusions, so a gap decision recorded after anchoring
+        released every pin although the source had not changed (GDW: 2 of 107 kept)."""
+        import json
+
+        from kairos_ontology.core import anchor_tables as at
+
+        (tmp_path / "sources").mkdir()
+        source = [("qargo", "stops", [{"name": "stops_id"}, {"name": "arrival_time"},
+                                      {"name": "tenant_id"}])]
+        monkeypatch.setattr(at, "read_source_tables", lambda _d: source)
+        monkeypatch.setattr(at, "build_class_catalog", lambda *a, **k: catalog())
+        client = MagicMock()
+        message = MagicMock()
+        message.content = json.dumps(self._verdict("stops"))
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=message)]
+        )
+
+        def run(excluded, only_new):
+            monkeypatch.setattr(at, "load_excluded_columns", lambda _d: excluded)
+            return at.run_anchor_tables(
+                client=client, model="m", sources_dir=tmp_path / "sources",
+                catalog_path=tmp_path / "catalog.xml", ref_models_dir=None,
+                accelerator=None, analysis_dir=tmp_path / "_analysis", only_new=only_new,
+            )
+
+        out = run(set(), False)
+        if confirm:
+            doc = yaml.safe_load(out.read_text(encoding="utf-8"))
+            doc["tables"][0]["status"] = "confirmed"
+            out.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+        calls = client.chat.completions.create.call_count
+        out = run({("qargo", "stops", "tenant_id")}, not confirm)
+        assert client.chat.completions.create.call_count == calls, "not re-anchored"
+        row = yaml.safe_load(out.read_text(encoding="utf-8"))["tables"][0]
+        assert row["status"] == ("confirmed" if confirm else "proposed")
+
+    def test_the_cli_flag_reaches_the_core(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli import sources as cli_sources
+
+        seen = {}
+
+        def fake_run(**kwargs):
+            seen.update(kwargs)
+            return tmp_path / "out.yaml"
+
+        (tmp_path / "catalog.xml").write_text("<catalog/>", encoding="utf-8")
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_provider.get_ai_client", lambda *a, **k: MagicMock()
+        )
+        monkeypatch.setattr(cli_sources, "require_business_discovery", lambda *a, **k: None)
+        monkeypatch.setattr("kairos_ontology.core.anchor_tables.run_anchor_tables", fake_run)
+        result = CliRunner().invoke(cli_sources.anchor_tables_cmd, [
+            "--sources", str(tmp_path), "--catalog", str(tmp_path / "catalog.xml"),
+            "--accelerator", "logistics", "--model", "m", "--only-new",
+        ])
+        assert result.exit_code == 0, result.output
+        assert seen["only_new"] is True
 
 
 class TestAlignmentConsumption:

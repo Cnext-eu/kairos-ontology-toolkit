@@ -132,6 +132,13 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     domain (DD-247). Churn here reaches only first drafts: `generate-bindings` never
     overwrites an authored binding.
 
+    When you **add a source** to a hub whose existing anchors are done, run
+    `kairos-ontology anchor-tables --only-new`. It keeps every existing entry whose schema
+    is unchanged, and sends the model only the new tables, the changed ones and any
+    `rejected` entry. That way the sources you already reviewed are not re-anchored, and
+    `propose-alignment` finds their tables in its cache instead of re-aligning them. Run
+    it without the flag when you do want everything re-proposed.
+
 14. After `propose-alignment`, close the DD-169 gap gate before entity binding. Do not
     review the raw column list — on a real hub that is well over a thousand rows, which
     is attrition rather than review. Instead (DD-186):
