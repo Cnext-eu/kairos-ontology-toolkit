@@ -82,6 +82,172 @@ class TestDomainDerivation:
         assert owners == [] and bridged == []
 
 
+_ADDRESS = "https://onerecord/cargo#Address"
+
+
+def shared_catalog():
+    """The #1040 shape: two domains own the OneRecord cargo module."""
+    return ClassCatalog(
+        text="- Address [owned by domain 'booking', 'reference-data']: A postal address.",
+        index={"Address": [{"module": "https://onerecord/cargo", "uri": _ADDRESS}]},
+        owners={"https://onerecord/cargo": ["booking", "reference-data"]},
+    )
+
+
+class TestSharedOwnerTieBreak:
+    """DD-247: several owners, affinity names none of them (#1040)."""
+
+    def test_a_hub_domain_subclassing_the_anchor_wins_even_as_a_non_owner(self):
+        domain, basis, owners, _ = derive_domain(
+            "Address", shared_catalog(), affinity_domain="party",
+            hub_subclass_domains={_ADDRESS: {"party"}},
+        )
+        assert (domain, basis) == ("party", "hub-subclass")
+        assert owners == ["booking", "reference-data"]
+
+    def test_among_subclassing_domains_an_owner_beats_the_alphabet(self):
+        domain, basis, _, _ = derive_domain(
+            "Address", shared_catalog(), affinity_domain="claims",
+            hub_subclass_domains={_ADDRESS: {"reference-data", "party"}},
+        )
+        assert (domain, basis) == ("reference-data", "hub-subclass")
+
+    def test_a_secondary_affinity_owner_breaks_the_tie(self):
+        domain, basis, _, _ = derive_domain(
+            "Address", shared_catalog(), affinity_domain="party",
+            secondary_domains=("claims", "reference-data"),
+        )
+        assert (domain, basis) == ("reference-data", "owner+secondary")
+
+    def test_without_evidence_the_first_owner_is_kept(self):
+        """Kept, not replaced by affinity: the affinity pool may not reach the anchor."""
+        domain, basis, _, _ = derive_domain("Address", shared_catalog(), affinity_domain="party")
+        assert (domain, basis) == ("booking", "owner")
+
+    def test_affinity_among_the_owners_still_wins_first(self):
+        domain, basis, _, _ = derive_domain(
+            "Address", shared_catalog(), affinity_domain="reference-data",
+            hub_subclass_domains={_ADDRESS: {"booking"}},
+        )
+        assert (domain, basis) == ("reference-data", "owner+affinity")
+
+    def test_a_single_owner_is_never_overruled(self):
+        domain, basis, _, _ = derive_domain(
+            "Consignment", catalog(), affinity_domain="party",
+            secondary_domains=("party",),
+            hub_subclass_domains={"https://ex.org/cons#Consignment": {"party"}},
+        )
+        assert (domain, basis) == ("consignment", "owner")
+
+
+class TestHubSubclassEvidence:
+    PREFIXES = (
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+    )
+
+    def _hub(self, tmp_path, name, body):
+        ontologies = tmp_path / "model" / "ontologies"
+        ontologies.mkdir(parents=True, exist_ok=True)
+        (ontologies / f"{name}.ttl").write_text(
+            self.PREFIXES
+            + f"<https://hub/{name}> a owl:Ontology .\n"
+            + body.format(ns=f"https://hub/{name}#"),
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_subclass_of_counts(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import load_hub_subclass_domains
+
+        hub = self._hub(tmp_path, "party",
+                        f"<{{ns}}PartyAddress> a owl:Class ; rdfs:subClassOf <{_ADDRESS}> .\n")
+        assert load_hub_subclass_domains(hub, {"party"}) == {_ADDRESS: {"party"}}
+
+    def test_equivalent_class_does_not_count(self, tmp_path):
+        """Not a compile anchor (#730), so not evidence of ownership either."""
+        from kairos_ontology.core.anchor_tables import load_hub_subclass_domains
+
+        hub = self._hub(tmp_path, "party",
+                        f"<{{ns}}PartyAddress> a owl:Class ; owl:equivalentClass <{_ADDRESS}> .\n")
+        assert load_hub_subclass_domains(hub, {"party"}) == {}
+
+    def test_unknown_domains_and_broken_files_are_no_evidence(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import load_hub_subclass_domains
+
+        hub = self._hub(tmp_path, "shared",
+                        f"<{{ns}}X> a owl:Class ; rdfs:subClassOf <{_ADDRESS}> .\n")
+        (hub / "model" / "ontologies" / "party.ttl").write_text("not turtle {", encoding="utf-8")
+        assert load_hub_subclass_domains(hub, {"party"}) == {}
+        assert load_hub_subclass_domains(tmp_path / "nowhere", {"party"}) == {}
+
+
+class TestOwnerAmbiguousFlag:
+    def _run(self, tmp_path, affinity=None):
+        import json
+
+        from kairos_ontology.core import anchor_tables as at
+
+        vocab = tmp_path / "sources" / "cw" / "vocabulary"
+        vocab.mkdir(parents=True)
+        (vocab / "orgaddress.vocabulary.ttl").write_text("# no triples\n", encoding="utf-8")
+        if affinity is not None:
+            analysis = tmp_path / "_analysis"
+            analysis.mkdir()
+            (analysis / "src-cw.affinity.yaml").write_text(
+                yaml.safe_dump({"system": "cw", "tables": [{"table": "orgaddress", **affinity}]}),
+                encoding="utf-8",
+            )
+        client = MagicMock()
+        message = MagicMock()
+        message.content = json.dumps({"anchors": {"cw.orgaddress": {
+            "anchor": "Address", "alternate": None, "confidence": 0.9,
+            "grain_columns": ["pk"], "natural_key": ["pk"], "load_hint": "scd"}}})
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=message)]
+        )
+        lines: list[str] = []
+        with patch.object(at, "build_class_catalog", return_value=shared_catalog()), \
+                patch.object(at, "build_source_outline",
+                             return_value=[("cw", "orgaddress", ["pk", "street"])]):
+            out = at.run_anchor_tables(
+                client=client, model="m",
+                sources_dir=tmp_path / "sources",
+                catalog_path=tmp_path / "catalog.xml",
+                ref_models_dir=None, accelerator=None,
+                analysis_dir=tmp_path / "_analysis",
+                report=lines.append,
+            )
+        return yaml.safe_load(out.read_text(encoding="utf-8"))["tables"][0], lines
+
+    def test_an_unresolved_tie_is_flagged_and_reported(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import OWNER_AMBIGUOUS_FLAG
+
+        entry, lines = self._run(tmp_path, {"domain": "party"})
+        assert entry["domain"] == "booking" and entry["domain_basis"] == "owner"
+        assert OWNER_AMBIGUOUS_FLAG in entry["flags"]
+        assert any("cw.orgaddress" in line and "owners: booking, reference-data" in line
+                   for line in lines)
+
+    def test_a_secondary_affinity_resolves_it_without_a_flag(self, tmp_path):
+        """The shape analyse-sources writes: one mapping per secondary domain."""
+        from kairos_ontology.core.anchor_tables import OWNER_AMBIGUOUS_FLAG
+
+        entry, _ = self._run(tmp_path, {"domain": "party", "secondary_domains": [
+            {"domain": "customs", "domain_group": "compliance", "domain_uris": ["https://x#"]},
+            {"domain": "reference-data", "domain_group": "visibility-events",
+             "domain_uris": ["https://onerecord/cargo#"]},
+        ]})
+        assert (entry["domain"], entry["domain_basis"]) == ("reference-data", "owner+secondary")
+        assert OWNER_AMBIGUOUS_FLAG not in entry["flags"]
+
+    def test_bare_secondary_domain_ids_are_read_too(self, tmp_path):
+        entry, _ = self._run(
+            tmp_path, {"domain": "party", "secondary_domains": ["reference-data"]}
+        )
+        assert entry["domain_basis"] == "owner+secondary"
+
+
 class TestPrompt:
     CHUNK = [("qargo", "stops", ["stop_id", "arrival_time"])]
 
