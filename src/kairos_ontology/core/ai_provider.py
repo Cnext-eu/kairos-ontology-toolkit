@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -582,6 +583,7 @@ def _openai_class():
         try:
             from langfuse.openai import OpenAI as TracedOpenAI
 
+            _quiet_handled_param_rejections()
             return TracedOpenAI
         except Exception as exc:  # noqa: BLE001 - tracing must never fail a run
             logger.info("Langfuse OpenAI wrapper unavailable (%s); using plain client.", exc)
@@ -718,10 +720,56 @@ _UNSUPPORTED_PARAM_RE = re.compile(
 #: guessed from a model name, so a newly-shipped model is discovered, not assumed.
 _UNSUPPORTED_PARAMS_BY_MODEL: dict[str, set[str]] = {}
 
+#: Guards the remembered rejections and the first-call gates across worker threads.
+_PARAM_LOCK = threading.Lock()
+
+#: One gate per model, set once that model's first call of the process has returned
+#: or failed (#1041). Until then every other call for the model waits, so a pool of
+#: 16 workers learns a parameter rejection from one request instead of sixteen.
+_FIRST_CALL_GATES: dict[str, threading.Event] = {}
+
 
 def reset_unsupported_param_cache() -> None:
     """Forget every remembered per-model parameter rejection (test seam)."""
-    _UNSUPPORTED_PARAMS_BY_MODEL.clear()
+    with _PARAM_LOCK:
+        _UNSUPPORTED_PARAMS_BY_MODEL.clear()
+        _FIRST_CALL_GATES.clear()
+
+
+def _claim_first_call(model: str) -> threading.Event | None:
+    """Return the gate to open if this is *model*'s first call, else wait for it.
+
+    The first caller gets the unset gate and must set it when its call finishes,
+    whatever the outcome. Every later caller blocks until then and gets ``None``.
+    """
+    with _PARAM_LOCK:
+        gate = _FIRST_CALL_GATES.get(model)
+        if gate is None:
+            gate = _FIRST_CALL_GATES[model] = threading.Event()
+            return gate
+    gate.wait()
+    return None
+
+
+class _HandledParamRejectionFilter(logging.Filter):
+    """Drop the tracing wrapper's echo of a parameter rejection (#1041).
+
+    The Langfuse OpenAI wrapper logs every provider exception at WARNING before
+    re-raising it, and its logger has no handler, so Python's last-resort handler
+    printed a bare ``Error code: 400`` per rejected call. A rejection that names a
+    parameter is exactly what :func:`create_chat_completion` inspects: it retries it,
+    or re-raises it to a caller that reports it with its own context. Every other
+    wrapper warning passes through.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _unsupported_request_param(record.getMessage()) is None
+
+
+def _quiet_handled_param_rejections() -> None:
+    langfuse_logger = logging.getLogger("langfuse")
+    if not any(isinstance(f, _HandledParamRejectionFilter) for f in langfuse_logger.filters):
+        langfuse_logger.addFilter(_HandledParamRejectionFilter())
 
 
 def _unsupported_request_param(message: str) -> str | None:
@@ -783,44 +831,54 @@ def create_chat_completion(
         if trace_metadata:
             request_kwargs["metadata"] = trace_metadata
 
-    known_unsupported = _UNSUPPORTED_PARAMS_BY_MODEL.get(model, frozenset())
-    if known_unsupported:
-        request_kwargs = {
-            k: (fallbacks[k] if k in fallbacks else v)
-            for k, v in request_kwargs.items()
-            if k not in known_unsupported or k in fallbacks
-        }
+    # The first call for a model runs alone (#1041): whatever it learns is applied
+    # below by every call that waited for it. The gate opens in `finally` on success,
+    # a handled rejection, or any other error, so nothing waits on a failed probe.
+    gate = _claim_first_call(model)
     try:
-        return client.chat.completions.create(model=model, messages=messages, **request_kwargs)
-    except Exception as exc:  # noqa: BLE001 — inspected below, re-raised if not a match
-        param = _unsupported_request_param(str(exc))
-        if not param or param not in request_kwargs:
-            raise
-        rejected = _UNSUPPORTED_PARAMS_BY_MODEL.setdefault(model, set())
-        first_discovery = param not in rejected
-        rejected.add(param)
-        # Said once, visibly (#911). The provider's own 400 can reach the terminal
-        # through the client or tracing wrapper, and without this line a handled
-        # rejection reads as a failure. Parallel calls that were already in flight when
-        # the first one learnt this repeat the same discovery; those stay at debug.
-        announce = logger.warning if first_discovery else logger.debug
-        if param in fallbacks:
-            announce(
-                "ℹ %s rejects request parameter '%s'; handled -- retrying with the weaker "
-                "fallback value, and using it for the rest of this run. Any 'Error code: "
-                "400' naming it above is this, not a failure.",
-                model,
-                param,
+        with _PARAM_LOCK:
+            known_unsupported = frozenset(_UNSUPPORTED_PARAMS_BY_MODEL.get(model, ()))
+        if known_unsupported:
+            request_kwargs = {
+                k: (fallbacks[k] if k in fallbacks else v)
+                for k, v in request_kwargs.items()
+                if k not in known_unsupported or k in fallbacks
+            }
+        try:
+            return client.chat.completions.create(
+                model=model, messages=messages, **request_kwargs
             )
-            retry_kwargs = dict(request_kwargs)
-            retry_kwargs[param] = fallbacks[param]
-        else:
-            announce(
-                "ℹ %s rejects request parameter '%s'; handled -- retrying without it, "
-                "and omitting it for the rest of this run. Any 'Error code: 400' naming it "
-                "above is this, not a failure.",
-                model,
-                param,
-            )
-            retry_kwargs = {k: v for k, v in request_kwargs.items() if k != param}
-        return client.chat.completions.create(model=model, messages=messages, **retry_kwargs)
+        except Exception as exc:  # noqa: BLE001 — inspected below, re-raised if not a match
+            param = _unsupported_request_param(str(exc))
+            if not param or param not in request_kwargs:
+                raise
+            with _PARAM_LOCK:
+                rejected = _UNSUPPORTED_PARAMS_BY_MODEL.setdefault(model, set())
+                first_discovery = param not in rejected
+                rejected.add(param)
+    finally:
+        if gate is not None:
+            gate.set()
+    # Said once, visibly (#911). A call that had already read the remembered set
+    # before another learnt the same rejection repeats the discovery at debug.
+    announce = logger.warning if first_discovery else logger.debug
+    if param in fallbacks:
+        announce(
+            "ℹ %s rejects request parameter '%s'; handled -- retrying with the weaker "
+            "fallback value, and using it for the rest of this run. Any 'Error code: "
+            "400' naming it above is this, not a failure.",
+            model,
+            param,
+        )
+        retry_kwargs = dict(request_kwargs)
+        retry_kwargs[param] = fallbacks[param]
+    else:
+        announce(
+            "ℹ %s rejects request parameter '%s'; handled -- retrying without it, "
+            "and omitting it for the rest of this run. Any 'Error code: 400' naming it "
+            "above is this, not a failure.",
+            model,
+            param,
+        )
+        retry_kwargs = {k: v for k, v in request_kwargs.items() if k != param}
+    return client.chat.completions.create(model=model, messages=messages, **retry_kwargs)
