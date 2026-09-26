@@ -1778,7 +1778,7 @@ def run_anchor_tables(
     # A re-run used to overwrite every unpinned row in silence (#877).
     drift = compare_anchor_runs(existing, tables)
     for line in render_drift_summary(drift):
-        say(line, "warning" if drift.drifted else None)
+        say(line, "warning" if drift.drifted else "info")
 
     enforcement = enforcement_provenance()
     payload = {

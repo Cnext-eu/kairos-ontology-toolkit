@@ -4310,8 +4310,10 @@ def anchor_tables_cmd(
     )
     client = get_ai_client(model, role=ROLE_ALIGNMENT)
 
-    def report(message):
-        if not quiet:
+    def report(message: str, level: str = "info") -> None:
+        # run_anchor_tables passes a level for drift and skipped-ruling lines (#1039);
+        # a non-info line survives --quiet, like the other callbacks in this module.
+        if not quiet or level != "info":
             click.echo(message)
 
     report(f"⚓ Anchoring tables in: {sources_path}")
