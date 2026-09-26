@@ -185,6 +185,17 @@ def render_drift_summary(report: AnchorDriftReport, *, limit: int = 12) -> list[
 
     counts = report.counts()
     headline = ", ".join(f"{count} {name}" for name, count in counts.items())
+    if not report.drifted:
+        # Only tables added or gone -- the usual --only-new run (#1050). Nothing moved,
+        # so there is no drift to headline and no reproducibility warning to give.
+        lines = [
+            f"  ⚓ no existing entry moved since the last run — {report.unchanged} unchanged"
+        ]
+        if report.added:
+            lines.append(f"     newly anchored: {', '.join(report.added[:6])}")
+        if report.removed:
+            lines.append(f"     no longer present: {', '.join(report.removed[:6])}")
+        return lines
     lines = [
         f"  ⚓ DRIFT since the last run: {headline} changed across "
         f"{len(report.drifted)} table(s); {report.unchanged} unchanged.",
@@ -204,6 +215,7 @@ def render_drift_summary(report: AnchorDriftReport, *, limit: int = 12) -> list[
         lines.append(f"     no longer present: {', '.join(report.removed[:6])}")
     lines.append(
         "     Anchoring is not reproducible at this prompt size (DD-177). Pin the rows "
-        "you have judged with status: confirmed so a re-run stops moving them."
+        "you have judged with status: confirmed so a re-run stops moving them, or run "
+        "with --only-new to anchor only tables that have no entry yet."
     )
     return lines

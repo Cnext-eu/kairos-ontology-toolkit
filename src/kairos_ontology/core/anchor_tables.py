@@ -1515,8 +1515,14 @@ def run_anchor_tables(
     analysis_dir: Path,
     report=None,
     screen_schema_catalogues: bool = True,
+    only_new: bool = False,
 ) -> Path:
     """Run the global anchor call(s) and write ``hub.table-anchors.yaml``.
+
+    With *only_new*, every existing entry whose source schema is unchanged is kept
+    verbatim and left out of the model call, not only the confirmed/edited ones:
+    only tables with no entry, entries whose schema changed, and ``rejected``
+    entries are anchored. For adding a source to a hub whose anchors are done.
 
     Tables that describe the source's own schema are screened out first and
     recorded under ``excluded`` with the evidence that excluded them; anchored
@@ -1572,24 +1578,50 @@ def run_anchor_tables(
     # re-enters review. Stickiness is bounded by evidence identity, never by
     # table name alone.
     existing = load_table_anchors(analysis_dir)
-    hashes = {(s, t): sheet_schema_hash(cols) for s, t, cols in outline}
+    # The evidence identity is the SOURCE schema: raw column names, before the
+    # disposition ledger's exclusions. Hashing the filtered outline released every pin
+    # the moment a gap decision excluded a column after anchoring, although nothing in
+    # the source had changed (749 exclusions on GDW left 2 of 107 rows matching; #1050).
+    filtered_hashes = {(s, t): sheet_schema_hash(cols) for s, t, cols in outline}
+    raw_hashes = {
+        (s, t): sheet_schema_hash([str(c.get("name", "")) for c in cols])
+        for s, t, cols in source_tables
+    }
+    hashes = {key: raw_hashes.get(key, value) for key, value in filtered_hashes.items()}
     pinned: dict[tuple[str, str], dict[str, Any]] = {}
     stale_prev: dict[tuple[str, str], dict[str, Any]] = {}
+    # --only-new (#1050) extends the same delta mode to every unreviewed row: an
+    # existing entry whose schema is unchanged is kept verbatim, so adding a source does
+    # not re-roll the anchors (and, through the alignment cache key, the alignments) of
+    # the sources already done. Rejected rows and changed schemas still go to the model.
+    kept_new = 0
     for key, old in existing.items():
-        if str(old.get("status") or "") not in SHEET_PINNED_STATUSES:
+        status = str(old.get("status") or "")
+        by_status = status in SHEET_PINNED_STATUSES
+        if not by_status and not (only_new and status != "rejected"):
             continue
         if key not in hashes:
             continue  # table gone from the estate; entry simply ages out
-        if old.get("schema_hash") == hashes[key]:
-            pinned[key] = old
-        else:
+        # A row written before the raw hash still carries the filtered one; accept it
+        # once and re-stamp it, so an upgrade does not release every existing pin.
+        if old.get("schema_hash") in {hashes[key], filtered_hashes[key]}:
+            pinned[key] = {**old, "schema_hash": hashes[key]}
+            kept_new += not by_status
+        elif by_status:
             stale_prev[key] = old
     estate_keys = {f"{s}.{t}" for s, t, _ in outline}
     call_outline = [item for item in outline if (item[0], item[1]) not in pinned]
-    if pinned:
+    confirmed_pins = len(pinned) - kept_new
+    if confirmed_pins:
         say(
-            f"  ⚓ {len(pinned)} confirmed sheet entr{'y' if len(pinned) == 1 else 'ies'} "
+            f"  ⚓ {confirmed_pins} confirmed sheet "
+            f"entr{'y' if confirmed_pins == 1 else 'ies'} "
             "pinned (schema unchanged) — excluded from the model call"
+        )
+    if only_new:
+        say(
+            f"  ⚓ --only-new: {kept_new} existing entr{'y' if kept_new == 1 else 'ies'} "
+            f"kept (schema unchanged); anchoring {len(call_outline)} table(s)"
         )
     if stale_prev:
         say(
@@ -1928,6 +1960,8 @@ def run_anchor_tables(
         # says so only indirectly -- "none" is also what a hub with no glossary records.
         # Omitted on a clean interactive run, so unaffected output is unchanged.
         **({"enforcement": enforcement} if enforcement else {}),
+        # #1050: omitted on a full run, so unaffected output is unchanged.
+        **({"only_new": True} if only_new else {}),
         "table_count": len(outline),
         "tables": tables,
         "unanchored": unanchored,

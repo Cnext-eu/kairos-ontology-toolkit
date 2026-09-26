@@ -4229,6 +4229,15 @@ def _emit_pattern_coverage(root, ledger, output_format):
     help="Anchor even though the hub has no authored business glossary. The anchors "
     "will be source-shaped rather than grounded in the business's own vocabulary.",
 )
+@click.option(
+    "--only-new",
+    "only_new",
+    is_flag=True,
+    default=False,
+    help="Anchor only tables with no entry yet, plus entries whose schema changed or that "
+    "are rejected; keep every other entry verbatim. Use when adding a source to a hub "
+    "whose anchors are done, so the existing tables are not re-anchored (#1050).",
+)
 def anchor_tables_cmd(
     sources_opt,
     analysis_opt,
@@ -4238,6 +4247,7 @@ def anchor_tables_cmd(
     no_screen,
     quiet,
     without_discovery,
+    only_new,
 ):
     """Anchor every source table against the full reference class catalog (DD-185).
 
@@ -4328,6 +4338,7 @@ def anchor_tables_cmd(
         analysis_dir=analysis_path,
         report=report,
         screen_schema_catalogues=not no_screen,
+        only_new=only_new,
     )
     report(f"✅ Anchors written: {out}")
 

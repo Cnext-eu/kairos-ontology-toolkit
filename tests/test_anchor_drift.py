@@ -120,6 +120,17 @@ class TestCompareAnchorRuns:
         assert payload["unchanged"] == 0
         assert payload["changed"][0]["anchor"] == {"was": "CargoItem", "now": "Shipment"}
 
+    def test_only_added_tables_are_not_reported_as_drift(self):
+        """The usual --only-new run (#1050): new tables anchored, nothing moved. It printed
+        an empty "DRIFT since the last run:  changed across 0 table(s)" headline."""
+        report = compare_anchor_runs(_previous(_row("cargo")), [_row("cargo"), _row("fresh")])
+
+        lines = render_drift_summary(report)
+
+        assert lines[0].startswith("  ⚓ no existing entry moved")
+        assert "newly anchored: src.fresh" in "\n".join(lines)
+        assert not any("DRIFT" in line or "not reproducible" in line for line in lines)
+
     def test_the_advice_points_at_the_durable_seam(self):
         """DD-190's sticky statuses are the fix; the operator has to be told they exist."""
         report = compare_anchor_runs(

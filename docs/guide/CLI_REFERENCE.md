@@ -190,6 +190,7 @@ kairos-ontology anchor-tables [OPTIONS]
 | `--no-schema-catalogue-screen` |  | Anchor every profiled table, including ones that look like a catalogue of the source's own schema. Use when the screen has excluded a real business table. |
 | `--quiet`, `-q` |  | Suppress progress output. |
 | `--without-discovery` |  | Anchor even though the hub has no authored business glossary. The anchors will be source-shaped rather than grounded in the business's own vocabulary. |
+| `--only-new` |  | Anchor only tables with no entry yet, plus entries whose schema changed or that are rejected; keep every other entry verbatim. Use when adding a source to a hub whose anchors are done, so the existing tables are not re-anchored (#1050). |
 
 
 ## apply-gold-connection
