@@ -185,6 +185,24 @@ def contract_binding_diagnostics(
         )
         return diagnostics
 
+    via_fields = [index for index, field in enumerate(binding.fields) if field.via]
+    if via_fields:
+        # DD-252: a contract's termRef names one property and cannot express the object
+        # property that reaches a value object. Refuse rather than check the leaf as if it
+        # were a property of this class.
+        for index in via_fields:
+            report(
+                "contract.value-object-field-unsupported",
+                (
+                    f"fields entry '{binding.fields[index].key}' maps a value object's "
+                    "scalar with via:, which a governed class cannot declare yet; bind the "
+                    "value object in its own binding, or leave this class ungoverned "
+                    "(DD-252)"
+                ),
+                f"/fields/{index}/via",
+            )
+        return diagnostics
+
     declared = {item.property: item for item in entity.properties}
     mapped = {field.property: index for index, field in enumerate(binding.fields)}
     unmapped = list(binding.unmapped)

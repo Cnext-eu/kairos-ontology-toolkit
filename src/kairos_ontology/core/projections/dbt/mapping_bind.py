@@ -665,6 +665,13 @@ def mapping_context(facts: SourceMappings) -> tuple[dict, dict[str, str]]:
                 "referenced_column_uris": expression_input_uris(mapping.expression)
                 or (mapping.source_column_uri,),
                 "expression_summary": expression_summary(mapping.expression),
+                # DD-252: a value-object field's column is named from both hops, not from
+                # the target property, so readers that look for it in SQL need the name.
+                **(
+                    {"target_column_name": mapping.target_column_name}
+                    if mapping.via_property_uri
+                    else {}
+                ),
             }
         )
     return (

@@ -313,6 +313,21 @@ def _binding_evidence(
 
     populated: dict[str, str] = {}
     for field_mapping in binding.fields:
+        if field_mapping.via:
+            # DD-252: a value-object field populates the object property on this class;
+            # its scalar lives on the range class, outside this class's universe.
+            resolved = resolve_token_uri(loaded, ontology_path, field_mapping.via)
+            if resolved in universe_by_uri:
+                entry = (
+                    f"{field_mapping.property} <- "
+                    f"{_render_expression(field_mapping.expression)}"
+                )
+                populated[resolved] = (
+                    f"{populated[resolved]}; {entry}"
+                    if resolved in populated
+                    else f"value object: {entry}"
+                )
+            continue
         resolved = resolve_token_uri(loaded, ontology_path, field_mapping.property)
         if resolved in universe_by_uri and resolved not in populated:
             populated[resolved] = _render_expression(field_mapping.expression)

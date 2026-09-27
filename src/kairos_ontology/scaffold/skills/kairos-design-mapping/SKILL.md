@@ -394,6 +394,39 @@ batch, update the complete YAML, then run Gate 4.
 Unknown columns/properties, incompatible types, unsafe functions, excessive
 nesting, or ambiguous null behavior must be corrected rather than waived.
 
+#### 4a. Value objects: `via` (DD-252)
+
+Reference models carry much of their meaning in object properties whose range is a
+value object: `cargo:hasGrossWeight` → `Weight{weightValue, weightUnit}`,
+`imo:hasFlagState` → `FlagState{flagStateCountryCode}`. When the parent has **at most
+one** such value object, map its scalars on the parent's binding:
+
+```yaml
+fields:
+  - property: cargo:weightValue       # a datatype property of the value object
+    via: cargo:hasGrossWeight          # the object property of the bound class
+    expression: GROSSWEIGHT
+  - property: cargo:weightUnit
+    via: cargo:hasGrossWeight
+    expression: GROSSWEIGHT_UOM
+```
+
+- The column is named from both hops, with the shared word written once. The two
+  fields above become `gross_weight_value` and `gross_weight_unit`. A second value
+  object of the same class, such as `hasNetWeight`, gets its own columns.
+- `via` must be single-valued **in OWL**: `owl:FunctionalProperty`, or a max-1
+  restriction on the class or an ancestor. Most accelerator value objects declare no
+  bound. When `compile --check` reports `binding.value-object-not-single-valued`,
+  confirm with the user that one parent row really has one value object. If it does,
+  add the restriction the message prints to the hub's own class, through
+  kairos-design-domain. Never assert the bound in the binding.
+- If the parent can have several, or the value object has its own identity, bind the
+  range class in its own binding and link it with `relationships:` instead.
+- Use `via` rather than a `purpose: carried` technical field. The column then has a
+  canonical name and type, and `fit-report` counts the object property as populated.
+- Not yet supported: a class governed by a Silver contract, and a value object inside a
+  value object. Both are refused with a diagnostic.
+
 ### 5. Route relational complexity
 
 If correct meaning requires joins, windows, aggregation, ranking, deduplication,
@@ -586,6 +619,8 @@ out-of-scope work. Artifact generation is a separate execution step.
 ## Anti-patterns
 
 - Guessing table, column, grain, identity, or relationship behavior.
+- Carrying a value object's scalar as a `purpose: carried` technical field when `via`
+  can map it, or asserting single-valuedness anywhere but the ontology.
 - Copying source schema or ontology definitions into the binding.
 - Treating sample checks as authority or suppressing compiler findings.
 - Embedding arbitrary/raw SQL or relational logic in scalar expressions.

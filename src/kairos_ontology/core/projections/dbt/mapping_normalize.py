@@ -1187,7 +1187,7 @@ def normalize_mapping_contract(
             )
         )
 
-    target_owner: dict[tuple[str, str], str] = {}
+    target_owner: dict[tuple[str, str, str], str] = {}
     for fact in facts.columns:
         if not fact.target_declared:
             continue
@@ -1204,7 +1204,9 @@ def normalize_mapping_contract(
             ambiguous,
             fact.resource_uri,
         )
-        key = (source.source_table_uri, fact.target_property_uri)
+        # DD-252: two value objects of one class (gross and net weight) map the same leaf
+        # property from one table; the object property that reaches each keeps them apart.
+        key = (source.source_table_uri, fact.via_property_uri, fact.target_property_uri)
         previous = target_owner.setdefault(key, fact.resource_uri)
         if previous != fact.resource_uri:
             raise _error(
@@ -1303,6 +1305,7 @@ def normalize_mapping_contract(
                 expression=expression,
                 route=route,
                 contract_name=contract_name,
+                via_property_uri=fact.via_property_uri,
             )
         )
 

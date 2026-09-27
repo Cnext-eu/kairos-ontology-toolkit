@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .policy_specs import CanonicalTypeSpec
+from .specs import optional_field
 
 
 MAX_MAPPING_AST_DEPTH = 64
@@ -130,6 +131,9 @@ class ColumnMappingFact:
     target_data_type: str = ""
     target_is_object_property: bool = False
     target_declared: bool = True
+    #: DD-252: the single-valued object property of the bound class whose value object
+    #: declares ``target_property_uri``. Empty for an ordinary field.
+    via_property_uri: str = optional_field("")
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +290,9 @@ class ColumnMappingSpec:
     expression: MappingExpression
     route: MappingRoute
     contract_name: str = ""
+    #: DD-252: see :attr:`ColumnMappingFact.via_property_uri`. Invisible to hashes and plan
+    #: JSON while empty, so a hub without value-object fields keeps byte-identical output.
+    via_property_uri: str = optional_field("")
 
 
 @dataclass(frozen=True, slots=True)

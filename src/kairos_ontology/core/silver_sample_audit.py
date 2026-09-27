@@ -890,6 +890,8 @@ def run_silver_sample_audit(
                     )
 
             target_tokens = _target_sql_tokens(target, mapping_ns)
+            if col_map.get("target_column_name"):
+                target_tokens.add(str(col_map["target_column_name"]))  # DD-252
             if sql_artifacts and not _sql_contains_any_token(sql_artifacts, target_tokens):
                 findings.append(
                     AuditFinding(

@@ -66,6 +66,7 @@ from .adapter import (
     ResolvedProperty,
     ResolvedRelation,
     adapt_binding,
+    field_target,
     object_property_in_fields_message,
     system_fact_for_relation,
 )
@@ -855,6 +856,7 @@ def _ontology_symbols(
     hub_root: Path,
     referenced_tokens: frozenset[str] = frozenset(),
     referenced_property_tokens: frozenset[str] = frozenset(),
+    value_object_via_tokens: frozenset[str] = frozenset(),
 ) -> tuple[
     Graph,
     str,
@@ -989,6 +991,40 @@ def _ontology_symbols(
                 key = (ref, prop.uri)
                 previous = properties.get(key)
                 domains = tuple(sorted({*(previous.domain_uris if previous else ()), record.uri}))
+                properties[key] = ResolvedProperty(
+                    ref=ref,
+                    uri=prop.uri,
+                    column_name=camel_to_snake(prop.name),
+                    data_type=data_type,
+                    description=prop.comment,
+                    is_object_property=prop.is_object_property,
+                    domain_uris=domains,
+                    range_uris=prop.range_uris,
+                    declared_domain_refs=declared_domains,
+                )
+    # DD-252: a value-object field names a scalar of the range of its ``via``. An imported
+    # range class nobody binds is not indexed above, so index its properties (not the class:
+    # it is not a binding target) for exactly the ranges the fields in scope reach.
+    indexed = {item.uri for item in classes}
+    via_ranges = sorted(
+        {
+            uri
+            for item in properties.values()
+            if item.is_object_property and item.ref in value_object_via_tokens
+            for uri in item.range_uris
+        }
+        - indexed
+    )
+    for range_uri in via_ranges:
+        for prop in _class_index_properties(index, range_uri, graph):
+            data_type = _XSD_TYPES.get(prop.range_uri, prop.range_uri)
+            property_refs = set(_qnames(graph, URIRef(prop.uri)))
+            property_refs.update(_declared_prefix_aliases(loaded, ontology_path, prop.uri))
+            declared_domains = _declared_domain_refs(loaded, ontology_path, graph, prop.uri)
+            for ref in sorted(property_refs):
+                key = (ref, prop.uri)
+                previous = properties.get(key)
+                domains = tuple(sorted({*(previous.domain_uris if previous else ()), range_uri}))
                 properties[key] = ResolvedProperty(
                     ref=ref,
                     uri=prop.uri,
@@ -1236,6 +1272,11 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         for document in binding_documents.values()
         for token in _binding_referenced_property_tokens(document)
     )
+    value_object_via_tokens = frozenset(
+        token
+        for document in binding_documents.values()
+        for token in _binding_value_object_via_tokens(document)
+    )
     (
         graph,
         namespace,
@@ -1247,7 +1288,13 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         prefix_warnings,
         prefix_alternatives,
         closure_property_owners,
-    ) = _ontology_symbols(ontology_path, root, referenced_tokens, referenced_property_tokens)
+    ) = _ontology_symbols(
+        ontology_path,
+        root,
+        referenced_tokens,
+        referenced_property_tokens,
+        value_object_via_tokens,
+    )
     relations = list(
         _dedupe_relations(
             [relation for path in source_paths for relation in parsed_source_relations[path]]
@@ -1374,8 +1421,35 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
                 for token in _binding_relationship_property_tokens(document)
             ),
         ),
+        value_object_bounds=_value_object_bounds(graph, properties, value_object_via_tokens),
     )
     return scope, context
+
+
+def _value_object_bounds(
+    graph, properties, via_tokens: frozenset[str]
+) -> dict[tuple[str, str], int | None]:
+    """How many range values OWL allows through each ``via`` in scope (DD-252).
+
+    The target max of the same ``edge_multiplicities`` the class diagram and DD-241 read,
+    per class that exposes the property: ``owl:FunctionalProperty``, or a max-1 (or exact
+    1) restriction on the class or its nearest bounded ancestor.
+    """
+    from ..projections.erd_projector import edge_multiplicities
+
+    bounds: dict[tuple[str, str], int | None] = {}
+    for prop in properties:
+        if not prop.is_object_property or prop.ref not in via_tokens:
+            continue
+        uri = URIRef(prop.uri)
+        for class_uri in prop.domain_uris:
+            if (class_uri, prop.uri) in bounds:
+                continue
+            cls = URIRef(class_uri)
+            range_cls = URIRef(prop.range_uris[0]) if prop.range_uris else cls
+            _, (_, target_max) = edge_multiplicities(graph, cls, cls, uri, range_cls, None)
+            bounds[(class_uri, prop.uri)] = target_max
+    return bounds
 
 
 def _relationship_bounds(
@@ -1574,7 +1648,7 @@ def _conformance_contract(
     properties = tuple(
         sorted(
             (
-                field.property,
+                field.key,
                 (
                     _source_type(prop.data_type).kind.value
                     if prop is not None and _source_type(prop.data_type) is not None
@@ -2000,11 +2074,11 @@ def merge_bound_sources(
         group = plan_by_target[target_ref]
         first_binding = next(binding for binding in bindings if binding.target_class == target_ref)
         integration_columns = tuple(
-            context.property(field.property).column_name
+            str(field_target(field, context)[1])
             for field in first_binding.fields
             if isinstance(field.expression, ExprColumn)
             and field.expression.column in group.union.deduplicate_by
-            and context.property(field.property) is not None
+            and field_target(field, context)[1] is not None
         )
         union = replace(
             base_model,
@@ -2138,8 +2212,7 @@ def _relationship_output_column(
     """
     for field in binding.fields:
         if isinstance(field.expression, ExprColumn) and field.expression.column == source_column:
-            prop = context.property(field.property)
-            return prop.column_name if prop is not None else None
+            return field_target(field, context)[1]
     matches = _relationship_technical_field_matches(binding, source_column)
     return matches[0].name if len(matches) == 1 else None
 
@@ -2793,7 +2866,9 @@ def _binding_safety_diagnostics(
     fields_by_property_uri: dict[str, FieldMapping] = {}
     fields_by_output_name: dict[str, FieldMapping] = {}
     for field in binding.fields:
-        prop = context.property(field.property)
+        prop, output_column = field_target(field, context)
+        if field.via and output_column is None:
+            continue  # the adapter reports the unresolved via, with DD-252's reasons
         if prop is not None and prop.is_object_property:
             # #280: mirrors the adapter's ``binding.object-property-in-fields`` rejection so
             # ``compile --check`` still reports it when this binding is blocked before
@@ -2806,12 +2881,12 @@ def _binding_safety_diagnostics(
                     rule_id="DD-133-safety",
                 )
             )
-        if prop is not None and prop.column_name.lower() in reserved:
+        if prop is not None and str(output_column).lower() in reserved:
             diagnostics.append(
                 CompileDiagnostic(
                     code="safety.identity-role-collision",
                     message=(
-                        f"mapped property column '{prop.column_name}' collides with a "
+                        f"mapped property column '{output_column}' collides with a "
                         "compiler-owned identity/runtime role"
                     ),
                     location=SourceLocation(path=binding.source_path, pointer=field.pointer),
@@ -2826,7 +2901,10 @@ def _binding_safety_diagnostics(
             # is dormant only because today's column matcher requires exact name equality, so
             # nothing yet produces two ``fields:`` entries for one property; it becomes
             # reachable the instant any future name-relaxing matcher lands.
-            duplicate_property = fields_by_property_uri.get(prop.uri)
+            # DD-252: gross and net weight both map Weight.weightValue; the via keeps them
+            # two targets.
+            target_key = f"{field.via} -> {prop.uri}" if field.via else prop.uri
+            duplicate_property = fields_by_property_uri.get(target_key)
             if duplicate_property is not None:
                 diagnostics.append(
                     CompileDiagnostic(
@@ -2841,16 +2919,16 @@ def _binding_safety_diagnostics(
                     )
                 )
             else:
-                fields_by_property_uri[prop.uri] = field
-                lower_output = prop.column_name.lower()
+                fields_by_property_uri[target_key] = field
+                lower_output = str(output_column).lower()
                 duplicate_output = fields_by_output_name.get(lower_output)
                 if duplicate_output is not None:
                     diagnostics.append(
                         CompileDiagnostic(
                             code="field.output-collision",
                             message=(
-                                f"fields: entry for property '{field.property}' produces "
-                                f"output column '{prop.column_name}' which collides "
+                                f"fields: entry for property '{field.key}' produces "
+                                f"output column '{output_column}' which collides "
                                 f"(case-insensitively) with the output column already "
                                 f"produced by property '{duplicate_output.property}'"
                             ),
@@ -3048,9 +3126,9 @@ def _technical_field_safety_diagnostics(
     diagnostics: list[CompileDiagnostic] = []
     semantic_outputs: dict[str, str] = {}
     for field in binding.fields:
-        prop = context.property(field.property)
-        if prop is not None:
-            semantic_outputs.setdefault(prop.column_name.lower(), prop.column_name)
+        _, output_column = field_target(field, context)
+        if output_column is not None:
+            semantic_outputs.setdefault(output_column.lower(), output_column)
     technical_seen: dict[str, TechnicalField] = {}
     technical_by_source: dict[str, dict[str, TechnicalField]] = {}
     for index, technical_field in enumerate(binding.technical_fields):
@@ -3275,6 +3353,28 @@ def _binding_referenced_property_tokens(text: str) -> tuple[str, ...]:
         str(field_map["property"])
         for field_map in fields
         if isinstance(field_map, dict) and field_map.get("property")
+    )
+
+
+def _binding_value_object_via_tokens(text: str) -> tuple[str, ...]:
+    """Read every ``via`` object-property token a binding's ``fields:`` names (DD-252).
+
+    Best-effort like its siblings: it only decides which range classes get their
+    properties indexed and which OWL bounds get computed.
+    """
+    try:
+        document = yaml_io.safe_load(text)
+    except yaml.YAMLError:
+        return ()
+    if not isinstance(document, dict):
+        return ()
+    fields = document.get("fields")
+    if not isinstance(fields, list):
+        return ()
+    return tuple(
+        str(field_map["via"])
+        for field_map in fields
+        if isinstance(field_map, dict) and field_map.get("via")
     )
 
 

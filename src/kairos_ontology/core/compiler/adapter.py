@@ -73,6 +73,7 @@ from ..projections.dbt.specs import (
 )
 from .bindings import (
     EntityBinding,
+    FieldMapping,
     ExprCase,
     ExprColumn,
     ExprFunction,
@@ -230,6 +231,11 @@ class ResolutionContext:
     relationship_bounds: dict[tuple[str, str], tuple[int | None, int | None]] = field(
         default_factory=dict
     )
+    #: ``(class URI, object-property URI) -> target max``: how many range values OWL lets
+    #: one instance of the class have through every ``via`` a field in scope names
+    #: (DD-252). ``1`` is the only value that lets a value object's scalar be a field of
+    #: the parent; ``None`` means OWL declares no bound.
+    value_object_bounds: dict[tuple[str, str], int | None] = field(default_factory=dict)
 
     def relation(self, ref: str) -> ResolvedRelation | None:
         """Return the resolved relation for an author ``source.relation`` token."""
@@ -413,6 +419,76 @@ def _property_domain_message(
     )
 
 
+def value_object_column_name(via: ResolvedProperty, leaf: ResolvedProperty) -> str:
+    """The Silver column for a value-object field (DD-252): both hops, seam written once.
+
+    ``hasGrossWeight`` + ``weightValue`` -> ``gross_weight_value``; ``hasWeight`` +
+    ``weightUnit`` -> ``weight_unit``; ``hasFlagState`` + ``flagStateCountryCode`` ->
+    ``flag_state_country_code``. The stem drops a leading ``has``; where the stem's last
+    words are the leaf's first words they are written once.
+    """
+    stem = via.column_name.split("_")
+    if len(stem) > 1 and stem[0] == "has":
+        stem = stem[1:]
+    tail = leaf.column_name.split("_")
+    for overlap in range(min(len(stem), len(tail)), 0, -1):
+        if stem[-overlap:] == tail[:overlap]:
+            return "_".join([*stem, *tail[overlap:]])
+    return "_".join([*stem, *tail])
+
+
+def field_target(
+    field_map: FieldMapping, context: ResolutionContext
+) -> tuple[ResolvedProperty | None, str | None]:
+    """``(property, output column)`` for one field, ``(None, None)`` when unresolved.
+
+    The one place a field's Silver column is named, so the adapter and every kernel check
+    (collisions, reserved roles, joins, union keys) agree on it (DD-252).
+    """
+    prop = context.property(field_map.property)
+    if prop is None:
+        return None, None
+    if not field_map.via:
+        return prop, prop.column_name
+    via = context.property(field_map.via)
+    if via is None:
+        return prop, None
+    leaf = _value_object_leaf(field_map.property, via, context) or prop
+    return leaf, value_object_column_name(via, leaf)
+
+
+def _value_object_leaf(
+    token: str, via: ResolvedProperty, context: ResolutionContext
+) -> ResolvedProperty | None:
+    """The candidate for *token* that *via*'s range exposes, when exactly one does."""
+    ranges = set(via.range_uris)
+    found = {
+        item.uri: item
+        for item in context.property_matches(token)
+        if ranges & set(item.domain_uris)
+    }
+    return next(iter(found.values())) if len(found) == 1 else None
+
+
+def value_object_bound_message(
+    target_class: str, via_token: str, klass: ResolvedClass, bound: int | None
+) -> str:
+    """Why a ``via`` is refused, and the OWL restriction that would allow it (DD-252)."""
+    declared = (
+        "declares no upper bound" if bound is None else f"allows up to {bound} values"
+    )
+    local = klass.ref if ":" in klass.ref else target_class
+    return (
+        f"via '{via_token}' is not single-valued on class '{target_class}': OWL {declared}, "
+        "so one row could need several value objects. A value object's scalar is a field "
+        "of its parent only when the parent has at most one (DD-252). If that is true of "
+        "this data, declare it on the hub class -- `" + local + " rdfs:subClassOf [ a "
+        f"owl:Restriction ; owl:onProperty {via_token} ; owl:maxCardinality 1 ] .` -- or "
+        "make the property owl:FunctionalProperty upstream. Otherwise bind the range class "
+        "in its own binding and link it with a relationships: entry"
+    )
+
+
 def object_property_in_fields_message(property_token: str, prop: ResolvedProperty) -> str:
     """Return the actionable message for an object property authored under ``fields:``.
 
@@ -425,8 +501,10 @@ def object_property_in_fields_message(property_token: str, prop: ResolvedPropert
     return (
         f"field '{property_token}' targets an object property (range {range_label}); "
         "fields: materializes scalar attributes only. Declare it as a relationships: entry "
-        "with a join: clause so the compiler resolves the surrogate-key join, or -- if the "
-        "raw reference value really is wanted as a column -- author an explicit "
+        "with a join: clause so the compiler resolves the surrogate-key join. When the range "
+        "is a single-valued value object, map its scalars on this binding instead, with "
+        f"'property: <scalar of the range>' with 'via: {property_token}' (DD-252). If the "
+        "raw reference value really is wanted as a column, author an explicit "
         "technicalFields: entry (DD-139)"
     )
 
@@ -859,6 +937,101 @@ def _resolve_identity_output_columns(
     return tuple(resolved)
 
 
+def _range_scalar_tokens(via: ResolvedProperty, context: ResolutionContext) -> tuple[str, ...]:
+    """The datatype-property tokens *via*'s range exposes, prefixed forms preferred."""
+    tokens = {
+        item.ref
+        for item in context.properties
+        if set(via.range_uris) & set(item.domain_uris) and not item.is_object_property
+    }
+    prefixed = {token for token in tokens if "://" not in token}
+    return tuple(sorted(prefixed or tokens))
+
+
+def _resolve_value_object_field(
+    field_map: FieldMapping,
+    index: int,
+    klass: ResolvedClass,
+    binding: EntityBinding,
+    context: ResolutionContext,
+    path: str,
+    diagnostics: list[CompileDiagnostic],
+) -> tuple[ResolvedProperty, ResolvedProperty] | None:
+    """``(via, leaf)`` for a DD-252 value-object field, or ``None`` after a diagnostic."""
+
+    def reject(code: str, message: str, key: str) -> None:
+        diagnostics.append(
+            CompileDiagnostic(
+                code=code,
+                message=message,
+                location=SourceLocation(path=path, pointer=f"/fields/{index}/{key}"),
+                rule_id="DD-252",
+            )
+        )
+
+    via = context.property(field_map.via)
+    if via is None:
+        reject(
+            "binding.unknown-property",
+            _unknown_property_message(field_map.via, context),
+            "via",
+        )
+        return None
+    if not via.is_object_property:
+        reject(
+            "binding.value-object-via-not-object-property",
+            f"via '{field_map.via}' is a datatype property; via names the object property "
+            "that reaches a value object, and property names the scalar on it (DD-252)",
+            "via",
+        )
+        return None
+    if via.domain_uris and klass.uri not in via.domain_uris:
+        reject(
+            "binding.property-domain-incompatible",
+            _property_domain_message(field_map.via, binding.target_class, via, context),
+            "via",
+        )
+        return None
+    if not via.range_uris:
+        reject(
+            "binding.value-object-range-unresolved",
+            f"via '{field_map.via}' has no named rdfs:range, so the value object whose "
+            f"scalar '{field_map.property}' would be cannot be resolved (DD-252)",
+            "via",
+        )
+        return None
+    bound = context.value_object_bounds.get((klass.uri, via.uri))
+    if bound != 1:
+        reject(
+            "binding.value-object-not-single-valued",
+            value_object_bound_message(binding.target_class, field_map.via, klass, bound),
+            "via",
+        )
+        return None
+    leaf = _value_object_leaf(field_map.property, via, context)
+    if leaf is None:
+        ranges = ", ".join(
+            _preferred_token(context.class_tokens(uri), uri) for uri in via.range_uris
+        )
+        reject(
+            "binding.unknown-property",
+            f"property '{field_map.property}' is not a property of '{ranges}', the value "
+            f"object '{field_map.via}' reaches (DD-252). Properties it has: "
+            + _token_list(_range_scalar_tokens(via, context)),
+            "property",
+        )
+        return None
+    if leaf.is_object_property:
+        reject(
+            "binding.value-object-nested",
+            f"property '{field_map.property}' is itself an object property; a via field "
+            "reaches one value object and maps one of its scalars (DD-252)",
+            "property",
+        )
+        return None
+    return via, leaf
+
+
 def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSources:
     """Adapt one parsed :class:`EntityBinding` to a complete graph-free ``BoundSources``.
 
@@ -954,7 +1127,19 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
     column_specs: list[ColumnSpec] = []
     field_records: list[tuple[Expression, str]] = []
     for index, field_map in enumerate(binding.fields):
-        matches = context.property_matches(field_map.property)
+        via_prop: ResolvedProperty | None = None
+        if field_map.via:
+            resolved = _resolve_value_object_field(
+                field_map, index, klass, binding, context, path, diagnostics
+            )
+            if resolved is None:
+                continue
+            via_prop, prop = resolved
+            output_column = value_object_column_name(via_prop, prop)
+            matches = (prop,)
+        else:
+            matches = context.property_matches(field_map.property)
+            output_column = ""
         distinct_uris = sorted({item.uri for item in matches})
         if len(distinct_uris) > 1:
             diagnostics.append(
@@ -978,7 +1163,7 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 )
             )
             continue
-        if prop.domain_uris and klass.uri not in prop.domain_uris:
+        if via_prop is None and prop.domain_uris and klass.uri not in prop.domain_uris:
             diagnostics.append(
                 CompileDiagnostic(
                     code="binding.property-domain-incompatible",
@@ -1002,7 +1187,8 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 )
             )
             continue
-        map_uri = f"{resource_base}:map:{prop.column_name}"
+        output_column = output_column or prop.column_name
+        map_uri = f"{resource_base}:map:{output_column}"
         target_type = _canonical_type(prop.data_type, map_uri)
         expr_fact, _out_type, nullable = builder.build(field_map.expression, target_type)
         if isinstance(field_map.expression, ExprColumn):
@@ -1022,8 +1208,8 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 continue
             source_uri = source_uri or sorted(symbol.uri for symbol in symbols.values())[0]
         # DD-108/DD-133: the emitted silver/dbt column name is the resolved property's
-        # ``column_name`` (already snake-cased at kernel resolution), never the source column.
-        output_column = prop.column_name
+        # ``column_name`` (already snake-cased at kernel resolution), never the source column;
+        # a value-object field is named from both hops (DD-252).
         column_mappings.append(
             ColumnMappingFact(
                 resource_uri=map_uri,
@@ -1034,6 +1220,7 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 target_column_name=output_column,
                 target_data_type=prop.data_type,
                 target_is_object_property=prop.is_object_property,
+                via_property_uri=via_prop.uri if via_prop is not None else "",
             )
         )
         column_specs.append(
@@ -1227,16 +1414,13 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
     for authored_input in load.canonical_hash.inputs.values:
         match = context.property(authored_input) or next(
             (
-                context.property(field.property)
+                field_target(field, context)[0]
                 for field in binding.fields
                 if (
                     isinstance(field.expression, ExprColumn)
                     and field.expression.column == authored_input
                 )
-                or (
-                    context.property(field.property) is not None
-                    and context.property(field.property).column_name == authored_input
-                )
+                or field_target(field, context)[1] == authored_input
             ),
             None,
         )

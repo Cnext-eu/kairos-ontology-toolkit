@@ -345,6 +345,8 @@ def normalize_contract(
                     f"mapping:{mapping.resource_uri}",
                     f"property:{mapping.target_property_uri}",
                     "rule:DD-107",
+                    # DD-252: a value-object field names the object property that reaches it.
+                    *((f"via:{mapping.via_property_uri}",) if mapping.via_property_uri else ()),
                 }
             )
         else:
