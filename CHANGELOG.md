@@ -5,17 +5,32 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.23.0** is the latest GA release (2026-09-25), superseding
-> **5.22.0** (2026-09-24). It fixes how relationships are drawn and declared, and makes the
-> hub PR gate faster:
+> **Release status.** **5.24.0** is the latest GA release (2026-09-27), superseding
+> **5.23.0** (2026-09-25). It reads ontology meaning from the whole `owl:imports` closure and
+> stops the gap pipeline from inventing local properties the closure already has:
 >
-> - ER diagrams draw real relationship cardinality instead of `||--o{` everywhere
->   (DD-241). Relationship cardinality is declared in OWL only; `compile` and `validate`
->   now warn when a binding or a SHACL shape disagrees with it.
-> - The hub `pr-validate.yml` checks the architecture diagrams in their own parallel job,
->   so the compile job is no longer the critical path.
+> - Readers, AI prompts and a new MCP server read the full import closure (DD-243..245);
+>   hubs and dataplatforms get `AGENTS.md` as their agent-instruction file (DD-246).
+> - A custom column is looked up in the whole closure before it can become a local
+>   property; `validate` flags near-duplicate and mis-namespaced local properties (DD-248).
+> - `anchor-tables` routes shared-owner tables on evidence (DD-247) and bound tables to
+>   their binding's domain unless pinned (DD-249); `--only-new` anchors only new tables.
+> - Run logs are a span tree (`logs show`, OpenTelemetry; DD-242), and emit is 2-2.5x faster.
 >
-> **What to expect on the first run after upgrading from 5.22.0.**
+> **What to expect on the first run after upgrading from 5.23.0.**
+>
+> | you will see | why |
+> |---|---|
+> | **`update` adds `AGENTS.md`** and shortens `.github/copilot-instructions.md` to a pointer; hubs also get `.mcp.json`, `.vscode/mcp.json` and a new `.claude/settings.json` generation | DD-246, DD-245. Only the managed block of `AGENTS.md` is the toolkit's. With a `CLAUDE.md`, add `@AGENTS.md` to it. The MCP server needs `uv sync --extra mcp` |
+> | **`propose-alignment` re-runs every table once** | `ALIGNMENT_POOL_CONTRACT` is 4 (DD-248): recorded alignments are re-proposed with the closure lookup and the closure-candidate retry. Budget the model calls |
+> | **`validate` warns `integrity.local-property-resembles-reference-property`**, or errors `integrity.property-outside-hub-namespace` | DD-248. Reuse the closure property or link it with `rdfs:subPropertyOf`; move a property declared in a reference module's namespace into the hub's own |
+> | **A re-run of `anchor-tables` moves some tables**, and flags rows `owner-ambiguous` or `binding-ambiguous` | DD-247, DD-249. Unpinned bound tables follow their binding's domain; a pin (`status: edited`) always wins, with a warning when it disagrees with the binding |
+> | **`draft-gap-decisions --accept-proposals` holds more entries** (`held-for-closure-candidate`), and `--suggest` combined with `--auto` or `--accept-proposals` is a usage error | #1057, #1056. Run `--suggest`, read the sheet, then `--accept-proposals` |
+> | **Loader columns (`_source_file`, `_row_key`, `_idx` ...) leave the DD-169 gate** | #1049. They are classified `operational`; `--auto` records the file/load ones and leaves row-identity ones for grain |
+> | **Run logs appear in `<repo>/.kairos/logs/`** | #1038. `logs show` still reads the old `ontology-hub/.kairos/logs/` |
+>
+> **Upgrading from 5.22.0 or earlier?** 5.23.0's first-run notes still apply on top of the
+> above:
 >
 > | you will see | why |
 > |---|---|
@@ -73,6 +88,154 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.0] — 2026-09-27
+
+General availability of the 5.24 line. Everything under `5.24.0rc1` and `rc2` below is part
+of this release. The entries in this section are what landed after rc2:
+- closure candidates before local properties (#1051, DD-248);
+- `anchor-tables --only-new` (#1050) and binding-aware anchor routing (#1048, DD-249);
+- gap-sheet fixes: loader columns (#1049), surviving `--suggest` proposals and a dry
+  `--accept-proposals --dry-run` (#1056), and the stricter closure-candidate hold (#1057).
+
+### Added
+- **`anchor-tables --only-new` anchors only what is new.** When a source is added to a hub
+  whose anchors are done, a plain run re-proposed every existing row. About a quarter of
+  those tables came back with a different anchor, and each of them was then re-aligned by
+  `propose-alignment`, because the anchor is part of its cache key. With `--only-new`,
+  every existing entry whose source schema is unchanged is kept verbatim and left out of
+  the model call. Only tables with no entry, entries whose schema changed and `rejected`
+  entries are anchored, and nothing is sent to the model when none are left. The default
+  run is unchanged (#1050).
+- **`core.closure_lookup`**, the one deterministic name-to-closure matcher (exact, or a
+  token-subset near match; generic names such as `code` match exactly only), shared by
+  alignment and the gap sheet now and by `validate`, `scaffold-extensions` and `find-term`
+  in the follow-up PRs.
+- **`propose-alignment` re-offers a closure candidate with the table's class pinned
+  (#1051, DD-248 §4).** For a table whose unmatched columns have `closure_candidates`, one
+  further call is made for those columns only, against the classes that own the
+  candidate properties with those properties listed first, so the prompt's cut cannot
+  drop them again. A mapping the retry makes is flagged `closure_retry: true` on the
+  column; a `custom` answer leaves the first-pass entry and its candidates untouched.
+  The merged result is what gets cached, so the cost is paid once per table.
+  `--no-closure-retry` skips the pass and is part of the per-table cache key.
+- **`kairos-ontology find-term <name> --domain <d>` and the MCP tool `find_term`
+  (DD-248).** The closure lookup by *name*: which properties in the domain's
+  `owl:imports` closure does this name or label resemble, and on which classes. The
+  same matcher the aligner and the gap sheet use. The kairos-design-domain skill now
+  requires it before any property is proposed: reuse the closure property, declare
+  `rdfs:subPropertyOf` with a reason, or record why no candidate fits.
+- **`validate` reports two new integrity codes.**
+  `integrity.local-property-resembles-reference-property` (warning): a local property
+  whose name or label matches a closure property (`documentTypeCode` beside
+  `documentType`) with no `rdfs:subPropertyOf` / `owl:equivalentProperty` link; the
+  exact-same-name case stays with the existing shadowing warning.
+  `integrity.property-outside-hub-namespace` (degradable error for a reference module's
+  namespace; warning for a sibling hub domain's): a property a hub file declares under
+  a namespace that is not its own. Such a term was invisible to every namespace-filtered
+  check and present in the compiled graph.
+- **`scaffold-extensions --force`.** A `registered-extension` property the owning
+  class's closure already offers under a similar name is skipped and listed as a
+  closure candidate; `--force` renders it anyway.
+
+### Changed
+- **`scaffold-extensions` mints only into a namespace the hub authors.** The namespace
+  comes from the domain file's own `owl:Ontology` IRI; the `https://example.com/…`
+  fallback is gone, and a `--namespace` naming a reference module or an unknown IRI is
+  refused with the fix named.
+- **`generate-bindings` classifies a hub-local property by the hub's namespaces**, not by
+  "differs from the anchor class's module", so a property the class inherits from a
+  second reference module is no longer offered as hub-authored.
+- `core/hub_namespace.py` is the one reader of the hub's ontology IRIs; it replaces
+  `core/ontology_scope.py` and the `scaffold-extensions` namespace heuristic.
+- **`--accept-proposals` holds every undecided entry with closure candidates (#1057,
+  DD-248).** Before, an entry whose proposal was `deferred` or `blueprint-gap` was
+  accepted over a candidate; now any candidate holds it (`held-for-closure-candidate`),
+  whatever its score and whatever the rule or the model proposed. Expect a higher held
+  count on hubs with weak candidates; they stay visible on the entry for the reviewer.
+
+### Fixed
+- **`anchor-tables` routes a bound table to its EntityBinding's domain, unless the row is
+  pinned (#1048, DD-249).** DD-247's routing (affinity, hub subclass, secondary affinity,
+  first owner) never looked at the bindings a hub had already authored, so tables such as
+  `cargowise.glbcompany` were anchored to a domain their binding contradicts. The
+  precedence is now pin > binding > the DD-247 chain. An unpinned row read by bindings in
+  one domain takes that domain (`domain_basis: binding`); several domains keep the
+  chain's choice when it is one of them, and otherwise flag the row `binding-ambiguous`.
+  A pinned (`confirmed`/`edited`) or `--only-new`-kept row is never changed; when its
+  binding disagrees, the run warns (`cargowise.glbstaff: pinned to party, bound in
+  fracht-company (cargowise-fracht-staff-member.binding.yaml)`). A binding's `dbtModel`
+  counts the tables its SQL reads, but the walk stops at a model another binding selects,
+  so a merge model that joins another entity in does not claim that entity's tables. New
+  `load_binding_owners` in `core.source_disposition`.
+- **`generate-bindings` no longer drafts a duplicate binding for a table another binding
+  already reads.** The old guard only saw the generator's own
+  `<system>-<table>-to-<domain>` file name, which most hand-authored bindings do not use.
+  Such a table is now skipped with `already bound by <file>`, also under `--force`; the
+  generator's own earlier draft still regenerates under `--force`.
+- **Bookkeeping columns your bronze loader adds no longer block `compile --check`.** Columns
+  such as `_source_file`, `_row_key`, `_parent_row_key` and `_idx` are written by the hub's
+  own bronze loader, not by the source system, but the gap report filed them under
+  `no-reference-property`. `draft-gap-decisions --auto` left them undecided and the DD-169
+  gate failed with `alignment.gap-column-undecided`: 86 such columns on one hub. The gap
+  report now classifies them `operational`, which takes them out of the gate, and `--auto`
+  records the file and load bookkeeping (`_source_file`, `_load_ts`) as
+  `not-business-data` without holding it back as a conflict. The loader's row-identity
+  columns (`_row_key`, `_parent_row_key`, `_idx`, `_line_no` and similar) are left
+  unrecorded and counted as "left for grain": a `not-business-data` entry would hide them
+  from `anchor-tables`, and on an array-expanded child table they are the row's only
+  identity. A name only matches when it
+  starts with an underscore and the rest is a small, fixed set of loader names
+  (`source_file`, `file_name`, `row_key`, `parent_row_key`, `row_id`, `idx`, `index`,
+  `line_no`, and names starting with `load`, `batch` or `ingest`), so `source_file` with no
+  underscore is still a gap. A source's own underscore-prefixed message envelope
+  (`_message_code`, `_message_send_date`) is left out on purpose because it is source data.
+  The operational-column filter on proposed grains is unchanged, so `anchor-tables` still
+  proposes `(_parent_row_key, _idx)` as the grain.
+- **A pinned anchor row is no longer released by a column exclusion recorded after
+  anchoring.** The DD-190 schema hash, which decides whether a `confirmed` or `edited` row
+  is kept, was computed after the disposition ledger's exclusions, not from the source
+  schema. Every gap decision that excluded a column therefore changed the hash and
+  released the pin, although nothing in the source had changed. On the GDW hub, with 749
+  exclusions, 2 of 107 rows still matched. The hash now covers the raw source columns.
+  A row stamped with the old hash is still accepted when that hash matches, and is
+  re-stamped. A row whose exclusions changed since it was written is re-proposed once
+  (#1050).
+- **A re-run that only adds tables no longer prints an empty `DRIFT` headline** or the
+  reproducibility warning; it says no existing entry moved and lists the new tables.
+- **The gap pipeline no longer drafts a hub-local property for a column whose property
+  already exists in the import closure (#1051, DD-248).** The aligner sees a bounded pool,
+  so a column whose property sat past the cut was reported as `no-reference-property` and
+  `draft-gap-decisions` drafted `registered-extension` for it; on a 15-domain hub that was
+  204 of 223 open names. Every custom column is now looked up deterministically against
+  the whole closure after the model answers. A hit is recorded on the column as
+  `closure_candidates`, `alignment-report` counts it under the new reason
+  `closure-candidate-not-shown` (a gap reason, listed first), the gap sheet proposes
+  nothing for it and names the candidates, `--suggest` shows them to the model and forbids
+  `registered-extension` without a stated reason, and `--accept-proposals` holds such
+  entries for a human (`held-for-closure-candidate`). Two shortlist defects fixed on the
+  way: the class scorer now sees every property, not the first 60, and the DD-244
+  disclosure line now counts the classes the shortlist cut as well as the properties.
+  `ALIGNMENT_POOL_CONTRACT` is 4, so recorded alignments re-run once after upgrading.
+- **A `draft-gap-decisions --suggest` proposal now survives a later rebuild of the gap
+  sheet (#1056).** Every rebuild (a plain run, `--accept-proposals`) redrew each entry's
+  proposal from the name rules and kept only `decision`, so the model's proposals and
+  reasoning were paid for and then silently replaced, and `--accept-proposals` accepted
+  the rule's drafts instead. A model answer is now stamped `proposed_by: model` with an
+  `evidence` fingerprint of what it was answered from (closure candidates, Power BI
+  demand, drafted properties and data types; for a family its members, BI members and
+  candidates). A rebuild carries `proposed_disposition`, `reasoning`, `coherent`,
+  `proposed_by` and `evidence` while the fingerprint still matches, and drops them the
+  moment the evidence moves (a new closure candidate, say), so the rule's draft stands.
+  `decided_by` now travels with a carried `decision`. A re-run of `--suggest` does not
+  re-ask a name whose answer is still current.
+- **`--accept-proposals --dry-run` is dry.** It wrote the sheet before accepting and
+  counted only the decisions already on disk; it now accepts in memory, writes neither the
+  sheet nor the ledger, and reports the full would-apply count.
+- **`--suggest` is no longer silently dropped.** Combined with `--auto` or
+  `--accept-proposals` it is a usage error naming the two-step flow (`--suggest`, read the
+  sheet, then `--accept-proposals`); with `--dry-run` it prints each model proposal
+  instead of discarding the answers it paid for.
 
 ## [5.24.0rc2] — 2026-09-26
 
