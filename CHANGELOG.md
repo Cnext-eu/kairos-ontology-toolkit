@@ -5,19 +5,29 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.0** is the latest GA release (2026-09-27), superseding
-> **5.23.0** (2026-09-25). It reads ontology meaning from the whole `owl:imports` closure and
-> stops the gap pipeline from inventing local properties the closure already has:
+> **Release status.** **5.24.1** is the latest GA release (2026-09-27), superseding
+> **5.24.0** (2026-09-27). A patch on the DD-169 gap gate (#1062): the gate reads the hub's
+> bindings, and a column recorded `deferred` stays a visible backlog:
 >
-> - Readers, AI prompts and a new MCP server read the full import closure (DD-243..245);
->   hubs and dataplatforms get `AGENTS.md` as their agent-instruction file (DD-246).
-> - A custom column is looked up in the whole closure before it can become a local
->   property; `validate` flags near-duplicate and mis-namespaced local properties (DD-248).
-> - `anchor-tables` routes shared-owner tables on evidence (DD-247) and bound tables to
->   their binding's domain unless pinned (DD-249); `--only-new` anchors only new tables.
-> - Run logs are a span tree (`logs show`, OpenTelemetry; DD-242), and emit is 2-2.5x faster.
+> - A column a `source.relation` binding names is decided by the binding, with no ledger
+>   row (DD-250); a `source.dbtModel` chain that names it is offered as `bound` on the sheet.
+> - `next` raises `review-deferred-columns`, `alignment-report` shows a per-domain deferred
+>   backlog, `draft-gap-decisions --include-deferred` re-lists deferred names, and every new
+>   ledger row carries `recorded_on` (DD-251).
 >
-> **What to expect on the first run after upgrading from 5.23.0.**
+> **What to expect on the first run after upgrading from 5.24.0.**
+>
+> | you will see | why |
+> |---|---|
+> | **`compile --check` and `validate` list fewer undecided columns**, and `draft-gap-decisions --apply` reports `skipped_bound_by_binding` | DD-250. A column a relation binding names leaves the gate; a hand-written column-grain `bound` row for it is now redundant |
+> | **Gate lines and sheet entries carry `read_by`**: some proposed `bound`, some `lineage_unconfirmed` and held by `--accept-proposals` (`held-for-binding-read`) | DD-250. Evidence from a binding's dbt chain. Confirm it from the sheet; it never clears a column by itself |
+> | **`next` shows a `deferred cols:` line and an optional `review-deferred-columns` action**; the JSON `schema_version` is 9 | DD-251. Advisory, never blocking |
+> | **`alignment-report` lists fewer "columns needing a decision"** and gains a "Deferred backlog" section; JSON gains `undecided_columns`, `deferred_backlog` and `domains[].decisions` | DD-251. The report now reads the ledger and the bindings, so a deferred column is told apart from an undecided one |
+> | **New ledger rows carry `recorded_on`** | DD-251. Rows written before keep their shape until replaced |
+> | **`update` refreshes the design-domain, design-source and design-mapping skills** | DD-251. A `deferred` column is a backlog item, not one that was ruled out |
+>
+> **Upgrading from 5.23.0 or earlier?** 5.24.0's first-run notes still apply on top of the
+> above:
 >
 > | you will see | why |
 > |---|---|
@@ -88,6 +98,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.1] — 2026-09-27
+
+A patch on 5.24.0 for #1062, the DD-169 gap gate's two blind spots: the gate never read
+the hub's bindings, so columns already consumed by an EntityBinding were reported as gaps
+(DD-250); and a column recorded `deferred` never resurfaced anywhere (DD-251). Found on a
+production hub closing the gate on 5.24.0 with 575 gap columns and about 2,630 deferred rows.
+
+### Added
+- **A column-grain `deferred` is a visible backlog (#1062, DD-251).** It was defined as
+  "stays visible as a known gap" and nothing showed it again: the DD-169 gate counted it
+  decided, the decision sheet dropped it on every redraft, `next` raised no action for it
+  and `alignment-report` never read the ledger. On one hub about 2,630 such rows held
+  airline names, a party role qualifier and a container customs status. Now:
+  - `kairos-ontology next` raises `review-deferred-columns` (optional, never blocking)
+    while any exist, with counts per domain and how many an imported Power BI model uses,
+    routed to kairos-design-domain; the JSON form carries `inputs.deferred_columns`.
+    Schema version 9.
+  - `alignment-report` lays the ledger and the bindings over the report: "Columns needing
+    a decision" lists only what the gate still counts undecided, with the dbt-chain
+    evidence beside each; "Coverage by domain" splits gap columns into undecided,
+    deferred, ruled out, extension and bound; a new "Deferred backlog" section lists the
+    backlog per domain, ranked by BI demand and table size, with each entry's rationale
+    and date. JSON gains `undecided_columns`, `deferred_backlog` and
+    `domains[].decisions`.
+  - `draft-gap-decisions --include-deferred` re-lists deferred names on the sheet with
+    `previous_decision`, `previous_rationale`, `previous_decided_by` and `recorded_on`;
+    `--apply` overwrites exactly those rows, a blank leaves them deferred, and
+    `--accept-proposals` refuses the flag (its fallback is `deferred`).
+  - Every new ledger row carries `recorded_on` (UTC date). Rows written before keep their
+    shape until replaced.
+  - Ruling out a column a Power BI model uses now warns on the manual path too:
+    `draft-gap-decisions --apply` prints the names, and
+    `source-disposition set --column ... --disposition deferred|not-business-data` warns.
+
+### Changed
+- **The DD-169 column gate reads the bindings (#1062, DD-250).** A source column an
+  EntityBinding's `source.relation` names -- in a field expression, the identity keys, the
+  grain, a relationship join, a quality rule or the incremental load -- is decided by that
+  binding, the way a bound table has been decided for the DD-180 gate since #973. It no
+  longer needs a hand-written column-grain `bound` row; `compile --check`, `validate`,
+  `draft-gap-decisions` and `--apply` all ask one predicate, so they cannot disagree. On
+  a hub whose bindings already consume hundreds of columns alignment called unmapped,
+  those columns leave the gate and the sheet.
+- **A `source.dbtModel` binding's chain is offered as evidence, never as a decision.** No
+  column lineage exists at design time, so a chain that reads the column's table does not
+  clear it. Instead, when a model in the binding's `ref()` chain names the column, the
+  gate line says `named by <model>`, the sheet entry carries `read_by` and proposes
+  `bound` with high confidence, and `--accept-proposals` records it with the model as
+  evidence. When the reading stage says `select *` and nothing downstream names the
+  column, the entry is `lineage_unconfirmed`: a rule may not draft `deferred` or
+  `not-business-data` for it, and `--accept-proposals` holds it
+  (`held-for-binding-read`) until a reviewer confirms the select list or binds it.
+- The gate's resolution text opens with the binding route. `apply_decision_sheet` reports
+  `skipped_bound_by_binding`, and the draft summary counts `with_binding_read` and
+  `with_lineage_unconfirmed`.
+- `audit-column-coverage` reads its column extraction from the new `core.bound_columns`
+  module. Its keying by table name without system, which attaches a `dbtModel` binding's
+  columns to an empty table, is unchanged and tracked as a follow-up.
+- The kairos-design-domain skill no longer says a `deferred` column "has been ruled out";
+  `not-business-data` and `blueprint-gap` are, and `deferred` is the modelling backlog.
+  kairos-design-source gains the backlog step and names the evidence on the sheet that is
+  not a decision (`bi_demand`, `read_by`); kairos-design-mapping says binding a deferred
+  column is the intended outcome.
+- `validate`'s pointer to the full list of undecided columns names the JSON key
+  (`undecided_columns`) now that the report tells decided columns apart.
+
+### Decisions
+- DD-250: a column a binding names is decided, and a dbt model that reads it is a
+  suggestion.
+- DD-251: a deferred column is a backlog item the workflow keeps raising, not a decision.
 
 ## [5.24.0] — 2026-09-27
 
