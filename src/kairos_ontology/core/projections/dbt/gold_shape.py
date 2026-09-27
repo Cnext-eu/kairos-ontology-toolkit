@@ -10,7 +10,8 @@ from dataclasses import dataclass, replace
 
 from .bpa_profile import BpaIgnore, BpaIgnoreError, parse_bpa_ignore
 from .gold_bpa_checks import check_product
-from .gold_shape_checks import check_model_shape
+from .gold_bpa_checks import _scannable
+from .gold_shape_checks import _USERELATIONSHIP, check_model_shape
 from .gold_materialize import _TMDL_TYPES
 from .calendar_columns import CALENDAR_COLUMN_NAMES, CALENDAR_DATE_TABLE_KEY
 from ..uri_utils import camel_to_snake
@@ -404,6 +405,33 @@ def _display_name(source) -> str:
     return value
 
 
+def _relationship_endpoints_only(
+    expression: str, columns: list[tuple[str, str]]
+) -> set[tuple[str, str]]:
+    """The declared columns a measure names only as USERELATIONSHIP arguments (#1089).
+
+    USERELATIONSHIP names the two endpoints of a relationship, not a value the measure
+    reads, so the far endpoint -- `dim_date[full_date]`, or a dimension key for an
+    origin/destination role -- must not become a second home table. Without this, the
+    measure the role-playing and ambiguous-path checks ask for could never be authored.
+    """
+    scannable = _scannable(expression)
+    named: set[tuple[str, str]] = set()
+    for match in _USERELATIONSHIP.finditer(scannable):
+        for side in ("a", "b"):
+            table = match.group(f"{side}t") or match.group(f"{side}u") or ""
+            named.add((table.replace("''", "'").casefold(), match.group(f"{side}c").casefold()))
+    if not named:
+        return set()
+    remainder = _USERELATIONSHIP.sub(" ", scannable).casefold()
+    return {
+        (table, column)
+        for table, column in columns
+        if (table.casefold(), column.casefold()) in named
+        and f"[{column.casefold()}]" not in remainder
+    }
+
+
 def _check_measure_names(
     measures: tuple[GoldMeasureSpec, ...], tables: tuple[GoldTableSpec, ...]
 ) -> None:
@@ -492,9 +520,15 @@ def _shape_measures(
                     resource_uri=source.resource_uri,
                 )
             column_dependencies.append(resolved)
-        home_tables = {table_name for table_name, _ in column_dependencies} | {
-            item.home_table for item in measure_dependencies if item.home_table
-        }
+        expression = source.expression.value if source.expression is not None else ""
+        endpoints = _relationship_endpoints_only(expression, column_dependencies)
+        home_tables = {
+            table_name
+            for table_name, column_name in column_dependencies
+            if (table_name, column_name) not in endpoints
+        } | {item.home_table for item in measure_dependencies if item.home_table}
+        if not home_tables:
+            home_tables = {table_name for table_name, _ in column_dependencies}
         if len(home_tables) > 1:
             _fail(
                 "measure.ambiguous-home-table",
@@ -506,7 +540,6 @@ def _shape_measures(
                 resource_uri=source.resource_uri,
             )
         home_table = next(iter(home_tables), "")
-        expression = source.expression.value if source.expression is not None else ""
         if source.lifecycle.value is not MeasureLifecycle.INTENT:
             # DD-238: a dependency with a display name is called that in the model, so a
             # reference by its ID would not resolve in Power BI. Named, never rewritten.
