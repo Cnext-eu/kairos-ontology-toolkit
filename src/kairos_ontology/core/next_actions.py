@@ -59,7 +59,12 @@ from enum import Enum
 #: have no recorded outcome (DD-231) -- blocking once the hub has adopted the ledger, an
 #: advisory nudge before. Same lesson as v7: a gate `validate` enforces must be proposed
 #: by the flow before it fails.
-SCHEMA_VERSION = 8
+#: v9 adds the deferred-column observation (``deferred_columns`` /
+#: ``DeferredColumnObservation``) and its optional ``review-deferred-columns`` action
+#: routed to kairos-design-domain (DD-251, #1062). A column-grain ``deferred`` was the
+#: honest answer for "real data, not modelled yet" and also the answer nothing ever showed
+#: again: the gate counted it decided, the sheet dropped it, no action named it.
+SCHEMA_VERSION = 9
 
 
 class InputStatus(str, Enum):
@@ -161,6 +166,10 @@ ACTION_SKILLS: dict[str, str] = {
     # not the domain designer's or the binding author's.
     "design-architecture": "kairos-design-architecture",
     "record-class-disposition": "kairos-design-architecture",
+    # DD-251: a column-grain `deferred` is a modelling backlog, not a closed decision.
+    # Modelling it is domain design; binding it is the mapping skill's, named in the
+    # rationale, but the first question is always whether the domain has a home for it.
+    "review-deferred-columns": "kairos-design-domain",
 }
 
 
@@ -303,6 +312,19 @@ class ClassDispositionObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class DeferredColumnObservation:
+    """Column-grain ``deferred`` ledger entries: the modelling backlog (DD-251).
+
+    All-zero is the no-observation default. ``by_domain`` is ``((domain, count), ...)``,
+    largest first, with ``""`` for entries whose table no anchors sheet places.
+    """
+
+    columns_total: int = 0
+    with_bi_demand: int = 0
+    by_domain: tuple[tuple[str, int], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class HubInputSnapshot:
     """Defensible, in-memory observations of a hub's authored inputs."""
 
@@ -352,6 +374,9 @@ class HubInputSnapshot:
     ddd_strategic_file: InputStatus = InputStatus.MISSING
     #: Hub classes with no recorded outcome (DD-231). All-zero is the no-observation state.
     class_dispositions: ClassDispositionObservation = ClassDispositionObservation()
+    #: Column-grain ``deferred`` entries, the modelling backlog (DD-251). All-zero is the
+    #: no-observation state.
+    deferred_columns: DeferredColumnObservation = DeferredColumnObservation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -662,6 +687,37 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 ),
                 priority=25,
                 blocking=obs.ledger_present,
+            )
+        )
+    if snapshot.deferred_columns.columns_total:
+        backlog = snapshot.deferred_columns
+        shown = ", ".join(f"{d or '(no domain)'} {n}" for d, n in backlog.by_domain[:4])
+        if len(backlog.by_domain) > 4:
+            shown += f", +{len(backlog.by_domain) - 4} more"
+        demand = (
+            f" {backlog.with_bi_demand} of them are used by an imported Power BI model."
+            if backlog.with_bi_demand
+            else ""
+        )
+        actions.append(
+            _action(
+                "review-deferred-columns",
+                ActionStatus.OPTIONAL,
+                rationale=(
+                    f"{backlog.columns_total} source column(s) are recorded 'deferred': in "
+                    f"scope, not modelled yet (DD-251), across {len(backlog.by_domain)} "
+                    f"domain(s): {shown}.{demand} A deferred column is a backlog item, not "
+                    "a closed decision. Model it in the owning domain "
+                    "(kairos-design-domain), bind it (kairos-design-mapping), or re-decide "
+                    "it with 'draft-gap-decisions --include-deferred'. 'alignment-report' "
+                    "lists the backlog per domain, ranked by BI demand and table size."
+                ),
+                command=(
+                    "kairos-ontology alignment-report   # 'Deferred backlog' section\n"
+                    "  kairos-ontology draft-gap-decisions --include-deferred"
+                ),
+                priority=27,
+                blocking=False,
             )
         )
     if snapshot.ddd_strategic_file is InputStatus.PRESENT or any(

@@ -2063,6 +2063,12 @@ def _render_next_text(proposal, snapshot) -> None:
             f"untriaged ({snapshot.bi_concept_mappings.tables_unfilled} with no "
             "reference_model_match)"
         )
+    if snapshot.deferred_columns.columns_total:
+        click.echo(
+            f"     deferred cols:  {snapshot.deferred_columns.columns_total} column(s) "
+            f"recorded deferred ({snapshot.deferred_columns.with_bi_demand} used by a "
+            "Power BI model) — the modelling backlog, DD-251"
+        )
     if not proposal.actions:
         return
     click.echo("")
@@ -2144,6 +2150,13 @@ def next_action_cmd(domains, output_format, no_compile):
                     "tables_total": snapshot.bi_concept_mappings.tables_total,
                     "tables_unfilled": snapshot.bi_concept_mappings.tables_unfilled,
                     "tables_untriaged": snapshot.bi_concept_mappings.tables_untriaged,
+                },
+                "deferred_columns": {
+                    "columns_total": snapshot.deferred_columns.columns_total,
+                    "with_bi_demand": snapshot.deferred_columns.with_bi_demand,
+                    "by_domain": [
+                        [domain, count] for domain, count in snapshot.deferred_columns.by_domain
+                    ],
                 },
             },
             "actions": [_next_action_dict(action) for action in proposal.actions],
@@ -2638,17 +2651,35 @@ def alignment_report_cmd(
             else Path("integration/sources/_analysis")
         )
 
-    report = build_alignment_report(directory, hub_root=directory.parent.parent.parent)
+    hub_root = directory.parent.parent.parent
+    report = build_alignment_report(directory, hub_root=hub_root)
+    # DD-251: the ledger and the bindings laid over the report, so a deferred column is
+    # told apart from an undecided one. Advisory: a foreign --analysis directory or an
+    # unreadable ledger degrades to the report the alignment files alone give.
+    overlay = None
+    try:
+        from ..core.deferred_backlog import decision_overlay
+
+        overlay = decision_overlay(report, hub_root)
+    except Exception:  # noqa: BLE001 - the report itself must still render
+        overlay = None
 
     if output_format == "json":
         payload = report.to_dict()
         if group_by_column:
             payload["gap_groups"] = [g.to_dict() for g in group_gaps_by_column(report)]
+        if overlay is not None:
+            payload["undecided_columns"] = [c.to_dict() for c in overlay.undecided(report)]
+            payload["deferred_backlog"] = overlay.backlog.to_dict()
+            totals = overlay.domain_totals(report)
+            for entry in payload.get("domains") or []:
+                if isinstance(entry, dict) and entry.get("domain") in totals:
+                    entry["decisions"] = totals[entry["domain"]]
         rendered = json.dumps(payload, indent=2, sort_keys=True)
     elif group_by_column:
         rendered = render_gap_groups_markdown(report, limit=gap_limit)
     else:
-        rendered = render_markdown(report, gap_limit=gap_limit)
+        rendered = render_markdown(report, gap_limit=gap_limit, overlay=overlay)
     click.echo(rendered)
 
     if output_path:

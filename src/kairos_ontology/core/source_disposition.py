@@ -109,7 +109,13 @@ DISPOSITIONS: dict[str, str] = {
         "property on an existing class, drafted with 'kairos-ontology "
         "scaffold-extensions'."
     ),
-    "deferred": ("In scope and modelled later; carries a reason and stays visible as a known gap."),
+    # DD-251: a column-grain `deferred` is the modelling backlog. `next` raises it,
+    # `alignment-report` lists it per domain, `draft-gap-decisions --include-deferred`
+    # re-lists it, and a binding that names the column retires it (DD-250).
+    "deferred": (
+        "In scope and modelled later; a backlog item the workflow keeps raising. Carries "
+        "a reason and a date, and stays visible until the column is modelled and bound."
+    ),
     "not-business-data": (
         "Metadata, schema-lookup, workflow, or scratch table with no canonical meaning."
     ),
@@ -873,6 +879,13 @@ class DispositionInput:
     proposed_property: dict[str, str] | None = None
 
 
+def _utc_today() -> str:
+    """Today's UTC date, ISO formatted; tests replace it to freeze the ledger."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).date().isoformat()
+
+
 def _ledger_entry(decision: DispositionInput) -> dict[str, Any]:
     """Validate one decision and render the entry it writes."""
     if decision.disposition not in DISPOSITIONS:
@@ -905,6 +918,9 @@ def _ledger_entry(decision: DispositionInput) -> dict[str, Any]:
         "disposition": decision.disposition,
         "rationale": decision.rationale,
         "decided_by": decision.decided_by,
+        # DD-251: the day it was decided, so a backlog can be read by age. Rows written
+        # before this key existed keep their shape; only a new or replaced row gains it.
+        "recorded_on": _utc_today(),
     }
     proposed = decision.proposed_property
     if proposed and proposed.get("name"):

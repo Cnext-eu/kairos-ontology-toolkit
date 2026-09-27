@@ -142,7 +142,10 @@ Before proposing a binding:
    recorded as `architecture-only` or `deferred` in
    `integration/discovery/class-dispositions.yaml` is **not a binding target** until the
    context engineer withdraws that disposition — binding it anyway is a design change to
-   raise, not a shortcut to take.
+   raise, not a shortcut to take. The opposite holds for a *column* recorded `deferred`
+   in the source ledger (DD-251): binding it is the intended outcome, and a column the
+   binding's field expressions name is decided by the binding itself, with no ledger row
+   (DD-250).
 
 Never expose or persist raw PII, sensitive free text, proprietary samples, or
 credentials. An unredacted sample blocks the workflow and must return to the

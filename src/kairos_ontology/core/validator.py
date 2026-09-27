@@ -2320,7 +2320,9 @@ def run_validation(
             for resolution in GAP_RESOLUTIONS:
                 print(f"     - {resolution}")
             print(
-                "\n  Full list: kairos-ontology alignment-report --format json"
+                "\n  Full list: kairos-ontology alignment-report --format json "
+                "('undecided_columns'; the 'Columns needing a decision' table in the "
+                "markdown form lists the same)"
             )
             print(
                 "  This is not degradable: --degraded is for policy divergence, and an "

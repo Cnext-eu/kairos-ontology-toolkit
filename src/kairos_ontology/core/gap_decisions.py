@@ -167,6 +167,13 @@ class GapProposal:
     #: naming it (``lineage_unconfirmed``: no proposal, and no rule may rule it out).
     read_by: list[str] = field(default_factory=list)
     lineage_unconfirmed: bool = False
+    #: DD-251: set when ``--include-deferred`` re-lists a name whose occurrences are
+    #: recorded ``deferred``. ``--apply`` overwrites only those occurrences.
+    previous_decision: str = ""
+    previous_rationale: str = ""
+    previous_decided_by: str = ""
+    recorded_on: str = ""
+    previously_deferred_occurrences: int = 0
 
     def to_entry(self) -> dict[str, Any]:
         return {
@@ -186,6 +193,17 @@ class GapProposal:
             **({"bi_demand": self.bi_demand} if self.bi_demand else {}),
             **({"read_by": self.read_by} if self.read_by else {}),
             **({"lineage_unconfirmed": True} if self.lineage_unconfirmed else {}),
+            **(
+                {
+                    "previous_decision": self.previous_decision,
+                    "previous_rationale": self.previous_rationale,
+                    "previous_decided_by": self.previous_decided_by,
+                    "recorded_on": self.recorded_on,
+                    "previously_deferred_occurrences": self.previously_deferred_occurrences,
+                }
+                if self.previous_decision
+                else {}
+            ),
             **(
                 {"role_groups": self.role_groups, "governing_pattern": ROLE_PATTERN}
                 if self.role_groups
@@ -483,6 +501,15 @@ def group_into_families(
                         m.column for m in coherent if m.lineage_unconfirmed
                     )}
                     if any(m.lineage_unconfirmed for m in coherent)
+                    else {}
+                ),
+                # DD-251: members re-listed from the deferred backlog; a family decision
+                # overwrites their rows on --apply, --accept-proposals holds the family.
+                **(
+                    {"previously_deferred_members": sorted(
+                        m.column for m in coherent if m.previous_decision
+                    )}
+                    if any(m.previous_decision for m in coherent)
                     else {}
                 ),
                 # DD-248: the closure properties any member resembles, so a family is
@@ -1074,8 +1101,15 @@ def apply_auto_dispositions(
     }
 
 
-def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[str, Any]:
+def build_decision_sheet(
+    hub_root: Path, *, min_occurrences: int = 1, include_deferred: bool = False
+) -> dict[str, Any]:
     """Draft the reviewable sheet for gap columns that still need a human.
+
+    With *include_deferred* (DD-251) a column recorded ``deferred`` is listed again,
+    carrying its previous decision, rationale, author and date, so it can be re-decided
+    from what was known rather than from scratch; ``--apply`` then overwrites exactly
+    those occurrences. Without it the sheet is the gate's worklist and nothing more.
 
     Also carries a ``conflicts`` block: columns the auto-disposition rule would have
     silenced as ``not-business-data`` while alignment claimed the opposite. They are
@@ -1112,25 +1146,45 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
     # Split each name's occurrences by domain: a disposition is domain-scoped, so
     # `OrderNo` in booking and `OrderNo` in financial are two decisions, not one.
     per_domain: dict[tuple[str, str], GapGroup] = {}
+    previously_deferred: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for g in group_gaps_by_column(report):
         for occurrence in g.occurrences:
-            if is_gap_column_decided(
-                already, bound, occurrence.system, occurrence.table, occurrence.column
-            ):
-                continue
             key = (occurrence.domain, g.column)
+            decided = is_gap_column_decided(
+                already, bound, occurrence.system, occurrence.table, occurrence.column
+            )
+            if decided:
+                entry = already.get((occurrence.system, occurrence.table, occurrence.column))
+                if not (
+                    include_deferred
+                    and decided == "ledger"
+                    and entry is not None
+                    and str(entry.get("disposition") or "") == "deferred"
+                ):
+                    continue
+                previously_deferred.setdefault(key, []).append(entry)
             per_domain.setdefault(key, GapGroup(column=g.column)).occurrences.append(
                 annotate_read_by(occurrence, bound)
             )
 
     demand = load_bi_demand(Path(hub_root))
-    proposals = [
-        propose_for_group(group, domain, demand.describe(group.column) or None)
-        for (domain, _name), group in sorted(
-            per_domain.items(), key=lambda kv: (-kv[1].count, kv[0][0], kv[0][1])
-        )
-        if group.count >= min_occurrences
-    ]
+    proposals: list[GapProposal] = []
+    for (domain, _name), group in sorted(
+        per_domain.items(), key=lambda kv: (-kv[1].count, kv[0][0], kv[0][1])
+    ):
+        if group.count < min_occurrences:
+            continue
+        proposal = propose_for_group(group, domain, demand.describe(group.column) or None)
+        previous = previously_deferred.get((domain, group.column))
+        if previous:
+            # The most recent row speaks for the name; every occurrence is re-decided.
+            latest = max(previous, key=lambda e: str(e.get("recorded_on") or ""))
+            proposal.previous_decision = "deferred"
+            proposal.previous_rationale = str(latest.get("rationale") or "")
+            proposal.previous_decided_by = str(latest.get("decided_by") or "")
+            proposal.recorded_on = str(latest.get("recorded_on") or "")
+            proposal.previously_deferred_occurrences = len(previous)
+        proposals.append(proposal)
     families, loose = group_into_families(proposals)
 
     covered = sum(p.occurrences for p in proposals)
@@ -1156,6 +1210,8 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
                 1 for p in proposals if p.read_by and not p.lineage_unconfirmed
             ),
             "with_lineage_unconfirmed": sum(1 for p in proposals if p.lineage_unconfirmed),
+            # DD-251: names re-listed from the deferred backlog (--include-deferred only).
+            "previously_deferred": sum(1 for p in proposals if p.previous_decision),
             "auto_disposition_conflicts": len(conflicts),
             "conflicts_already_recorded": sum(1 for c in conflicts if c.recorded_disposition),
             "schema_catalogue_tables_excluded": len(excluded_tables),
@@ -1183,6 +1239,15 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             "with 'kairos-ontology source-disposition set --system <s> --table <t> "
             "--disposition not-business-data', or, if the screen is wrong about it, "
             "give the table any other disposition and re-run anchor-tables."
+            + (
+                " Entries carrying 'previous_decision: deferred' were re-listed from the "
+                "deferred backlog (DD-251) with the rationale, author and date they were "
+                "recorded with; a decision typed on one overwrites exactly those "
+                "occurrences on --apply, and a blank leaves them deferred. "
+                "--accept-proposals never touches them."
+                if include_deferred
+                else ""
+            )
         ),
         "families": families,
         "decisions": [p.to_entry() for p in loose],
@@ -1690,6 +1755,10 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
         if entry.get("lineage_unconfirmed") or entry.get("lineage_unconfirmed_members"):
             counts["held-for-binding-read"] = counts.get("held-for-binding-read", 0) + 1
             continue
+        if entry.get("previous_decision") or entry.get("previously_deferred_members"):
+            # DD-251: the fallback here is `deferred`, which would only re-stamp the row.
+            counts["held-previously-deferred"] = counts.get("held-previously-deferred", 0) + 1
+            continue
         if entry.get("closure_candidates") or entry.get("members_with_closure_candidates"):
             counts["held-for-closure-candidate"] = counts.get("held-for-closure-candidate", 0) + 1
             continue
@@ -1703,8 +1772,12 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
 
 def _carry_entry(new: dict[str, Any], old: dict[str, Any], fingerprint: str) -> None:
     """Carry what the previous sheet knew about one entry into its rebuilt draft."""
-    if str(old.get("decision") or "").strip():
-        new["decision"] = str(old["decision"])
+    old_decision = str(old.get("decision") or "").strip()
+    # DD-251: a re-listed deferred name whose old sheet decision is the very disposition
+    # it is being re-decided from is not review work to preserve; carrying it would make
+    # --apply re-stamp the row with a fresh date and call that a decision.
+    if old_decision and old_decision != str(new.get("previous_decision") or ""):
+        new["decision"] = old_decision
         if old.get("decided_by"):
             new["decided_by"] = str(old["decided_by"])
     # A fresh model answer already on the rebuilt entry wins; an old one is kept only
@@ -1802,10 +1875,20 @@ def apply_decision_sheet(
     filled: dict[tuple[str, str], str] = {}
     why: dict[tuple[str, str], str] = {}
     drafted: dict[tuple[str, str], dict[str, str]] = {}
+    # DD-251: names re-listed from the deferred backlog may overwrite their rows; #942:
+    # names a Power BI model uses are reported when a human still rules them out.
+    relisted: set[tuple[str, str]] = set()
+    demanded: set[tuple[str, str]] = set()
     for e in sheet.get("decisions") or []:
-        if not (isinstance(e, dict) and str(e.get("decision") or "").strip()):
+        if not isinstance(e, dict):
             continue
-        key = (str(e.get("domain") or ""), str(e["column"]))
+        key = (str(e.get("domain") or ""), str(e.get("column") or ""))
+        if str(e.get("previous_decision") or "") == "deferred":
+            relisted.add(key)
+        if e.get("bi_demand"):
+            demanded.add(key)
+        if not str(e.get("decision") or "").strip():
+            continue
         filled[key] = str(e["decision"]).strip()
         why[key] = str(e.get("reasoning") or "")
         # One drafted property is carried through; more than one means the aligner read
@@ -1819,12 +1902,17 @@ def apply_decision_sheet(
     # family and carve out one exception without unpicking the family.
     families_applied = 0
     for family in sheet.get("families") or []:
+        family_domain = str((family or {}).get("domain") or "")
+        for member in (family or {}).get("previously_deferred_members") or []:
+            relisted.add((family_domain, str(member)))
+        for member in (family or {}).get("bi_demand_members") or []:
+            demanded.add((family_domain, str(member)))
         decision = str((family or {}).get("decision") or "").strip()
         if not decision:
             continue
         families_applied += 1
         for member in family.get("members") or []:
-            key = (str(family.get("domain") or ""), str(member))
+            key = (family_domain, str(member))
             if filled.setdefault(key, decision) is decision:
                 why.setdefault(
                     key,
@@ -1846,16 +1934,21 @@ def apply_decision_sheet(
     applied = 0
     skipped = 0
     skipped_bound = 0
+    overwritten = 0
+    ruled_out_with_demand: set[str] = set()
     pending: list[DispositionInput] = []
     for group in group_gaps_by_column(report):
         for occurrence in group.occurrences:
-            decision = filled.get((occurrence.domain, group.column))
+            key = (occurrence.domain, group.column)
+            decision = filled.get(key)
             if not decision:
                 continue
             # The sheet lists only what the gate counts undecided (#948), so applying it
             # writes only those: an occurrence already decided, per column or by a
             # cascading table-grain entry, keeps the decision it has; one a relation
-            # binding names needs no row (DD-250).
+            # binding names needs no row (DD-250). The one exception is a name re-listed
+            # from the deferred backlog (DD-251): its column-grain `deferred` rows, and
+            # only those, are overwritten. The guard reads the ledger, not the sheet.
             decided = is_gap_column_decided(
                 already, bound, occurrence.system, occurrence.table, occurrence.column
             )
@@ -1863,8 +1956,17 @@ def apply_decision_sheet(
                 skipped_bound += 1
                 continue
             if decided:
-                skipped += 1
-                continue
+                current = already.get((occurrence.system, occurrence.table, occurrence.column))
+                if not (
+                    key in relisted
+                    and current is not None
+                    and str(current.get("disposition") or "") == "deferred"
+                ):
+                    skipped += 1
+                    continue
+                overwritten += 1
+            if decision in _WITHDRAWN_UNDER_BI_DEMAND and key in demanded:
+                ruled_out_with_demand.add(group.column)
             applied += 1
             if dry_run:
                 continue
@@ -1905,4 +2007,10 @@ def apply_decision_sheet(
         "columns_written": applied,
         "skipped_already_decided": skipped,
         "skipped_bound_by_binding": skipped_bound,
+        # DD-251: re-listed deferred rows a typed decision replaced.
+        "overwritten_deferred": overwritten,
+        # #942: names a Power BI model uses that a human still ruled deferred or
+        # not-business-data. Reported, never refused: the reviewer may know the report
+        # no longer needs them.
+        "ruled_out_with_bi_demand": sorted(ruled_out_with_demand),
     }

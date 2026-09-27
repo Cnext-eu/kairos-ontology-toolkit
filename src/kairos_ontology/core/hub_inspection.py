@@ -40,6 +40,7 @@ from .next_actions import (
     BiConceptMappingObservation,
     ClassDispositionObservation,
     CompileStatus,
+    DeferredColumnObservation,
     DiagnosticView,
     DiscoveryConformanceStatus,
     DomainSnapshot,
@@ -312,6 +313,28 @@ def _source_disposition_status(root: Path) -> SourceDispositionObservation:
     return SourceDispositionObservation(
         tables_total=report.tables_total,
         tables_undecided=report.tables_undecided,
+    )
+
+
+def _deferred_column_status(root: Path) -> DeferredColumnObservation:
+    """Count column-grain ``deferred`` ledger entries per domain (DD-251).
+
+    Reads the ledger, the anchors sheet and the source vocabulary's row counts, never
+    the alignment report: building that resolves the whole reference corpus, and `next`
+    must stay cheap on a cold hub. Degrades to the no-observation default on any failure.
+    """
+    try:
+        from .deferred_backlog import load_deferred_columns
+
+        backlog = load_deferred_columns(root)
+    except Exception:
+        return DeferredColumnObservation()
+    if not backlog.total:
+        return DeferredColumnObservation()
+    return DeferredColumnObservation(
+        columns_total=backlog.total,
+        with_bi_demand=backlog.with_bi_demand,
+        by_domain=tuple((domain, len(cols)) for domain, cols in backlog.by_domain().items()),
     )
 
 
@@ -589,6 +612,7 @@ def gather_hub_input_snapshot(
         source_dispositions=_source_disposition_status(root),
         ddd_strategic_file=_strategic_file_status(extensions_dir),
         class_dispositions=_class_disposition_status(root),
+        deferred_columns=_deferred_column_status(root),
     )
 
 

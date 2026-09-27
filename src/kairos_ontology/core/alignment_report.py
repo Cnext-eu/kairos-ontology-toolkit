@@ -855,12 +855,25 @@ def _build_alignment_report_uncached(
     return report
 
 
-def render_markdown(report: AlignmentReport, *, gap_limit: int = 40) -> str:
+def render_markdown(
+    report: AlignmentReport,
+    *,
+    gap_limit: int = 40,
+    overlay: Any = None,
+    backlog_limit: int = 10,
+) -> str:
     """Render the short report a reviewer reads before a design session.
 
     Carries an AI-attribution note (DD-178): every coverage figure here counts
     decisions a language model made, so the reader is told which model made them
     before reading a single number.
+
+    *overlay*, a :class:`deferred_backlog.DecisionOverlay`, lays the ledger and the
+    bindings over the report (DD-251): "Columns needing a decision" then lists only what
+    the DD-169 gate still counts undecided, the per-domain table splits gap columns by
+    decision state, and a "Deferred backlog" section shows what was put off, per domain,
+    ranked by BI demand and table size. Without it the report is what the alignment
+    files alone say, and every gap column is listed whatever the ledger holds.
     """
     lines: list[str] = ["# Source alignment coverage", ""]
     lines.append(f"> {ai_attribution_note(ROLE_ALIGNMENT)}")
@@ -919,13 +932,29 @@ def render_markdown(report: AlignmentReport, *, gap_limit: int = 40) -> str:
 
     lines.append("## Coverage by domain")
     lines.append("")
-    lines.append("| Domain | Tables | Columns | Mapped | Coverage | Gap columns |")
-    lines.append("|---|---:|---:|---:|---:|---:|")
-    for domain in report.domains:
+    totals = overlay.domain_totals(report) if overlay is not None else {}
+    if overlay is not None:
         lines.append(
+            "| Domain | Tables | Columns | Mapped | Coverage | Gap columns "
+            "| Undecided | Deferred | Ruled out | Extension | Bound |"
+        )
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    else:
+        lines.append("| Domain | Tables | Columns | Mapped | Coverage | Gap columns |")
+        lines.append("|---|---:|---:|---:|---:|---:|")
+    for domain in report.domains:
+        row = (
             f"| {domain.domain} | {domain.tables} | {domain.columns} | {domain.mapped} "
             f"| {domain.coverage:.0%} | {len(domain.gap_columns)} |"
         )
+        if overlay is not None:
+            split = totals.get(domain.domain, {})
+            row += (
+                f" {split.get('undecided', 0)} | {split.get('deferred', 0)} "
+                f"| {split.get('ruled_out', 0)} | {split.get('extension', 0)} "
+                f"| {split.get('bound', 0)} |"
+            )
+        lines.append(row)
     lines.append("")
 
     gaps = report.gaps_by_table()
@@ -936,23 +965,73 @@ def render_markdown(report: AlignmentReport, *, gap_limit: int = 40) -> str:
             lines.append(f"- **{table}** — {count} column(s)")
         lines.append("")
 
-    if report.gap_columns:
+    pending = overlay.undecided(report) if overlay is not None else report.gap_columns
+    if pending:
         lines.append("## Columns needing a decision")
         lines.append("")
-        lines.append("| Table | Column | Type | Reason | Suggested |")
-        lines.append("|---|---|---|---|---|")
-        for column in report.gap_columns[:gap_limit]:
+        if overlay is not None:
             lines.append(
+                f"**{len(pending):,}** of {len(report.gap_columns):,} gap columns have no "
+                "recorded decision and no binding that names them (DD-169, DD-250)."
+            )
+            lines.append("")
+            lines.append("| Table | Column | Type | Reason | Suggested | Read by |")
+            lines.append("|---|---|---|---|---|---|")
+        else:
+            lines.append("| Table | Column | Type | Reason | Suggested |")
+            lines.append("|---|---|---|---|---|")
+        for column in pending[:gap_limit]:
+            row = (
                 f"| {column.system}.{column.table} | `{column.column}` | {column.data_type} "
                 f"| `{column.reason}` | {column.suggestion or '—'} |"
             )
-        if len(report.gap_columns) > gap_limit:
+            if overlay is not None:
+                row += f" {column.read_by_note() or '—'} |"
+            lines.append(row)
+        if len(pending) > gap_limit:
             lines.append("")
+            key = "undecided_columns" if overlay is not None else "gap_columns"
             lines.append(
-                f"_…and {len(report.gap_columns) - gap_limit:,} more; "
-                "use `--format json` for the full list._"
+                f"_…and {len(pending) - gap_limit:,} more; "
+                f"use `--format json` (`{key}`) for the full list._"
             )
         lines.append("")
+
+    if overlay is not None and overlay.backlog.total:
+        backlog = overlay.backlog
+        lines.append("## Deferred backlog")
+        lines.append("")
+        lines.append(
+            f"**{backlog.total:,} column(s)** are recorded `deferred`: in scope, not modelled "
+            f"yet (DD-251). {backlog.with_bi_demand:,} of them are used by an imported Power "
+            "BI model. Each is a backlog item, not a closed decision: model it in the owning "
+            "domain, bind it, or re-decide it with "
+            "`kairos-ontology draft-gap-decisions --include-deferred`."
+        )
+        lines.append("")
+        for domain, columns in backlog.by_domain().items():
+            demanded = sum(1 for c in columns if c.bi_demand)
+            lines.append(
+                f"### {domain or '(no domain)'} — {len(columns):,} deferred"
+                + (f", {demanded} with BI demand" if demanded else "")
+            )
+            lines.append("")
+            lines.append("| Table | Column | Rows | BI demand | Recorded | Rationale |")
+            lines.append("|---|---|---:|---|---|---|")
+            for column in columns[:backlog_limit]:
+                rows = f"{column.row_count:,}" if column.row_count is not None else "?"
+                demand = "; ".join(column.bi_demand[:2]) if column.bi_demand else "—"
+                rationale = column.rationale.replace("|", "\\|").replace("\n", " ")
+                if len(rationale) > 120:
+                    rationale = rationale[:117] + "…"
+                lines.append(
+                    f"| {column.system}.{column.table} | `{column.column}` | {rows} "
+                    f"| {demand} | {column.recorded_on or '—'} | {rationale} |"
+                )
+            if len(columns) > backlog_limit:
+                lines.append("")
+                lines.append(f"_…and {len(columns) - backlog_limit:,} more in {domain or 'this group'}._")
+            lines.append("")
 
     for notice in report.notices:
         lines.append(f"> {notice}")
