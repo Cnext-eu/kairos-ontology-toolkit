@@ -1179,6 +1179,16 @@ def _shape_relationships(
                 continue
             if excluded and is_excluded(bridge.name, column_name, target):
                 continue
+            # #1093: the bridge's own binding usually declares this edge as a Silver
+            # relationship too, and the pass above has already emitted it. A second copy
+            # was written inactive -- one column reported as both the active and the
+            # inactive role -- and left the bridge with two fact-side edges, so its cross
+            # filter was never decided. Keep the Silver edge, whose identity is stable.
+            if (bridge.name, column_name, target.name, target.primary_key) in {
+                (item.source_table, item.source_column, item.target_table, item.target_column)
+                for item in relationships
+            }:
+                continue
             relationships.append(
                 GoldRelationshipSpec(
                     name=f"{bridge.name}_{target.name}",

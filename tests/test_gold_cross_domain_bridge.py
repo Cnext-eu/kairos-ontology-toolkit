@@ -186,6 +186,86 @@ class TestProductLevelShaping:
         }
 
 
+_DIMENSIONS_GOLD = """
+@prefix party: <https://example.test/ontology/party#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+<https://example.test/ontology/party>
+  kairos-ext:goldSchema "gold_party" ;
+  kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
+
+party:Customer
+  kairos-ext:goldTableType "dimension" ;
+  kairos-ext:goldTableName "dim_customer" ;
+  kairos-ext:goldSourceModel "customer" ;
+  kairos-ext:goldSourceVersion "1.0.0" ;
+  kairos-ext:dimensionExposure "current-only" ;
+  kairos-ext:dimensionVersionBinding "current" .
+
+party:Country
+  kairos-ext:goldTableType "dimension" ;
+  kairos-ext:goldTableName "dim_country" ;
+  kairos-ext:goldSourceModel "country" ;
+  kairos-ext:goldSourceVersion "1.0.0" ;
+  kairos-ext:dimensionExposure "current-only" ;
+  kairos-ext:dimensionVersionBinding "current" .
+"""
+
+# The invoice binding declares billedTo -> Customer on customer_id, so the Silver pass
+# already emits bridge_invoice.customer_sk -> dim_customer. The bridge names the same
+# column as its Customer endpoint. `invoice_id` stands in for the second endpoint's key.
+_INVOICE_BRIDGE_GOLD = """
+@prefix billing: <https://example.test/ontology/billing#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+<https://example.test/ontology/billing>
+  kairos-ext:goldSchema "gold_billing" ;
+  kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
+
+billing:Invoice
+  kairos-ext:goldTableType "bridge" ;
+  kairos-ext:goldTableName "bridge_invoice" ;
+  kairos-ext:goldSourceModel "invoice" ;
+  kairos-ext:goldSourceVersion "1.0.0" ;
+  kairos-ext:bridgeGrain "one row per invoice" ;
+  kairos-ext:bridgeEndpoint <https://example.test/ontology/party#Customer> ;
+  kairos-ext:bridgeEndpoint <https://example.test/ontology/party#Country> ;
+  kairos-ext:bridgeEndpointBinding "Customer=customer_sk" ;
+  kairos-ext:bridgeEndpointBinding "Country=invoice_id" ;
+  kairos-ext:bridgeCardinality "many-to-many" ;
+  kairos-ext:bridgeAllocationSemantics "equal-weight" .
+"""
+
+
+class TestABridgeEndpointThatIsAlsoASilverRelationship:
+    """#1093: the Silver pass and the bridge pass each emitted the endpoint edge. Power BI
+    keeps one relationship per pair active, so the copy was written inactive -- the same
+    column reported as both the active and the inactive role -- and the bridge's two
+    fact-side edges left its cross-filter undecided."""
+
+    def test_the_endpoint_edge_is_emitted_once(self, tmp_path):
+        hub = tmp_path / "hub"
+        shutil.copytree(_PRODUCT_HUB, hub)
+        extensions = hub / "model" / "extensions"
+        extensions.mkdir(parents=True, exist_ok=True)
+        (extensions / "party-gold-ext.ttl").write_text(_DIMENSIONS_GOLD, encoding="utf-8")
+        (extensions / "billing-gold-ext.ttl").write_text(_INVOICE_BRIDGE_GOLD, encoding="utf-8")
+        product = GoldProductConfig(name="invoicing", domains=("party", "billing"))
+        artifacts = generate_gold_from_compile_plans(
+            [build_compile_plan(hub, domain) for domain in product.domains], product
+        )
+
+        relationships = artifacts[
+            "invoicing/Invoicing.SemanticModel/definition/relationships.tmdl"
+        ]
+        blocks = [block for block in relationships.split("relationship ") if block.strip()]
+        customer_edges = [
+            block for block in blocks if "fromColumn: bridge_invoice.customer_sk" in block
+        ]
+        assert len(customer_edges) == 1
+        assert "isActive: false" not in customer_edges[0]
+
+
 class TestTheDeferredEndpointIsPrinted:
     """Deferred on the plan but never shown: `compile party --check` was green with no word
     about the endpoint, and `emit-gold` on the product then failed on exactly that."""
