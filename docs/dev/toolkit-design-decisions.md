@@ -313,5 +313,6 @@ during cleanup.
 | [DD-248](decisions/dd-248-a-hub-local-property-is-declared-only-after-a-closure-lookup-finds-no-candidate.md) | A hub-local property is declared only after a closure lookup finds no candidate | Accepted | 2026-09-26 |
 | [DD-249](decisions/dd-249-a-bound-table-follows-its-bindings-domain-unless-a-human-pinned-it.md) | A bound table follows its binding's domain unless a human pinned it | Accepted | 2026-09-26 |
 | [DD-250](decisions/dd-250-a-column-a-binding-names-is-decided-and-a-dbt-model-that-reads-it-is-a-suggestion.md) | A column a binding names is decided, and a dbt model that reads it is a suggestion | Accepted | 2026-09-27 |
+| [DD-251](decisions/dd-251-a-deferred-column-is-a-backlog-item-the-workflow-keeps-raising-not-a-decision.md) | A deferred column is a backlog item the workflow keeps raising, not a decision | Accepted | 2026-09-27 |
 
 ---

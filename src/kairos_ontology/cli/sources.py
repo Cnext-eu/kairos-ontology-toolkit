@@ -3564,12 +3564,30 @@ def source_disposition_group() -> None:
 
 
 def _echo_bound_by_binding(stats: dict) -> None:
-    """Say how many sheet decisions an EntityBinding had already made (DD-250)."""
+    """Say what --apply left alone, overwrote, or ruled out against BI demand."""
     if stats.get("skipped_bound_by_binding"):
         click.echo(
             f"   ↪ {stats['skipped_bound_by_binding']} left alone: an EntityBinding "
-            "already names them, so they are decided without a ledger row"
+            "already names them, so they are decided without a ledger row (DD-250)"
         )
+    if stats.get("overwritten_deferred"):
+        click.echo(
+            f"   ⏳ {stats['overwritten_deferred']} previously deferred row(s) re-decided "
+            "from the backlog (DD-251)"
+        )
+    _echo_bi_demand_ruled_out(stats.get("ruled_out_with_bi_demand") or [])
+
+
+def _echo_bi_demand_ruled_out(names: list) -> None:
+    """Warn when a human ruled out a column an imported Power BI model uses (#942)."""
+    if not names:
+        return
+    shown = ", ".join(str(n) for n in names[:6]) + (", …" if len(names) > 6 else "")
+    click.echo(
+        f"   ⚠ {len(names)} column name(s) a Power BI model uses were recorded deferred "
+        f"or not-business-data: {shown}. A report built on them cannot be produced "
+        "(#942); bind them or register an extension unless the report no longer needs them."
+    )
 
 
 def _ledger_progress(system: str, count: int) -> None:
@@ -3813,6 +3831,22 @@ def source_disposition_set_cmd(
         if not column:
             for line in _cascade_warning(hub_root, target_system, target_table, disposition):
                 click.echo(line)
+    if column and disposition in ("deferred", "not-business-data"):
+        # #942 on the manual path: the sheet withholds such a draft and --accept-proposals
+        # holds it, but a human typing the same answer here heard nothing.
+        try:
+            from ..core.bi_demand import load_bi_demand
+
+            refs = load_bi_demand(hub_root).describe(column, limit=3)
+        except Exception:  # noqa: BLE001 - advisory
+            refs = []
+        if refs:
+            click.echo(
+                f"  ⚠ '{column}' is used by an imported Power BI model ({'; '.join(refs)}). "
+                f"Recorded as '{disposition}', a report built on it cannot be produced "
+                "(#942); bind it or register an extension unless the report no longer "
+                "needs it."
+            )
     click.echo(
         f"  {len(targets)} entr(y/ies) written to " + ", ".join(str(p) for p in paths)
     )
@@ -4430,9 +4464,18 @@ def anchor_tables_cmd(
     "human. With --dry-run nothing is written. Use only when you have read the drafts "
     "and accept them.",
 )
+@click.option(
+    "--include-deferred",
+    is_flag=True,
+    default=False,
+    help="Re-list column names recorded 'deferred' beside the undecided ones, each with "
+    "the rationale, author and date it was recorded with (DD-251). A decision typed on "
+    "such an entry overwrites exactly those rows on --apply; a blank leaves them "
+    "deferred. Not combinable with --accept-proposals.",
+)
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would change.")
 def draft_gap_decisions_cmd(
-    auto, apply_sheet, min_occurrences, suggest, accept_proposals, dry_run
+    auto, apply_sheet, min_occurrences, suggest, accept_proposals, include_deferred, dry_run
 ):
     """Draft the DD-169 gap-gate decisions, grouped by column name (DD-186).
 
@@ -4472,6 +4515,14 @@ def draft_gap_decisions_cmd(
             f"--suggest cannot be combined with {other}. Run 'draft-gap-decisions "
             "--suggest' first, read the proposals in hub.gap-decisions.yaml, then run "
             f"'draft-gap-decisions {other}'."
+        )
+    if include_deferred and accept_proposals:
+        # The blanket accept's fallback is `deferred`; on a re-listed deferred name it
+        # would only re-stamp the row and call that a decision (DD-251).
+        raise click.UsageError(
+            "--include-deferred cannot be combined with --accept-proposals: a re-listed "
+            "deferred name needs a human's answer. Draft with --include-deferred, fill in "
+            "'decision', then run 'draft-gap-decisions --apply'."
         )
 
     hub = find_hub_root(_Path.cwd(), require_model=True)
@@ -4569,7 +4620,9 @@ def draft_gap_decisions_cmd(
         return
 
     if not auto:
-        sheet = build_decision_sheet(hub, min_occurrences=min_occurrences)
+        sheet = build_decision_sheet(
+            hub, min_occurrences=min_occurrences, include_deferred=include_deferred
+        )
         if suggest:
             # Merge first: a name already decided, or already answered by a model call
             # on the same evidence, is not sent again (#1056).
@@ -4656,6 +4709,13 @@ def draft_gap_decisions_cmd(
                 f"   🔗 {s['with_lineage_unconfirmed']} name(s) sit on a table a binding's "
                 "dbt model reads with select * (see 'read_by'); never drafted as deferred "
                 "or not-business-data, and held by --accept-proposals until confirmed"
+            )
+        if s.get("previously_deferred"):
+            click.echo(
+                f"   ⏳ {s['previously_deferred']} name(s) re-listed from the deferred "
+                "backlog (see 'previous_decision', 'previous_rationale', 'recorded_on'); "
+                "a typed decision overwrites those rows on --apply, a blank keeps them "
+                "deferred (DD-251)"
             )
         if s["auto_disposition_conflicts"]:
             click.echo(

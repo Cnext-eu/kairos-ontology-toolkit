@@ -199,9 +199,16 @@ Which were accepted lives elsewhere:
 | `integration/sources/_analysis/hub.gap-decisions.yaml` | the review sheet: one entry per column name, with the proposed disposition and the reasoning |
 | `integration/sources/_analysis/src-<system>.table-dispositions.yaml` | the committed ledger, one file per source system: `registered-extension` marks a column whose hub-local property was accepted, with its `proposed_property` |
 
-Design against the ledger. A column dispositioned `deferred`, `not-business-data` or
-`blueprint-gap` has been ruled out, and modelling it anyway re-opens a decision someone
-already made.
+Design against the ledger. A column dispositioned `not-business-data` or `blueprint-gap`
+has been ruled out, and modelling it anyway re-opens a decision someone already made. A
+column dispositioned `deferred` is the opposite: in scope, not modelled yet, a backlog
+item the workflow keeps raising (DD-251). `kairos-ontology next` lists it as
+`review-deferred-columns`, `alignment-report` shows the backlog per domain with each
+entry's rationale, row count and BI demand, and modelling it here is the expected
+outcome, not a reversal. Once a binding names the column its `bound` state is derived
+from the binding (DD-250); to re-decide it explicitly, run
+`kairos-ontology draft-gap-decisions --include-deferred`, type the new decision, and
+`--apply`.
 
 ```powershell
 kairos-ontology scaffold-extensions --domain <d> --dry-run

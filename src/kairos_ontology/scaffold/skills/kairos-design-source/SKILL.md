@@ -178,6 +178,23 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     choice for "in scope, not modelled yet". And a family whose `coherent` flag is
     `false` should be split into its member names rather than ruled on as a unit.
 
+    Three things on the sheet are evidence to read before deciding, not decisions: an
+    entry carrying `bi_demand` names a Power BI model built on the column (#942); one
+    carrying `read_by` names a dbt model an EntityBinding selects that already reads it,
+    proposed `bound` when the model names the column and `lineage_unconfirmed` when the
+    stage says `select *` (DD-250); and a column a `source.relation` binding names never
+    reaches the sheet at all, because the binding decides it. Recording `deferred` or
+    `not-business-data` on a column with BI demand warns, on the sheet and on
+    `source-disposition set`.
+
+    `deferred` is a backlog, not an archive (DD-251). Every column-grain `deferred` row
+    carries `recorded_on`; `kairos-ontology next` raises `review-deferred-columns` while
+    any exist; `alignment-report` lists them per domain under "Deferred backlog", ranked
+    by BI demand and table size; and
+    `kairos-ontology draft-gap-decisions --include-deferred` re-lists them on the sheet
+    with their original rationale, so a later pass re-decides them from what was known.
+    A binding that names such a column retires it from the backlog without a new row.
+
     Both `--source-evidence` and `--rationale` are mandatory: registration is a claim about
     source data, and an unevidenced or unexplained claim is a guess the next reader cannot
     check. Registered concepts always carry tier `optional` — the source data argued them into
