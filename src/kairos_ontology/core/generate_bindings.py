@@ -282,7 +282,10 @@ def load_source_column_types(sources_dir: Path, system: str) -> dict[str, dict[s
     for block in text.split(" a kairos-bronze:SourceColumn ;"):
         column = re.search(r'kairos-bronze:columnName\s+"([^"]+)"', block)
         data_type = re.search(r'kairos-bronze:dataType\s+"([^"]+)"', block)
-        table = re.search(r"kairos-bronze:sourceTable\s+\S+?:(\S+?)\s*\.", block)
+        # The table token ends at the next ``;`` or ``.``, wherever the triple sits: a
+        # code-list column carries ``kairos-bronze:suggestedEnum`` after ``sourceTable``,
+        # and requiring ``sourceTable`` to close the block dropped every one of them (#1080).
+        table = re.search(r"kairos-bronze:sourceTable\s+\S+?:([^\s;.]+)", block)
         if column and data_type and table:
             types.setdefault(table.group(1), {})[column.group(1)] = data_type.group(1)
     return types
