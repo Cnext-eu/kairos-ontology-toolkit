@@ -5,8 +5,18 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.6** is the latest GA release (2026-09-27), superseding
-> **5.24.5** (2026-09-27). A one-fix patch:
+> **Release status.** **5.24.7** is the latest GA release (2026-09-27), superseding
+> **5.24.6** (2026-09-27). A one-fix patch:
+>
+> - A Gold measure that activates an inactive relationship with `USERELATIONSHIP` compiles
+>   (#1089). It always failed `measure.ambiguous-home-table`, because the relationship's far
+>   end (`dim_date[full_date]`, a dimension key) counted as a second home table, so the fix
+>   the role-playing and ambiguous-path checks recommend could not be authored.
+>
+> **What to expect on the first run after upgrading from 5.24.6.** Nothing changes for an
+> existing product: only a measure that failed to compile before is affected.
+>
+> **Upgrading from 5.24.5?** 5.24.6's first-run notes still apply on top of the above:
 >
 > - Emit waits out a transient Windows holder (antivirus, indexer, editor watcher) on the
 >   staged directory swap for up to three minutes, instead of failing after about five
@@ -158,6 +168,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.7] — 2026-09-27
+
+### Fixed
+- **A measure that activates an inactive relationship with `USERELATIONSHIP` can now be
+  authored.** The shape checks resolve an inactive role-playing or ambiguous-path relationship
+  by asking for "a USERELATIONSHIP measure", but that measure never compiled. USERELATIONSHIP
+  names both ends of a relationship, the far end (`dim_date[full_date]`, or a dimension key)
+  must be declared as a column dependency, and every declared column counted towards the
+  measure's home table, so compile failed with `measure.ambiguous-home-table`. A column used
+  only as a USERELATIONSHIP argument no longer decides the home table. The same column read
+  as a value elsewhere in the expression still does.
 
 ## [5.24.6] — 2026-09-27
 
