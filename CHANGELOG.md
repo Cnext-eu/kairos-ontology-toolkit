@@ -5,8 +5,21 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.4** is the latest GA release (2026-09-27), superseding
-> **5.24.3** (2026-09-27). A one-fix patch:
+> **Release status.** **5.24.5** is the latest GA release (2026-09-27), superseding
+> **5.24.4** (2026-09-27). A one-fix patch:
+>
+> - `compile --all --emit` publishes a change to a dbt model several domains share (#1083).
+>   It used to fail the first domain to emit the change with `ArtifactCollisionError`, and
+>   PR Validation with it.
+>
+> **What to expect on the first run after upgrading from 5.24.4.**
+>
+> | you will see | why |
+> |---|---|
+> | **`compile --all --emit` succeeds** after editing a shared `stg_` stage or an `int_merged__` model another domain refs | #1083. Domains still to emit in the run are treated as pending |
+> | **A partial `compile <domain> --emit` still refuses** a shared model another domain has not re-emitted | Unchanged, on purpose: run `--all` to publish a shared change |
+>
+> **Upgrading from 5.24.3?** 5.24.4's first-run notes still apply on top of the above:
 >
 > - The bronze vocabulary scan no longer drops code-list columns (#1080). Every column
 >   `import-source` marked `suggestedEnum` was skipped: 117 of 359 on a client hub.
@@ -131,6 +144,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.5] — 2026-09-27
+
+### Fixed
+- **`compile --all --emit` publishes a change to a dbt model several domains share.**
+  The whole-hub emit runs domain by domain and checked each shared contracted dependency
+  against the other domains' previously published state. Changing a model that several
+  domains' dbt chains read (a shared `stg_` stage, an `int_merged__` model another domain
+  refs) therefore failed the first domain to emit it with `ArtifactCollisionError: …
+  has conflicting bytes or casing`, and PR Validation, which runs the same command, failed
+  with it. A whole-hub run now treats the domains it has still to emit as pending: their
+  recorded state may trail the manifest until they emit, and a shared path takes the
+  emitting domain's current bytes. A partial `compile <domain> --emit` keeps the strict
+  check, so a genuinely stale sibling still fails loudly.
 
 ## [5.24.4] — 2026-09-27
 
