@@ -597,6 +597,30 @@ class TestSourceColumnTypes:
 
         assert types["orders"]["ttSysStartTime"] == "timestamp"
 
+    def test_a_triple_after_source_table_does_not_drop_the_column(self, tmp_path):
+        """#1080: a code-list column carries ``suggestedEnum`` after ``sourceTable``."""
+        from kairos_ontology.core.generate_bindings import load_source_column_types
+
+        system = tmp_path / "src"
+        system.mkdir(parents=True)
+        (system / "src.vocabulary.ttl").write_text(
+            VOCAB_TTL
+            + """
+src:shipments_PACKAGE_CODE a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "PACKAGE_CODE" ;
+    kairos-bronze:dataType "varchar(8000)" ;
+    kairos-bronze:enumValues "BX | DR" ;
+    kairos-bronze:sourceTable src:shipments ;
+    kairos-bronze:suggestedEnum true .
+""",
+            encoding="utf-8",
+        )
+
+        types = load_source_column_types(tmp_path, "src")
+
+        assert types["shipments"] == {"QTY": "decimal(10,2)", "PACKAGE_CODE": "varchar(8000)"}
+        assert types["orders"] == {"ORDER_ID": "string", "ttSysStartTime": "timestamp"}
+
     def test_a_missing_vocabulary_yields_nothing_rather_than_failing(self, tmp_path):
         """A hub mid-import should lose a type hint, not the whole generation run."""
         from kairos_ontology.core.generate_bindings import load_source_column_types
