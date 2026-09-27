@@ -253,3 +253,106 @@ def test_the_sheet_without_the_flag_carries_no_siblings(hub: Path) -> None:
     sheet = build_decision_sheet(hub)
     assert sheet["summary"]["previously_deferred_siblings"] == 0
     assert all("siblings" not in e for e in sheet["decisions"])
+
+
+# ---------------------------------------------------------------------------
+# #1077: dbtModel bindings and ledger `bound` rows are bound fields too
+# ---------------------------------------------------------------------------
+
+
+def test_the_table_code_prefix_is_not_a_shared_word() -> None:
+    # `jz` is on every column of the table; it must not pair a unit with an unrelated amount.
+    assert detect_sibling("JZ_WeightUQ", {"JZ_InvoiceAmount": frozenset({"invoiceAmount"})}) is None
+    found = detect_sibling("JZ_WeightUQ", {"JZ_Weight": frozenset({"weight"})})
+    assert found is not None and (found.kind, found.of_column) == ("unit", "JZ_Weight")
+
+
+_CONTAINER_VOCAB = """@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix sys: <https://example.com/source/tms#> .
+
+sys:container a kairos-bronze:SourceTable ;
+    kairos-bronze:rowCount 40 ;
+    kairos-bronze:tableName "container" .
+"""
+
+
+def _dbt_hub(tmp_path: Path) -> Path:
+    """A container table bound only through a dbtModel chain, plus one ledger `bound` row."""
+    from kairos_ontology.core.source_disposition import record_disposition
+    from tests.test_bound_columns import _write_dbt_binding, _write_model
+
+    directory = tmp_path / "integration" / "sources" / "tms"
+    directory.mkdir(parents=True)
+    columns = ["GrossWeight", "GrossWeightUQ", "TareWeight", "NetWeight", "NetWeightUQ",
+               "Volume", "VolumeUQ", "LoadVolumeUQ"]
+    body = _CONTAINER_VOCAB + "".join(
+        f'\nsys:container_{c} a kairos-bronze:SourceColumn ;\n'
+        f'    kairos-bronze:columnName "{c}" ;\n'
+        f'    kairos-bronze:dataType "varchar" ;\n'
+        f"    kairos-bronze:sourceTable sys:container .\n"
+        for c in columns
+    )
+    (directory / "tms.vocabulary.ttl").write_text(body, encoding="utf-8")
+    _write_anchors(tmp_path, {("tms", "container"): "equipment"})
+    _write_model(
+        tmp_path, "intermediate/int_tms__container.sql",
+        """
+        select c.GrossWeight as gross_weight, c.NetWeight as net_weight,
+               c.GrossWeight * 2 as LoadVolume
+        from {{ source('tms', 'container') }} c
+        """,
+    )
+    _write_dbt_binding(tmp_path, "container", "intermediate/int_tms__container.sql")
+    for column in ("GrossWeightUQ", "TareWeight", "NetWeight", "NetWeightUQ", "VolumeUQ",
+                   "LoadVolumeUQ"):
+        _defer(tmp_path, "tms", "container", column)
+    record_disposition(
+        hub_root=tmp_path, system="tms", table="container", column="Volume",
+        disposition="bound", rationale="reaches Silver through a contracted model",
+    )
+    return tmp_path
+
+
+def _fields(hub: Path) -> dict:
+    from kairos_ontology.core.bound_columns import load_bound_columns
+    from kairos_ontology.core.deferred_backlog import _sibling_fields
+    from kairos_ontology.core.source_disposition import load_dispositions
+
+    bound = load_bound_columns(hub / "integration" / "bindings", hub)
+    return _sibling_fields(hub, load_dispositions(hub), bound)("tms", "container")
+
+
+def test_a_dbt_chain_column_and_a_ledger_bound_row_are_bound_fields(tmp_path: Path) -> None:
+    fields = _fields(_dbt_hub(tmp_path))
+    # Authored casing restored from the vocabulary; evidence named, since no property is.
+    assert fields["GrossWeight"] == frozenset({"read by int_tms__container"})
+    assert fields["Volume"] == frozenset({"bound (ledger)"})
+
+
+def test_aliases_and_deferred_chain_columns_are_not_bound_fields(tmp_path: Path) -> None:
+    fields = {name.lower() for name in _fields(_dbt_hub(tmp_path))}
+    # Output aliases are identifiers in the SQL, not columns of the table.
+    assert not {"gross_weight", "net_weight", "loadvolume"} & fields
+    # The chain names NetWeight, but the ledger keeps it deferred: staged, not bound.
+    assert "netweight" not in fields
+
+
+def test_siblings_are_found_on_a_dbt_bound_table(tmp_path: Path) -> None:
+    backlog = load_deferred_columns(_dbt_hub(tmp_path))
+    found = {c.column: c.sibling for c in backlog.columns if c.sibling}
+    assert (found["GrossWeightUQ"].kind, found["GrossWeightUQ"].of_column) == ("unit", "GrossWeight")
+    assert found["GrossWeightUQ"].of_property == "read by int_tms__container"
+    assert (found["TareWeight"].kind, found["TareWeight"].of_column) == ("measure", "GrossWeight")
+    assert (found["VolumeUQ"].kind, found["VolumeUQ"].of_column) == ("unit", "Volume")
+    assert found["VolumeUQ"].of_property == "bound (ledger)"
+    # LoadVolume exists only as an alias, so its unit completes nothing bound.
+    assert "LoadVolumeUQ" not in found or found["LoadVolumeUQ"].of_column != "LoadVolume"
+
+
+def test_without_vocabulary_or_profile_a_chain_name_pairs_with_nothing(tmp_path: Path) -> None:
+    hub = _dbt_hub(tmp_path)
+    (hub / "integration" / "sources" / "tms" / "tms.vocabulary.ttl").unlink()
+    fields = _fields(hub)
+    # The ledger still knows the columns it recorded; GrossWeight it never saw.
+    assert "GrossWeight" not in fields and "grossweight" not in fields
+    assert fields["Volume"] == frozenset({"bound (ledger)"})
