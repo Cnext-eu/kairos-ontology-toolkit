@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import pytest
 
-from kairos_ontology.core.gap_decisions import is_audit_named
+from kairos_ontology.core.gap_decisions import is_audit_named, is_loader_artifact_column
 from kairos_ontology.core.propose_alignment import _is_operational_column
 
 
@@ -229,4 +229,60 @@ class TestIngestionFrameworkArtifacts:
         """The documented invariant: operational implies audit-named, so #521's
         cross-check at the write site can see everything this predicate silences."""
         assert _is_operational_column(column)
+        assert is_audit_named(column)
+
+
+class TestLoaderArtifactColumns:
+    """#1049: columns the hub's own bronze loader adds are operational for the gap gate.
+
+    Raw-name matched (the tokenizer drops the leading underscore that makes them the
+    loader's) and kept out of `_is_operational_column`, which also filters grain.
+    """
+
+    LOADER = [
+        "_source_file",
+        "_row_key",
+        "_parent_row_key",
+        "_idx",
+        "__idx",
+        "_load_ts",
+        "_batch_id",
+        "_ingested_at",
+        "_file_name",
+        "_line_no",
+    ]
+
+    @pytest.mark.parametrize("column", LOADER)
+    def test_a_loader_column_is_recognised(self, column):
+        assert is_loader_artifact_column(column)
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "source_file",  # no leading underscore: the source's own column
+            "row_key",
+            "idx",
+            "line_no",
+            "file_name",
+            "_message_code",  # a source's message envelope is source data
+            "_message_send_date",
+            "_message_internal_id",
+            "_customer_name",
+            "_row_key_description",  # the whole name must be loader vocabulary
+            "_",
+            "",
+        ],
+    )
+    def test_anything_else_is_not(self, column):
+        assert not is_loader_artifact_column(column)
+
+    @pytest.mark.parametrize("column", ["_row_key", "_parent_row_key", "_idx"])
+    def test_the_grain_classifier_does_not_see_row_identity(self, column):
+        """Array-expanded child tables are keyed on these; the grain filter must keep them."""
+        assert not _is_operational_column(column)
+
+    @pytest.mark.parametrize("column", LOADER)
+    def test_the_cross_check_recognises_loader_columns(self, column):
+        """The invariant extended: every name `classify_unmapped` calls operational is
+        audit-named, so `--auto` records a loader column instead of withholding it."""
         assert is_audit_named(column)

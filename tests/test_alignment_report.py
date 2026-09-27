@@ -49,6 +49,27 @@ def test_audit_column_is_operational_not_a_gap() -> None:
     assert classify_unmapped({}, "created_at") == REASON_OPERATIONAL
 
 
+@pytest.mark.parametrize("name", ["_source_file", "_row_key", "_parent_row_key", "_idx"])
+def test_a_loader_column_is_operational_not_a_gap(name: str) -> None:
+    """#1049: the hub's bronze loader wrote it; no aligner skip is needed to say so."""
+    assert classify_unmapped({"example_values": ["x"]}, name) == REASON_OPERATIONAL
+
+
+def test_a_loader_column_outranks_a_closure_candidate_and_a_suggestion() -> None:
+    """A closure property resembling ``_source_file`` echoes the word, not the meaning."""
+    entry = {
+        "suggested_property": "https://x/#sourceFile",
+        "closure_candidates": [{"uri": "https://x/#sourceFile", "name": "sourceFile"}],
+    }
+    assert classify_unmapped(entry, "_source_file") == REASON_OPERATIONAL
+
+
+@pytest.mark.parametrize("name", ["_message_code", "_message_send_date", "source_file"])
+def test_a_source_envelope_or_unprefixed_name_stays_a_gap(name: str) -> None:
+    """An underscore-prefixed message envelope is source data; so is a bare source_file."""
+    assert classify_unmapped({"example_values": ["x"]}, name) == REASON_NO_REFERENCE_PROPERTY
+
+
 @pytest.mark.parametrize(
     "name", ["Column7", "Column18", "col_3", "Field 12", "unnamed_4", "cf1", "cfx12"]
 )

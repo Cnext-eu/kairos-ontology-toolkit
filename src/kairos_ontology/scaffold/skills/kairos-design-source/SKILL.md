@@ -149,7 +149,10 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     ```
 
     `--auto` records only the two reason codes that were never judgment calls
-    (`operational` audit columns, `vendor-slot` placeholders). `--suggest` groups the
+    (`operational` audit columns and the bookkeeping your bronze loader adds, such as
+    `_source_file`; `vendor-slot` placeholders). Loader row-identity columns (`_row_key`,
+    `_parent_row_key`, `_idx`) are outside the gap gate but left unrecorded, so anchoring
+    can still use them as grain. `--suggest` groups the
     remainder into domain-scoped families and asks the model to name the concept each
     family represents and flag families whose members do not belong together — it fills
     the reasoning, never the decision.

@@ -14,7 +14,8 @@ field. Reporting 1,400 unmapped columns is as unhelpful as reporting none, becau
 buries the fifty that matter. So every unmapped column is bucketed by *why*, and only
 one bucket is a gap in the domain model:
 
-* :data:`REASON_OPERATIONAL` — audit/system column. Correctly unmapped.
+* :data:`REASON_OPERATIONAL` — audit/system column, or a column the hub's bronze loader
+  added (``_source_file``, ``_row_key``). Correctly unmapped.
 * :data:`REASON_VENDOR_SLOT` — generic placeholder (``Column7``). Correctly unmapped.
 * :data:`REASON_NO_EVIDENCE` — no sample values, so nothing could be judged.
 * :data:`REASON_LOW_CONFIDENCE` — a property was suggested but not trusted.
@@ -86,7 +87,10 @@ REASON_GUIDANCE: dict[str, str] = {
         "Generic vendor placeholder (Column1, Field3). Carry to Silver as a "
         "passthrough; there is nothing canonical to map."
     ),
-    REASON_OPERATIONAL: ("Audit/system column (created, updated, guid, hash). Correctly unmapped."),
+    REASON_OPERATIONAL: (
+        "Audit/system column (created, updated, guid, hash) or a bookkeeping column the "
+        "hub's bronze loader added (_source_file, _row_key, _idx). Correctly unmapped."
+    ),
 }
 
 #: Buckets that represent a genuine hole in the domain model.
@@ -324,9 +328,20 @@ def classify_unmapped(
     A closure candidate (DD-248) outranks missing evidence: the candidate is a named
     property to confirm or refuse, which a reviewer can do from the name alone.
     """
+    # Deferred, like the line below: gap_decisions imports this module at load time.
+    from .gap_decisions import is_loader_artifact_column
     from .propose_alignment import _is_operational_column, is_generic_vendor_slot
 
-    if _is_operational_column(column_name) or (entry.get("recommended_disposition") == "skip"):
+    # A loader artifact (#1049) wins over every other bucket, closure-candidate and
+    # low-confidence included: the leading underscore plus the loader vocabulary says who
+    # wrote the column, and a closure property or aligner suggestion resembling
+    # ``_source_file`` or ``_row_key`` is a name-similarity echo of those same words, not
+    # evidence that the column carries business data.
+    if (
+        _is_operational_column(column_name)
+        or is_loader_artifact_column(column_name)
+        or entry.get("recommended_disposition") == "skip"
+    ):
         return REASON_OPERATIONAL
     if is_generic_vendor_slot(column_name) or _POSITIONAL_PLACEHOLDER_RE.match(
         (column_name or "").strip()

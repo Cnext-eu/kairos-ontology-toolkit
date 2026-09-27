@@ -1240,6 +1240,15 @@ class TestBusinessGrain:
     def test_an_empty_grain_stays_empty(self):
         assert self._grain([], []) == []
 
+    def test_a_loader_row_identity_grain_is_kept(self):
+        """#1049: loader columns are operational for the gap gate only.
+
+        On an array-expanded child table ``(_parent_row_key, _idx)`` is often the only row
+        identity, so the grain filter must not drop it even without natural-key cover.
+        """
+        assert self._grain(["_parent_row_key", "_idx"], []) == ["_parent_row_key", "_idx"]
+        assert self._grain(["_row_key"], []) == ["_row_key"]
+
 
 # ---------------------------------------------------------------------------
 # Two tables of different grain on one class (#917)
