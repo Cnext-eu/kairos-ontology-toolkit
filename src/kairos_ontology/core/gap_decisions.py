@@ -95,7 +95,7 @@ AUTO_DISPOSITIONS: dict[str, str] = {
 _AUTO_RATIONALE = {
     REASON_OPERATIONAL: (
         "Audit/system column (created, updated, guid, hash, ingest metadata) or a "
-        "bookkeeping column the hub's bronze loader added (_source_file, _row_key, _idx). "
+        "bookkeeping column the hub's bronze loader added (_source_file, _load_ts). "
         "Carries no business meaning to model; classified deterministically by reason code "
         "'{reason}' from the column name and evidence, not by a model."
     ),
@@ -562,6 +562,28 @@ LOADER_ARTIFACT_NAMES = frozenset(
     }
 )
 
+#: The subset of :data:`LOADER_ARTIFACT_NAMES` that can be a row's identity: on an
+#: array-expanded child table ``(_parent_row_key, _idx)`` is often the only key there is.
+#:
+#: ``draft-gap-decisions --auto`` does not record these as ``not-business-data``. That
+#: disposition feeds ``anchor_tables.load_excluded_columns``, which hides a column from the
+#: outline the anchoring model builds a grain from, so recording one would stop a later
+#: ``anchor-tables`` run from offering it as grain. Recording gains nothing either: the
+#: ``operational`` reason already keeps the column out of the DD-169 gate.
+LOADER_ROW_IDENTITY_NAMES = frozenset(
+    {
+        ("row", "key"),
+        ("row", "id"),
+        ("row", "number"),
+        ("parent", "row", "key"),
+        ("parent", "row", "id"),
+        ("idx",),
+        ("index",),
+        ("line", "number"),
+        ("line", "no"),
+    }
+)
+
 #: First tokens that make an underscore-prefixed name loader bookkeeping whatever follows:
 #: ``_load_ts``, ``_loaded_at``, ``_batch_id``, ``_ingested_at``, ``_ingestion_run``.
 LOADER_ARTIFACT_LEADING_TOKENS = frozenset(
@@ -597,6 +619,17 @@ def is_loader_artifact_column(column: str) -> bool:
     if not tokens:
         return False
     return tokens in LOADER_ARTIFACT_NAMES or tokens[0] in LOADER_ARTIFACT_LEADING_TOKENS
+
+
+def is_loader_row_identity_column(column: str) -> bool:
+    """Whether *column* is a loader artifact that may be a row's identity (#1049).
+
+    ``_row_key``, ``_parent_row_key``, ``_idx`` and the like: see
+    :data:`LOADER_ROW_IDENTITY_NAMES` for why ``--auto`` leaves them unrecorded.
+    """
+    return is_loader_artifact_column(column) and (
+        tuple(_name_tokens(column)) in LOADER_ROW_IDENTITY_NAMES
+    )
 
 
 #: Tokens that make a column time-valued. Deliberately disjoint from the audit
@@ -844,7 +877,9 @@ def find_disposition_conflicts(
     for domain in report.domains:
         for column in domain.unmapped:
             would_record = AUTO_DISPOSITIONS.get(column.reason)
-            if not would_record:
+            if not would_record or is_loader_row_identity_column(column.column):
+                # A loader row-identity column is never recorded (see
+                # LOADER_ROW_IDENTITY_NAMES), so there is no write to contradict.
                 continue
             if (column.system, column.table) in excluded_tables:
                 suppressed.add((column.system, column.table, column.column))
@@ -912,6 +947,7 @@ def apply_auto_dispositions(
     written = 0
     skipped = 0
     withheld = 0
+    left_for_grain = 0
     by_reason: dict[str, int] = {}
     pending: list[DispositionInput] = []
     for domain in report.domains:
@@ -925,6 +961,11 @@ def apply_auto_dispositions(
             # Writing a column-grain entry never overwrites the table-grain one.
             if column_decision(already, *key):
                 skipped += 1
+                continue
+            if is_loader_row_identity_column(column.column):
+                # Already outside the DD-169 gate by its reason code; recording it
+                # not-business-data would hide it from anchoring's grain (#1049).
+                left_for_grain += 1
                 continue
             if key in conflicted:
                 withheld += 1
@@ -949,6 +990,7 @@ def apply_auto_dispositions(
     return {
         "written": written,
         "skipped_already_decided": skipped,
+        "left_for_grain": left_for_grain,
         "by_reason": by_reason,
         "withheld_conflicting": withheld,
         "conflicts": [c.to_entry() for c in conflicts],

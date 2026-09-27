@@ -154,10 +154,76 @@ class TestAutoDispositions:
         stats = apply_auto_dispositions(tmp_path)
         assert stats["conflicts"] == []
         recorded = load_dispositions(tmp_path)
-        for name in ("_source_file", "_idx", "_load_ts"):
+        for name in ("_source_file", "_load_ts"):
             assert recorded[("qargo", "companies", name)]["disposition"] == "not-business-data"
         assert ("qargo", "companies", "_message_code") not in recorded
         assert [c.column for c in undecided_gap_columns(tmp_path)] == ["_message_code"]
+
+    def _loader_hub(self, tmp_path):
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        write_alignment(
+            analysis, "party", "companies__lines",
+            [
+                {"column": name, "data_type": "varchar", "example_values": ["x"]}
+                for name in ("_source_file", "_row_key", "_parent_row_key", "_idx")
+            ],
+        )
+        return tmp_path
+
+    def test_loader_row_identity_is_left_for_grain(self, tmp_path):
+        """#1049: `_row_key`/`_parent_row_key`/`_idx` are not recorded not-business-data.
+
+        That disposition hides a column from anchoring, and on an array-expanded child
+        table these are the row's identity. Their reason code already keeps them out of
+        the gate, so recording them would gain nothing.
+        """
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+
+        hub = self._loader_hub(tmp_path)
+        stats = apply_auto_dispositions(hub)
+        recorded = load_dispositions(hub)
+        assert ("qargo", "companies__lines", "_source_file") in recorded
+        for name in ("_row_key", "_parent_row_key", "_idx"):
+            assert ("qargo", "companies__lines", name) not in recorded
+        assert stats["written"] == 1
+        assert stats["left_for_grain"] == 3
+        assert stats["conflicts"] == [] and stats["withheld_conflicting"] == 0
+        assert undecided_gap_columns(hub) == []
+
+    def test_anchoring_still_sees_the_row_identity_after_auto(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import (
+            build_source_outline,
+            load_excluded_columns,
+        )
+
+        hub = self._loader_hub(tmp_path)
+        apply_auto_dispositions(hub)
+        analysis = hub / "integration" / "sources" / "_analysis"
+        excluded = load_excluded_columns(analysis)
+        assert ("qargo", "companies__lines", "_source_file") in excluded
+        assert not {c for _, _, c in excluded} & {"_row_key", "_parent_row_key", "_idx"}
+
+        outline = build_source_outline(
+            hub / "integration" / "sources",
+            excluded_columns=excluded,
+            tables=[(
+                "qargo", "companies__lines",
+                [{"name": n} for n in ("_source_file", "_parent_row_key", "_idx")],
+            )],
+        )
+        assert outline == [("qargo", "companies__lines", ["_parent_row_key", "_idx"])]
+
+    def test_row_identity_names_are_loader_names(self):
+        from kairos_ontology.core.gap_decisions import (
+            LOADER_ARTIFACT_NAMES,
+            LOADER_ROW_IDENTITY_NAMES,
+            is_loader_row_identity_column,
+        )
+
+        assert LOADER_ROW_IDENTITY_NAMES <= LOADER_ARTIFACT_NAMES
+        assert is_loader_row_identity_column("__idx")
+        assert not is_loader_row_identity_column("_source_file")
+        assert not is_loader_row_identity_column("row_key"), "needs the underscore"
 
 
 class TestDecisionSheet:

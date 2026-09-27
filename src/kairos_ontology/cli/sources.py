@@ -4437,6 +4437,11 @@ def draft_gap_decisions_cmd(
             click.echo(
                 f"   ↪ {stats['skipped_already_decided']} left alone (already decided)"
             )
+        if stats.get("left_for_grain"):
+            click.echo(
+                f"   ↪ {stats['left_for_grain']} loader row-identity column(s) left for grain "
+                "(_row_key, _idx ...: operational, outside the gap gate, not recorded)"
+            )
         # A withheld conflict is a column the rule was about to silence permanently
         # and did not. Printing only 'written' reported that as silence: on the live
         # hub, 114 of them (#525).
