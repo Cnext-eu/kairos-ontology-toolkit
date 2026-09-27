@@ -27,7 +27,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .alignment_report import AlignmentReport, UnmappedColumn, annotate_read_by
-from .bound_columns import BoundColumns, is_gap_column_decided, load_bound_columns
+from .bound_columns import (
+    BoundColumns,
+    is_gap_column_decided,
+    load_bound_columns,
+    retired_by_binding,
+)
 from .source_disposition import column_decision, load_dispositions, load_source_tables
 
 #: How a decided gap column is summarised per domain. ``ruled_out`` groups the two
@@ -79,6 +84,9 @@ class DeferredBacklog:
     """Every column-grain ``deferred`` entry, ranked within its domain."""
 
     columns: list[DeferredColumn] = field(default_factory=list)
+    #: Column-grain ``deferred`` rows a relation binding now names (#1069). They are
+    #: modelled, so they are not backlog; the ledger row is stale and can be removed.
+    retired: list[DeferredColumn] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -108,6 +116,7 @@ class DeferredBacklog:
         return {
             "total": self.total,
             "with_bi_demand": self.with_bi_demand,
+            "retired_by_binding": [c.to_dict() for c in self.retired],
             "domains": [
                 {
                     "domain": domain,
@@ -124,6 +133,7 @@ def load_deferred_columns(
     hub_root: Path,
     *,
     domain_of: Callable[[str, str, str], str] | None = None,
+    bound: BoundColumns | None = None,
 ) -> DeferredBacklog:
     """Read the deferred backlog from the ledger, joined with what ranks it.
 
@@ -135,6 +145,10 @@ def load_deferred_columns(
     any state, and a half-written vocabulary or a missing anchors sheet must not take it
     down. Row counts come from the textual ``rowCount`` read ``validate`` uses, not from
     an rdflib parse of every source file.
+
+    A row whose column a ``source.relation`` binding now names is retired, not backlog
+    (DD-251, #1069): it goes to :attr:`DeferredBacklog.retired`. *bound* lets a caller
+    that already holds the bindings' view pass it in; unreadable bindings retire nothing.
     """
     root = Path(hub_root)
     try:
@@ -148,16 +162,20 @@ def load_deferred_columns(
     ]
     if not deferred:
         return DeferredBacklog()
+    if bound is None:
+        bound = _bound_columns(root)
     anchors = _anchor_domains(root)
     row_counts = _row_counts(root)
     demand = _bi_demand(root)
     columns: list[DeferredColumn] = []
+    retired: list[DeferredColumn] = []
     for (system, table, column), entry in deferred:
         domain = domain_of(system, table, column) if domain_of is not None else ""
         if not domain:
             domain = anchors.get((system, table), NO_DOMAIN)
         count = row_counts.get((system, table))
-        columns.append(
+        target = retired if retired_by_binding(entry, bound, system, table, column) else columns
+        target.append(
             DeferredColumn(
                 system=system,
                 table=table,
@@ -170,7 +188,16 @@ def load_deferred_columns(
                 bi_demand=tuple(demand(column)),
             )
         )
-    return DeferredBacklog(columns)
+    return DeferredBacklog(columns, retired)
+
+
+def _bound_columns(hub_root: Path) -> BoundColumns:
+    from .bound_columns import EMPTY_BOUND_COLUMNS
+
+    try:
+        return load_bound_columns(hub_root / "integration" / "bindings", hub_root)
+    except Exception:  # noqa: BLE001 - advisory join; a broken binding is reported by compile
+        return EMPTY_BOUND_COLUMNS
 
 
 def _anchor_domains(hub_root: Path) -> dict[tuple[str, str], str]:
@@ -270,6 +297,8 @@ def decision_overlay(report: AlignmentReport, hub_root: Path) -> DecisionOverlay
             else:
                 status[key] = "undecided"
     backlog = load_deferred_columns(
-        root, domain_of=lambda system, table, column: domains.get((system, table, column), "")
+        root,
+        domain_of=lambda system, table, column: domains.get((system, table, column), ""),
+        bound=bound,
     )
     return DecisionOverlay(status=status, bound=bound, backlog=backlog)

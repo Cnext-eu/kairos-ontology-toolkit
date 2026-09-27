@@ -489,3 +489,79 @@ class TestBiDemandWarnings:
         )
         assert quiet.exit_code == 0, quiet.output
         assert "Power BI" not in quiet.output
+
+
+# ---------------------------------------------------------------------------
+# A binding retires a deferred column (#1069)
+# ---------------------------------------------------------------------------
+
+
+class TestRetiredByBinding:
+    """DD-251 says a binding that names a deferred column retires it. Before #1069 the
+    backlog read the ledger alone, so a deferred-then-bound column stayed "deferred"."""
+
+    def _hub(self, tmp_path: Path) -> Path:
+        from tests.test_bound_columns import RELATION_BINDING, _write_relation_binding
+
+        hub = _backlog_hub(tmp_path)
+        _write_alignment(hub, "consignment", "tms", "shipment", ["eta", "sailing_date", "notes"])
+        _write_relation_binding(
+            hub,
+            RELATION_BINDING.replace("relation: app.customers", "relation: tms.shipment")
+            .replace("upper(Customer_Name)", "eta"),
+        )
+        return hub
+
+    def test_the_backlog_drops_a_bound_column_and_reports_it_retired(
+        self, tmp_path: Path
+    ) -> None:
+        backlog = load_deferred_columns(self._hub(tmp_path))
+        assert ("tms", "shipment", "eta") not in {
+            (c.system, c.table, c.column) for c in backlog.columns
+        }
+        assert [(c.table, c.column) for c in backlog.retired] == [("shipment", "eta")]
+        assert backlog.total == 4
+        assert backlog.to_dict()["retired_by_binding"][0]["column"] == "eta"
+
+    def test_next_no_longer_counts_it(self, tmp_path: Path) -> None:
+        assert _deferred_column_status(self._hub(tmp_path)).columns_total == 4
+
+    def test_the_overlay_reports_it_bound(self, tmp_path: Path) -> None:
+        hub = self._hub(tmp_path)
+        report = build_alignment_report(analysis_paths.analysis_dir(hub), hub_root=hub)
+        overlay = decision_overlay(report, hub)
+        assert overlay.domain_totals(report)["consignment"] == {
+            "deferred": 1, "ruled_out": 0, "extension": 0, "bound": 1, "undecided": 1,
+        }
+        rendered = render_markdown(report, overlay=overlay)
+        retired = rendered.split("## Deferred rows a binding has retired")[1]
+        assert "tms.shipment `eta`" in retired
+        assert "`eta`" not in rendered.split("## Deferred backlog")[1].split("## Deferred rows")[0]
+
+    def test_include_deferred_does_not_relist_it(self, tmp_path: Path) -> None:
+        sheet = build_decision_sheet(self._hub(tmp_path), include_deferred=True)
+        assert {e["column"] for e in sheet["decisions"]} == {"notes", "sailing_date"}
+        assert sheet["summary"]["previously_deferred"] == 1
+
+    def test_only_deferred_gives_way_to_a_binding(self, tmp_path: Path) -> None:
+        from kairos_ontology.core.bound_columns import is_gap_column_decided, load_bound_columns
+
+        hub = self._hub(tmp_path)
+        record_disposition(
+            hub_root=hub, system="tms", table="shipment", column="customer_id",
+            disposition="not-business-data", rationale="contradiction for a reviewer",
+        )
+        recorded = load_dispositions(hub)
+        bound = load_bound_columns(hub / "integration" / "bindings", hub)
+        assert is_gap_column_decided(recorded, bound, "tms", "shipment", "eta") == "binding"
+        assert is_gap_column_decided(recorded, bound, "tms", "shipment", "customer_id") == "ledger"
+        assert is_gap_column_decided(recorded, bound, "tms", "shipment", "sailing_date") == "ledger"
+
+    def test_a_dbt_model_chain_reading_it_keeps_it_in_the_backlog(self, tmp_path: Path) -> None:
+        from tests.test_bound_columns import _three_layer_hub
+
+        hub = _backlog_hub(tmp_path)
+        _three_layer_hub(hub)  # a dbtModel chain whose SQL names tms.shipment sailing_date
+        backlog = load_deferred_columns(hub)
+        assert "sailing_date" in {c.column for c in backlog.columns}
+        assert backlog.retired == []
