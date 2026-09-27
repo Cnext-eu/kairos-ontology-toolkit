@@ -1470,9 +1470,10 @@ def _compile_one_domain(
                 err=True,
             )
             for column in undecided[:10]:
+                note = column.read_by_note()
                 click.echo(
                     f"    {column.system}.{column.table}.{column.column} "
-                    f"({column.data_type}) [{column.reason}]",
+                    f"({column.data_type}) [{column.reason}]" + (f" — {note}" if note else ""),
                     err=True,
                 )
             if len(undecided) > 10:

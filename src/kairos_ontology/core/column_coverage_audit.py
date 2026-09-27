@@ -35,9 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ._samples import redact_sample_value
+from .bound_columns import binding_referenced_columns
 from .compiler import CompileError, load_entity_binding
-from .compiler.adapter import _expression_columns
-from .compiler.bindings import EntityBinding
 from .domain_coverage import load_source_affinity_tables
 from .propose_alignment import _is_operational_column
 from .silver_sample_audit import SourceColumnSample, load_source_samples
@@ -167,41 +166,9 @@ class ColumnCoverageReport:
         }
 
 
-def _binding_referenced_columns(binding: EntityBinding) -> set[str]:
-    """Every source column *binding* references anywhere, lower-cased.
-
-    Lower-cased because the table's column list (from the bronze vocabulary TTL) and a
-    binding's authored expressions are two independently-authored surfaces with no shared
-    casing contract -- comparing case-insensitively avoids manufacturing a false orphan
-    from pure casing drift between them.
-    """
-    refs: set[str] = set()
-    for f in binding.fields:
-        refs.update(_expression_columns(f.expression))
-    for tf in binding.technical_fields:
-        refs.update(_expression_columns(tf.expression))
-    refs.update(binding.identity.source_key)
-    refs.update(binding.identity.business_key)
-    refs.update(binding.grain.columns)
-    for rel in binding.relationships:
-        for join in rel.on:
-            refs.add(join.local)
-    for q in binding.quality:
-        refs.update(q.columns)
-    incremental = binding.load.incremental
-    if incremental is not None:
-        refs.update(incremental.merge_identity)
-        refs.update(incremental.canonical_hash_inputs)
-        refs.add(incremental.cdc_operation.column)
-        for col in (
-            incremental.source_updated_at,
-            incremental.business_effective_at,
-            incremental.ingested_at,
-        ):
-            if col:
-                refs.add(col)
-        refs.update(incremental.total_order)
-    return {c.lower() for c in refs if c}
+#: The one definition of "a binding references this column" lives in ``bound_columns``
+#: (DD-250), where the DD-169 gate reads it too; kept under its old name here.
+_binding_referenced_columns = binding_referenced_columns
 
 
 def _table_from_relation(relation: str) -> str:

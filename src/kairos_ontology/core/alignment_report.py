@@ -121,6 +121,12 @@ class UnmappedColumn:
     #: DD-248: closure properties whose name resembles the column, found after the
     #: aligner answered from its bounded pool (``{uri, name, class, score, match}``).
     closure_candidates: tuple[dict[str, Any], ...] = ()
+    #: DD-250: stems of dbt models in an EntityBinding's ``ref()`` chain whose SQL names
+    #: this column (evidence for a ``bound`` proposal), or, when ``lineage_unconfirmed``,
+    #: the models that read its table with ``select *`` without naming it. Set only by
+    #: :func:`undecided_gap_columns`; the memoized report never carries it.
+    read_by: tuple[str, ...] = ()
+    lineage_unconfirmed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -138,7 +144,18 @@ class UnmappedColumn:
                 if self.closure_candidates
                 else {}
             ),
+            **({"read_by": list(self.read_by)} if self.read_by else {}),
+            **({"lineage_unconfirmed": True} if self.lineage_unconfirmed else {}),
         }
+
+    def read_by_note(self) -> str:
+        """One phrase for a gate line or a sheet cell; empty when no model reads it."""
+        if not self.read_by:
+            return ""
+        models = ", ".join(self.read_by[:3]) + (", …" if len(self.read_by) > 3 else "")
+        if self.lineage_unconfirmed:
+            return f"read by {models} (lineage unconfirmed: select *)"
+        return f"named by {models}"
 
 
 #: Anchor statuses that mean the table has no reference class (DD-180).
@@ -946,6 +963,9 @@ def render_markdown(report: AlignmentReport, *, gap_limit: int = 40) -> str:
 #: gate's failure output, because a hard stop that does not say how to clear it is an
 #: obstacle rather than a control.
 GAP_RESOLUTIONS: tuple[str, ...] = (
+    "author the EntityBinding that maps it: a column a binding's fields, keys or "
+    "expressions name is decided without a ledger row (DD-250); a dbt model that names "
+    "it is offered as 'bound' on the decision sheet",
     "model it in the domain that owns it (the reference model lacks it, the business "
     "has it, and a sibling domain is the right home)",
     "register it with 'kairos-ontology register-concept' — real business data outside "
@@ -968,14 +988,25 @@ def undecided_gap_columns(
     Only :data:`GAP_REASONS` columns count. Audit stamps, vendor placeholders and
     evidence-free columns are excluded by construction, so clearing this gate means
     deciding about real signal, not clicking through noise.
+
+    A column an EntityBinding names is decided too (DD-250, #1062): the binding is the
+    decision at column grain as it is at table grain (#973), and the ledger refuses a
+    table-grain ``bound`` row for that reason. Only a ``source.relation`` binding decides
+    here. A ``source.dbtModel`` binding whose ``ref()`` chain reads the table is evidence,
+    carried on the returned column as ``read_by`` (and ``lineage_unconfirmed`` when the
+    reading model says ``select *``) for the gate output and the decision sheet to show;
+    it never clears the column by itself. :func:`bound_columns.is_gap_column_decided` is
+    the one predicate, shared with the sheet, ``--auto`` and ``--apply``.
     """
-    from .source_disposition import column_decision, load_dispositions
+    from .bound_columns import is_gap_column_decided, load_bound_columns
+    from .source_disposition import load_dispositions
 
     report = build_alignment_report(
         Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
     )
     scope = set(domains) if domains is not None else None
     recorded = load_dispositions(Path(hub_root))
+    bound = load_bound_columns(Path(hub_root) / "integration" / "bindings", Path(hub_root))
 
     undecided: list[UnmappedColumn] = []
     for domain in report.domains:
@@ -986,10 +1017,27 @@ def undecided_gap_columns(
             # the columns are covered: `not-business-data` and `blueprint-gap`. A
             # `deferred`, `bound` or `registered-extension` table still owes a decision
             # per column, and used not to (#881).
-            if column_decision(recorded, column.system, column.table, column.column):
+            if is_gap_column_decided(recorded, bound, column.system, column.table, column.column):
                 continue
-            undecided.append(column)
+            undecided.append(annotate_read_by(column, bound))
     return undecided
+
+
+def annotate_read_by(column: UnmappedColumn, bound: Any) -> UnmappedColumn:
+    """*column* with the dbtModel-chain evidence :class:`bound_columns.BoundColumns` holds.
+
+    Returns the same object when no chain reads the column, so the memoized report's
+    instances are never copied needlessly and never mutated.
+    """
+    from dataclasses import replace
+
+    named = bound.read_by_models(column.system, column.table, column.column)
+    if named:
+        return replace(column, read_by=tuple(sorted(named)), lineage_unconfirmed=False)
+    star = bound.unconfirmed_readers(column.system, column.table, column.column)
+    if star:
+        return replace(column, read_by=tuple(sorted(star)), lineage_unconfirmed=True)
+    return column
 
 
 def undecided_unanchored_tables(
