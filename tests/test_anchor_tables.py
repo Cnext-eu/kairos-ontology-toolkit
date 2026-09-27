@@ -249,6 +249,126 @@ class TestOwnerAmbiguousFlag:
         assert entry["domain_basis"] == "owner+secondary"
 
 
+def _bind(hub, file_stem, domain, *, relation=None, sql_path=None):
+    directory = hub / "integration" / "bindings"
+    directory.mkdir(parents=True, exist_ok=True)
+    source = {"relation": relation} if relation else {"dbtModel": {"sqlPath": sql_path}}
+    payload = {"kind": "EntityBinding", "metadata": {"domain": domain}, "source": source}
+    (directory / f"{file_stem}.binding.yaml").write_text(yaml.safe_dump(payload), "utf-8")
+
+
+class TestBindingRoutesDomain:
+    """DD-249 (#1048): precedence pin > binding > the DD-247 chain."""
+
+    COLS = ["pk", "street"]
+    TABLES = ["t_one", "t_pin_off", "t_pin_on", "t_two_in", "t_two_out", "t_dbt", "t_free"]
+
+    def _run(self, tmp_path):
+        import json
+
+        from kairos_ontology.core import analysis_paths
+        from kairos_ontology.core import anchor_tables as at
+
+        hub = tmp_path
+        sources = hub / "integration" / "sources"
+        analysis = sources / "_analysis"
+        analysis.mkdir(parents=True)
+        pinned = [
+            {"system": "cw", "table": t, "anchor": "Address", "domain": "party",
+             "domain_basis": "owner", "status": "edited",
+             "schema_hash": at.sheet_schema_hash(self.COLS)}
+            for t in ("t_pin_off", "t_pin_on")
+        ]
+        analysis_paths.hub_path(analysis, analysis_paths.TABLE_ANCHORS).write_text(
+            yaml.safe_dump({"schema_version": 2, "tables": pinned}), encoding="utf-8"
+        )
+        _bind(hub, "cw-one", "fracht-company", relation="cw.t_one")
+        _bind(hub, "cw-pin-off", "fracht-company", relation="cw.t_pin_off")
+        _bind(hub, "cw-pin-on", "party", relation="cw.t_pin_on")
+        _bind(hub, "cw-two-in-a", "booking", relation="cw.t_two_in")
+        _bind(hub, "cw-two-in-b", "party", relation="cw.t_two_in")
+        _bind(hub, "cw-two-out-a", "party", relation="cw.t_two_out")
+        _bind(hub, "cw-two-out-b", "claims", relation="cw.t_two_out")
+        sql = "integration/transforms/dbt/models/intermediate/int_dbt.sql"
+        (hub / sql).parent.mkdir(parents=True)
+        (hub / sql).write_text("select * from {{ source('cw', 't_dbt') }}\n", "utf-8")
+        _bind(hub, "cw-dbt", "party", sql_path=sql)
+
+        verdict = {"anchor": "Address", "alternate": None, "confidence": 0.9,
+                   "grain_columns": ["pk"], "natural_key": ["pk"], "load_hint": "scd"}
+        message = MagicMock()
+        message.content = json.dumps(
+            {"anchors": {f"cw.{t}": verdict for t in self.TABLES}}
+        )
+        client = MagicMock()
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=message)]
+        )
+        lines: list[tuple[str, str]] = []
+        with patch.object(at, "build_class_catalog", return_value=shared_catalog()), \
+                patch.object(at, "build_source_outline",
+                             return_value=[("cw", t, self.COLS) for t in self.TABLES]):
+            out = at.run_anchor_tables(
+                client=client, model="m", sources_dir=sources,
+                catalog_path=tmp_path / "catalog.xml", ref_models_dir=None,
+                accelerator=None, analysis_dir=analysis,
+                report=lambda message, level="info": lines.append((message, level)),
+            )
+        doc = yaml.safe_load(out.read_text(encoding="utf-8"))
+        return {t["table"]: t for t in doc["tables"]}, lines
+
+    def test_every_precedence_case(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import (
+            BINDING_AMBIGUOUS_FLAG,
+            OWNER_AMBIGUOUS_FLAG,
+        )
+
+        rows, lines = self._run(tmp_path)
+        # One binding domain wins, even a hub-local one owning no module.
+        one = rows["t_one"]
+        assert (one["domain"], one["domain_basis"]) == ("fracht-company", "binding")
+        assert OWNER_AMBIGUOUS_FLAG not in one["flags"]
+        # A pin is never changed; a disagreeing binding is reported at warning level.
+        assert rows["t_pin_off"]["domain"] == "party"
+        assert rows["t_pin_off"]["domain_basis"] == "owner"
+        assert (
+            "       cw.t_pin_off: pinned to party, bound in fracht-company "
+            "(cw-pin-off.binding.yaml)", "warning"
+        ) in lines
+        # An agreeing pin says nothing.
+        assert rows["t_pin_on"]["domain"] == "party"
+        assert not any("t_pin_on" in line for line, _ in lines)
+        # Several binding domains including the chain's: kept, basis binding.
+        two_in = rows["t_two_in"]
+        assert (two_in["domain"], two_in["domain_basis"]) == ("booking", "binding")
+        assert OWNER_AMBIGUOUS_FLAG not in two_in["flags"]
+        # ... excluding the chain's: kept, flagged for a ruling.
+        two_out = rows["t_two_out"]
+        assert (two_out["domain"], two_out["domain_basis"]) == ("booking", "owner")
+        assert BINDING_AMBIGUOUS_FLAG in two_out["flags"]
+        assert two_out["binding_domains"] == ["claims", "party"]
+        assert any("cw.t_two_out" in line and level == "warning" for line, level in lines)
+        # A dbtModel binding routes the tables its SQL reads.
+        assert (rows["t_dbt"]["domain"], rows["t_dbt"]["domain_basis"]) == ("party", "binding")
+        # Unbound: the chain's answer, untouched.
+        free = rows["t_free"]
+        assert (free["domain"], free["domain_basis"]) == ("booking", "owner")
+        assert OWNER_AMBIGUOUS_FLAG in free["flags"]
+        assert BINDING_AMBIGUOUS_FLAG not in free["flags"]
+        # Rows the binding settled are no longer listed as owner-ambiguous.
+        ambiguous_lines = [line for line, _ in lines if "(owners: booking" in line]
+        assert any("t_free" in line for line in ambiguous_lines)
+        assert not any("t_one" in line or "t_two_in" in line for line in ambiguous_lines)
+
+    def test_a_binding_without_a_domain_routes_nothing(self):
+        from kairos_ontology.core.anchor_tables import apply_binding_domains
+
+        row = {"system": "cw", "table": "t", "domain": "booking", "domain_basis": "owner"}
+        result = apply_binding_domains([row], {("cw", "t"): frozenset({("", "x.yaml")})})
+        assert row["domain_basis"] == "owner"
+        assert not (result.routed or result.ambiguous or result.disagreements)
+
+
 class TestPrompt:
     CHUNK = [("qargo", "stops", ["stop_id", "arrival_time"])]
 

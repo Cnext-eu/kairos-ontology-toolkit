@@ -667,6 +667,15 @@ def run_generate_bindings(
     from .source_disposition import load_dispositions
 
     dispositions = load_dispositions(hub)
+    # Which binding files already read each table (#1048). The ownership walk, not the
+    # full one: both find the same tables (a model the ownership walk stops at is the
+    # selected model of another binding, whose own walk reads it), but the ownership walk
+    # names the binding whose entity the table actually is -- a table merely joined into
+    # a merge model through another binding's selected model is attributed to that
+    # binding, which is the one a reader should be pointed at.
+    from .source_disposition import load_binding_owners
+
+    bound_by = load_binding_owners(bindings_dir, hub)
 
     report = GenerateBindingsReport()
     profiles: dict[str, dict | None] = {}
@@ -708,6 +717,19 @@ def run_generate_bindings(
             report.generated.append(GeneratedBinding(
                 system, table, "", str(entry.get("domain") or ""),
                 "skipped", note="no anchor URI or derived domain on the sheet"))
+            continue
+        # #1048 (DD-249): never draft a second binding for a table an authored one already
+        # reads. The guard below only sees this generator's own `-to-<domain>` file name,
+        # which most hand-authored bindings do not follow (4 of GDW's 47 did). The name is
+        # the one generate_binding_doc derives, so it is known before the draft is built.
+        own_file = f"{system}-{table.replace('_', '-')}-to-{entry['domain']}.binding.yaml"
+        others = sorted(
+            file_name for _, file_name in bound_by.get((system, table), ()) if file_name != own_file
+        )
+        if others:
+            report.generated.append(GeneratedBinding(
+                system, table, "", str(entry.get("domain") or ""), "skipped",
+                note=f"already bound by {', '.join(others)}"))
             continue
         found = find_source_alignment(analysis, system, table)
         if found is None:

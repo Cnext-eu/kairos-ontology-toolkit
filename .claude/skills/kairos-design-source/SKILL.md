@@ -130,7 +130,15 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     is unchanged is kept verbatim (DD-190). Settle a row flagged `owner-ambiguous` the same
     way, by setting its `domain` and `status: edited`, because a ruling cannot choose a
     domain (DD-247). Churn here reaches only first drafts: `generate-bindings` never
-    overwrites an authored binding.
+    overwrites an authored binding, and skips a table another binding already reads.
+
+    A table an EntityBinding already reads follows that binding's `metadata.domain`
+    (`domain_basis: binding`) unless you pinned the row; a pin always wins (DD-249). When
+    they disagree, the run prints `pinned to <domain>, bound in <domain> (<file>)`:
+    re-pin the row to the binding's domain, or keep the pin on purpose — for example to
+    keep a reference domain's class pool when the binding's domain is hub-local and has
+    none. A row flagged `binding-ambiguous` is read by bindings in several domains, none of
+    them the one chosen; pin it (`domain` plus `status: edited`).
 
     When you **add a source** to a hub whose existing anchors are done, run
     `kairos-ontology anchor-tables --only-new`. It keeps every existing entry whose schema

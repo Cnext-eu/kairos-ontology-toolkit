@@ -105,6 +105,11 @@ DEPRECATED_ANCHOR_FLAG = "deprecated-anchor"
 #: ``status: edited``) instead of the choice passing unreviewed.
 OWNER_AMBIGUOUS_FLAG = "owner-ambiguous"
 
+#: Deterministic flag for an unpinned table that EntityBindings in several domains read,
+#: none of them the domain the DD-247 chain chose (DD-249, #1048). The chain's domain is
+#: kept; the flag asks for a ruling (pin the row's domain with ``status: edited``).
+BINDING_AMBIGUOUS_FLAG = "binding-ambiguous"
+
 
 def sheet_schema_hash(columns: list[str]) -> str:
     """Stable identity of a table's schema for sticky-entry comparison (DD-190).
@@ -1270,6 +1275,10 @@ def derive_domain(
     3. Otherwise the first owner, basis ``owner``, so the table stays in a pool
        that reaches its anchor; ``run_anchor_tables`` flags it
        ``owner-ambiguous`` for a ruling instead of choosing silently.
+
+    This chain is the fallback, not the last word: after it, ``run_anchor_tables``
+    routes a table an EntityBinding reads to that binding's domain (basis ``binding``,
+    :func:`apply_binding_domains`, DD-249), and a pinned row outranks both.
     """
     copies = catalog.index.get(anchor_name) or []
     owner_ids = list(
@@ -1307,6 +1316,74 @@ def derive_domain(
     if bridge_ids:
         return bridge_ids[0], "bridge", owner_ids, bridge_ids
     return affinity_domain, "unowned", owner_ids, bridge_ids
+
+
+@dataclass
+class BindingPassResult:
+    """What :func:`apply_binding_domains` changed and what it asks a human to rule on."""
+
+    routed: list[dict[str, Any]] = field(default_factory=list)
+    ambiguous: list[dict[str, Any]] = field(default_factory=list)
+    disagreements: list[str] = field(default_factory=list)
+
+
+def apply_binding_domains(
+    tables: list[dict[str, Any]],
+    owners: dict[tuple[str, str], frozenset[tuple[str, str]]],
+    *,
+    kept: set[tuple[str, str]] | frozenset[tuple[str, str]] = frozenset(),
+) -> BindingPassResult:
+    """Route bound tables to their EntityBinding's domain (DD-249, #1048). Deterministic.
+
+    Precedence is pin > binding > the DD-247 chain. *owners* is
+    :func:`~kairos_ontology.core.source_disposition.load_binding_owners`: per table, the
+    ``(domain, binding file)`` pairs of the bindings that read it. *kept* are the rows
+    kept verbatim this run -- pinned (``confirmed``/``edited``) or kept by
+    ``--only-new``; they are never changed, and a binding that disagrees with one is
+    reported, not applied. A binding does not outrank a pin because a hub-local binding
+    domain owns no reference module, so :func:`regroup_by_anchor` cannot move alignment
+    there: the pin is how a human keeps the class pool that actually maps the columns.
+
+    For every other row: one binding domain wins outright (basis ``binding``, clearing
+    ``owner-ambiguous``), even when that domain owns no module; several binding domains
+    keep the chain's domain when it is one of them (basis ``binding``), and otherwise keep
+    the chain's result and flag the row ``binding-ambiguous``. Unbound rows are untouched.
+    Mutates *tables* in place.
+    """
+    result = BindingPassResult()
+    for entry in tables:
+        key = (str(entry.get("system", "")), str(entry.get("table", "")))
+        found = owners.get(key) or frozenset()
+        by_domain: dict[str, list[str]] = {}
+        for dom, file_name in sorted(found):
+            if dom:  # a binding without metadata.domain says nothing about routing
+                by_domain.setdefault(dom, []).append(file_name)
+        if not by_domain:
+            continue
+        current = str(entry.get("domain") or "")
+        if key in kept:
+            if current not in by_domain:
+                bound_in = "; ".join(
+                    f"{dom} ({', '.join(files)})" for dom, files in sorted(by_domain.items())
+                )
+                result.disagreements.append(
+                    f"{key[0]}.{key[1]}: pinned to {current or '(no domain)'}, "
+                    f"bound in {bound_in}"
+                )
+            continue
+        flags = list(entry.get("flags") or [])
+        if len(by_domain) == 1 or current in by_domain:
+            entry["domain"] = current if current in by_domain else next(iter(by_domain))
+            entry["domain_basis"] = "binding"
+            entry["flags"] = sorted(
+                set(flags) - {OWNER_AMBIGUOUS_FLAG, BINDING_AMBIGUOUS_FLAG}
+            )
+            result.routed.append(entry)
+        else:
+            entry["flags"] = sorted({*flags, BINDING_AMBIGUOUS_FLAG})
+            entry["binding_domains"] = sorted(by_domain)
+            result.ambiguous.append(entry)
+    return result
 
 
 def column_property_overlap(columns: list[str], copy: dict[str, Any]) -> int:
@@ -1865,6 +1942,22 @@ def run_anchor_tables(
             deprecated_anchors.append(entry)
         tables.append(entry)
 
+    # DD-249 (#1048): an authored EntityBinding outranks the DD-247 chain; a pin outranks
+    # the binding. Deterministic, after every row (pinned and --only-new kept included)
+    # is assembled, so the rows the chain produced are the only ones it can change.
+    from .source_disposition import load_binding_owners
+
+    hub_root = Path(sources_dir).parent.parent
+    binding_pass = apply_binding_domains(
+        tables,
+        load_binding_owners(hub_root / "integration" / "bindings", hub_root),
+        kept=set(pinned),
+    )
+    routed_ids = {id(t) for t in binding_pass.routed}
+    ambiguous = [t for t in ambiguous if id(t) not in routed_ids]
+
+    # ``domain_basis`` "binding" is owned by definition (an author put it there), so it
+    # never counts towards the unowned worklist below.
     unowned = sum(1 for t in tables if t.get("domain_basis") == "unowned")
     say(
         f"  ⚓ Anchored {len(tables)}/{len(outline)} — "
@@ -1934,6 +2027,34 @@ def run_anchor_tables(
                 f"(owners: {', '.join(t['owners'])}; kept in {t['domain']})",
                 "warning",
             )
+    if binding_pass.routed:
+        say(
+            f"  ⚓ {len(binding_pass.routed)} table(s) routed to the domain of the "
+            "EntityBinding that reads them (domain_basis: binding, DD-249)"
+        )
+    if binding_pass.ambiguous:
+        say(
+            f"  ⚓ {len(binding_pass.ambiguous)} table(s) are read by bindings in several "
+            "domains, none of them the one the chain chose; kept and flagged "
+            f"'{BINDING_AMBIGUOUS_FLAG}' (DD-249). Rule on each by pinning its domain "
+            "(status: edited):",
+            "warning",
+        )
+        for t in binding_pass.ambiguous:
+            say(
+                f"       {t['system']}.{t['table']} → bound in "
+                f"{', '.join(t['binding_domains'])}; kept in {t['domain']}",
+                "warning",
+            )
+    if binding_pass.disagreements:
+        say(
+            f"  ⚓ {len(binding_pass.disagreements)} pinned table(s) disagree with the "
+            "domain of the binding that reads them; the pin is kept (DD-249). Re-pin the "
+            "row or accept the difference:",
+            "warning",
+        )
+        for line in binding_pass.disagreements:
+            say(f"       {line}", "warning")
 
     # What moved since the last run, while the previous artifact is still in hand.
     # A re-run used to overwrite every unpinned row in silence (#877).

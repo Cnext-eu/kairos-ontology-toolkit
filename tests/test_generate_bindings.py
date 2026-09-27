@@ -156,6 +156,28 @@ class TestGuards:
         assert forced.generated[0].outcome == "written"
         assert not path.read_text(encoding="utf-8").startswith("# hand-edited")
 
+    def test_a_table_another_binding_reads_is_not_drafted_twice(self, hub):
+        """#1048: the file-exists guard only sees this generator's own `-to-<domain>` name."""
+        bindings = hub / "integration" / "bindings"
+        bindings.mkdir(parents=True)
+        (bindings / "src-shipment-lines.binding.yaml").write_text(
+            yaml.safe_dump({"metadata": {"domain": "consignment"},
+                            "source": {"relation": "src.goods"}}),
+            encoding="utf-8",
+        )
+        for kwargs in ({}, {"force": True}):
+            [g] = _run(hub, **kwargs).generated
+            assert (g.outcome, g.note) == (
+                "skipped", "already bound by src-shipment-lines.binding.yaml"
+            )
+        assert not (bindings / "src-goods-to-consignment.binding.yaml").exists()
+
+    def test_its_own_generated_file_does_not_count_as_another_binding(self, hub):
+        first = _run(hub)
+        assert first.generated[0].outcome == "written"
+        assert _run(hub).generated[0].outcome == "exists"
+        assert _run(hub, force=True).generated[0].outcome == "written"
+
     def test_dry_run_validates_but_writes_nothing(self, hub):
         report = _run(hub, dry_run=True)
         assert report.generated[0].outcome == "would-write"
