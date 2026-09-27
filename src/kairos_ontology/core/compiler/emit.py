@@ -597,6 +597,18 @@ def _unique_backup_path(target: Path) -> Path:
 #: window; this is not, while still failing fast enough to stay usable interactively.
 _SWAP_BACKOFF_SECONDS = (0.05, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0)
 
+#: #1086: the short schedule above covers a scanner reading one file. It does not cover the
+#: burst after `compile --all --emit`, `project` and `emit-gold` write thousands of files
+#: in a row: antivirus, the search indexer and editor watchers then kept a large Gold tree
+#: busy for minutes, and every hub ended up wrapping `emit-gold` in its own retry loop.
+#: After the short schedule the swap therefore keeps retrying at a steady interval, up to
+#: a total budget of sleeping. `KAIROS_EMIT_SWAP_TIMEOUT` (seconds) overrides the budget;
+#: `0` keeps only the short schedule, for when a permanent holder such as an open .pbip is
+#: the likelier cause.
+_SWAP_STEADY_DELAY_SECONDS = 5.0
+_SWAP_TIMEOUT_ENV = "KAIROS_EMIT_SWAP_TIMEOUT"
+_DEFAULT_SWAP_TIMEOUT_SECONDS = 180.0
+
 #: What a Windows sharing violation on a *directory* rename usually means. Named in the
 #: error because the failure otherwise says nothing about where to look: one real
 #: investigation lost a day to two wrong guesses before finding the holder.
@@ -624,15 +636,49 @@ def _is_transient_swap_error(error: OSError) -> bool:
     return sys.platform == "win32" and getattr(error, "winerror", None) in _RETRYABLE_WINDOWS_ERRORS
 
 
+def _swap_timeout_seconds() -> float:
+    raw = os.environ.get(_SWAP_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_SWAP_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("ignoring %s=%r: not a number of seconds", _SWAP_TIMEOUT_ENV, raw)
+        return _DEFAULT_SWAP_TIMEOUT_SECONDS
+    return max(value, 0.0)
+
+
+def _swap_delays() -> list[float]:
+    """The short backoff, then steady retries until the timeout budget is spent."""
+    delays = list(_SWAP_BACKOFF_SECONDS)
+    remaining = _swap_timeout_seconds() - sum(delays)
+    while remaining > 0:
+        delay = min(_SWAP_STEADY_DELAY_SECONDS, remaining)
+        delays.append(delay)
+        remaining -= delay
+    return delays
+
+
 def _rename_with_retry(source: Path, destination: Path) -> None:
     """Rename, retrying only a Windows sharing violation."""
-    for delay in _SWAP_BACKOFF_SECONDS:
+    short_phase = len(_SWAP_BACKOFF_SECONDS)
+    delays = _swap_delays()
+    for attempt, delay in enumerate(delays):
         try:
             os.replace(source, destination)
             return
         except OSError as error:
             if not _is_transient_swap_error(error):
                 raise
+            if attempt == short_phase:
+                logger.warning(
+                    "%s is still held open by another process (%s); retrying for up to "
+                    "%.0fs more. Set %s to change how long emit waits.",
+                    source,
+                    error,
+                    sum(delays[attempt:]),
+                    _SWAP_TIMEOUT_ENV,
+                )
             time.sleep(delay)
     os.replace(source, destination)
 

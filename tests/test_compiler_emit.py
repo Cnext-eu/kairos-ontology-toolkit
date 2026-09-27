@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -478,6 +479,83 @@ def test_transient_sharing_violation_is_retried_until_it_clears(
 
     assert failures == 0
     assert (target / "models/customer.sql").read_text() == "generated"
+
+
+def _block_the_swap_always(monkeypatch, target: Path) -> list[float]:
+    monkeypatch.setattr(sys, "platform", "win32")
+    slept: list[float] = []
+    monkeypatch.setattr(emit_module.time, "sleep", slept.append)
+    original_replace = os.replace
+
+    def always_blocked(source, destination):
+        if str(destination) == str(target):
+            raise _sharing_violation(5)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(emit_module.os, "replace", always_blocked)
+    return slept
+
+
+def test_swap_keeps_retrying_for_the_whole_budget(tmp_path: Path, monkeypatch, caplog):
+    """#1086: a burst of writes kept a large Gold tree busy for minutes, far past the
+    short backoff, so emit retries at a steady interval until the budget is spent."""
+    monkeypatch.delenv(emit_module._SWAP_TIMEOUT_ENV, raising=False)
+    target = tmp_path / "powerbi"
+    slept = _block_the_swap_always(monkeypatch, target)
+
+    with caplog.at_level(logging.WARNING, logger=emit_module.__name__):
+        with pytest.raises(EmissionError):
+            emit_artifacts({"model.tmdl": "generated"}, target)
+
+    assert sum(slept) == pytest.approx(emit_module._DEFAULT_SWAP_TIMEOUT_SECONDS)
+    assert max(slept) == emit_module._SWAP_STEADY_DELAY_SECONDS
+    warnings = [record for record in caplog.records if "still held open" in record.message]
+    assert len(warnings) == 1
+    assert emit_module._SWAP_TIMEOUT_ENV in warnings[0].message
+
+
+def test_a_held_target_clears_during_the_steady_phase(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv(emit_module._SWAP_TIMEOUT_ENV, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(emit_module.time, "sleep", lambda _: None)
+    target = tmp_path / "powerbi"
+    original_replace = os.replace
+    failures = len(emit_module._SWAP_BACKOFF_SECONDS) + 10
+
+    def clears_late(source, destination):
+        nonlocal failures
+        if str(destination) == str(target) and failures:
+            failures -= 1
+            raise _sharing_violation(5)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(emit_module.os, "replace", clears_late)
+    emit_artifacts({"model.tmdl": "generated"}, target)
+
+    assert failures == 0
+    assert (target / "model.tmdl").read_text() == "generated"
+
+
+@pytest.mark.parametrize(
+    ("setting", "expected"),
+    [
+        ("0", sum(emit_module._SWAP_BACKOFF_SECONDS)),
+        ("30", 30.0),
+        ("not-a-number", emit_module._DEFAULT_SWAP_TIMEOUT_SECONDS),
+    ],
+)
+def test_swap_budget_follows_the_environment(
+    tmp_path: Path, monkeypatch, setting: str, expected: float
+):
+    """`0` keeps only the short schedule, for a permanent holder such as an open .pbip."""
+    monkeypatch.setenv(emit_module._SWAP_TIMEOUT_ENV, setting)
+    target = tmp_path / "powerbi"
+    slept = _block_the_swap_always(monkeypatch, target)
+
+    with pytest.raises(EmissionError):
+        emit_artifacts({"model.tmdl": "generated"}, target)
+
+    assert sum(slept) == pytest.approx(expected)
 
 
 def test_permanent_error_is_not_retried(tmp_path: Path, monkeypatch):
