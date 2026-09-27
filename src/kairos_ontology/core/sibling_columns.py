@@ -16,8 +16,10 @@ lexical match into a mapping without a model or a human.
 
 The rules are deliberately narrow, and each is backed by evidence beyond the name:
 
-* **The pair is in one table.** Siblings are only looked for among the columns a
-  ``source.relation`` binding's ``fields:`` maps on the same ``(system, table)``.
+* **The pair is in one table.** Siblings are only looked for among the bound fields of
+  the same ``(system, table)``: a ``source.relation`` binding's ``fields:``, a ledger
+  ``bound`` row, or a column a dbtModel chain names (#1077; assembled by
+  ``deferred_backlog._sibling_fields``).
 * **A unit, currency or description pairs by stem.** ``JZ_WeightUQ`` pairs with
   ``JZ_Weight`` because removing the unit token leaves exactly the bound column's name.
   Token-subset matching was measured on this corpus at 62% precision
@@ -97,8 +99,8 @@ def detect_sibling(
 ) -> Sibling | None:
     """The bound field *column* completes on its table, or ``None``.
 
-    *bound_fields* is the table's ``column -> property tokens`` from relation bindings'
-    ``fields:`` (:meth:`BoundColumns.bound_fields`). *profile* is the column's DD-189
+    *bound_fields* is the table's ``column -> property tokens`` (or evidence labels, when
+    the property is not known) in authored casing. *profile* is the column's DD-189
     profile entry (``{"type", "null_ratio", "distinct", "tags"}``) when one exists.
     """
     if not bound_fields or column.lower() in {name.lower() for name in bound_fields}:
@@ -113,10 +115,15 @@ def detect_sibling(
         return Sibling(kind, name, ", ".join(sorted(bound_fields[name])))
 
     last, stem = own[-1], own[:-1]
+    # Word overlap ignores the table code every column of the table starts with (#1077):
+    # ``JZ_WeightUQ`` shares ``jz`` with ``JZ_InvoiceAmount`` and nothing that matters.
+    own_words = _meaningful(column, own)
+    stem_words = tuple(t for t in stem if t in own_words)
+    words = {name: _meaningful(name, parts) for name, parts in bound.items()}
     if last in _UNIT and "measure-like" not in tags:
         match = _stem_match(stem, bound) or _unique(
             name for name, parts in bound.items() if _family(parts, _MEASURE | _AMOUNT)
-            and _shares(stem, parts)
+            and _shares(stem_words, tuple(words[name]))
         )
         if match:
             return sibling("unit", match)
@@ -182,6 +189,19 @@ def sinks(profile: Mapping[str, Any] | None) -> bool:
 
 def _family(parts: tuple[str, ...], family: frozenset[str]) -> bool:
     return any(part in family for part in parts)
+
+
+#: A leading table code (``JZ_``, ``AH_``, ``rc_``): shared by every column of the table, so
+#: it says nothing about which bound field a column completes (#1077).
+_TABLE_PREFIX_RE = re.compile(r"^[A-Za-z0-9]{2,3}_")
+
+
+def _meaningful(name: str, parts: tuple[str, ...]) -> frozenset[str]:
+    """*parts* without the table-code token *name* starts with."""
+    prefix = _TABLE_PREFIX_RE.match(name)
+    if prefix and parts and parts[0] == prefix.group(0)[:-1].lower():
+        parts = parts[1:]
+    return frozenset(parts)
 
 
 def _shares(stem: tuple[str, ...], parts: tuple[str, ...]) -> bool:

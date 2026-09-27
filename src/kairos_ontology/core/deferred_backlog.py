@@ -211,6 +211,7 @@ def load_deferred_columns(
     row_counts = _row_counts(root)
     demand = _bi_demand(root)
     profile = column_profiles(root)
+    sibling_fields = _sibling_fields(root, recorded, bound)
     columns: list[DeferredColumn] = []
     retired: list[DeferredColumn] = []
     for (system, table, column), entry in deferred:
@@ -232,7 +233,7 @@ def load_deferred_columns(
                 row_count=count if count is not None and count >= 0 else None,
                 bi_demand=tuple(demand(column)),
                 sibling=detect_sibling(
-                    column, bound.bound_fields(system, table), profile=column_profile
+                    column, sibling_fields(system, table), profile=column_profile
                 ),
                 sunk=sinks(column_profile),
                 suggested_property=closure_of(system, table, column) if closure_of else "",
@@ -240,6 +241,122 @@ def load_deferred_columns(
         )
     return DeferredBacklog(columns, retired)
 
+
+
+#: What a sibling's "completes" names when the bound field's property is not known: the
+#: ledger records that a column reaches Silver, not through which property.
+LEDGER_BOUND = "bound (ledger)"
+
+
+def _sibling_fields(
+    hub_root: Path,
+    recorded: dict[tuple[str, str, str], dict[str, Any]],
+    bound: BoundColumns,
+) -> Callable[[str, str], dict[str, frozenset[str]]]:
+    """A table's bound fields for sibling detection, from three sources (#1077).
+
+    #1068 related a deferred column only to the fields a ``source.relation`` binding maps.
+    A hub that binds through contracted dbt models -- the path for anything beyond one
+    relation -- therefore got almost no siblings (1 where a lineage trace found about
+    230). Detection is a ranking aid, never a decision, so it may take looser evidence
+    than the DD-169 gate does. In order of strength:
+
+    * a relation binding's ``fields:`` (column -> the property tokens it fills);
+    * a column-grain ledger row recorded ``bound``: a reviewer or autopilot decided the
+      column reaches Silver, but not through which property;
+    * a column a dbtModel chain's SQL names (``read_by``, DD-250), unless the ledger
+      records it with a disposition other than ``bound``. A column the chain names but a
+      reviewer kept ``deferred`` is exactly the staged-but-unused case ``read_by``
+      over-counts, so it must not make its neighbours look bound.
+
+    ``read_by`` keys are lower-cased and include every identifier the chain's SQL names,
+    output aliases and type names among them. The token rules need the authored casing
+    (``JZ_WeightUQ`` pairs with ``JZ_Weight``, ``jz_weightuq`` has lost the boundary), so
+    a ``read_by`` name counts only when the bronze vocabulary, the DD-189 profile or the
+    ledger knows it as a column of the table, and takes that casing. A name found in none
+    is dropped: an unmatched sibling, never a wrong one.
+    """
+    ledger_bound: dict[tuple[str, str], set[str]] = {}
+    not_bound: set[tuple[str, str, str]] = set()
+    casing: dict[tuple[str, str], dict[str, str]] = {}
+    for (system, table, column), entry in recorded.items():
+        if not column:
+            continue
+        casing.setdefault((system, table), {}).setdefault(column.lower(), column)
+        if str(entry.get("disposition") or "") == "bound":
+            ledger_bound.setdefault((system, table), set()).add(column)
+        else:
+            not_bound.add((system, table, column.lower()))
+    known = _source_casing(hub_root)
+
+    def fields(system: str, table: str) -> dict[str, frozenset[str]]:
+        found: dict[str, frozenset[str]] = {}
+        seen: set[str] = set()
+
+        def add(name: str, properties: frozenset[str]) -> None:
+            if name.lower() not in seen:
+                seen.add(name.lower())
+                found[name] = properties
+
+        for name, properties in bound.bound_fields(system, table).items():
+            add(name, frozenset(properties))
+        for name in sorted(ledger_bound.get((system, table), ())):
+            add(name, frozenset({LEDGER_BOUND}))
+        names = casing.get((system, table), {})
+        for lowered, models in sorted(bound.read_by.get((system, table), {}).items()):
+            if (system, table, lowered) in not_bound:
+                continue
+            # ``read_by`` holds every identifier the chain's SQL names, output aliases and
+            # type names included (``line_quantity``, ``datetime2``). Only a name the source
+            # vocabulary, the profile or the ledger knows as a column of this table is a
+            # bound source column.
+            authored = known(system, table).get(lowered) or names.get(lowered)
+            if authored:
+                add(authored, frozenset(f"read by {model}" for model in sorted(models)))
+        return found
+
+    return fields
+
+
+def _source_casing(hub_root: Path) -> Callable[[str, str], dict[str, str]]:
+    """``(system, table) -> {lower: authored}`` for every column the hub knows, lazily.
+
+    The bronze vocabulary lists every column of every imported table
+    (:func:`generate_bindings.load_source_column_types`, the text scan ``generate-bindings``
+    already uses); the DD-189 profile fills in where a hub has one and the vocabulary is
+    missing. Neither is required: an absent source restores nothing.
+    """
+    from .generate_bindings import load_source_column_types
+    from .profile_sources import load_profile
+
+    sources = hub_root / "integration" / "sources"
+    loaded: dict[str, dict[str, dict[str, str]]] = {}
+
+    def load(system: str) -> dict[str, dict[str, str]]:
+        tables: dict[str, dict[str, str]] = {}
+        try:
+            profiled = (load_profile(sources, system) or {}).get("tables") or {}
+        except Exception:  # noqa: BLE001 - advisory join
+            profiled = {}
+        for table, entry in profiled.items():
+            if isinstance(entry, dict):
+                for column in entry.get("columns") or {}:
+                    tables.setdefault(str(table), {})[str(column).lower()] = str(column)
+        try:
+            vocabulary = load_source_column_types(sources, system)
+        except Exception:  # noqa: BLE001 - advisory join
+            vocabulary = {}
+        for table, columns in vocabulary.items():
+            for column in columns:
+                tables.setdefault(str(table), {}).setdefault(str(column).lower(), str(column))
+        return tables
+
+    def lookup(system: str, table: str) -> dict[str, str]:
+        if system not in loaded:
+            loaded[system] = load(system)
+        return loaded[system].get(table, {})
+
+    return lookup
 
 
 def _bound_columns(hub_root: Path) -> BoundColumns:
