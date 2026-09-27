@@ -5,17 +5,24 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.2** is the latest GA release (2026-09-27), superseding
-> **5.24.1** (2026-09-27). A patch on value objects and the deferred backlog:
+> **Release status.** **5.24.3** is the latest GA release (2026-09-27), superseding
+> **5.24.2** (2026-09-27). A patch on the deferred backlog's sibling ranking:
 >
-> - A binding can map a single-valued value object's scalars onto its parent with `via`
->   (DD-252, #811). The bound must be declared in OWL.
-> - The deferred backlog ranks sibling columns of bound fields first (#1068). A binding
->   that maps a deferred column now retires it (#1069).
-> - `audit-column-coverage` keys tables by system and reads dbtModel bindings (#1065).
->   `fit-report` counts relationships as populated (#1070).
+> - Sibling detection now sees tables bound through dbt models (#1077). It reads ledger
+>   `bound` rows and the columns a dbtModel chain names, not only relation-binding fields.
 >
-> **What to expect on the first run after upgrading from 5.24.1.**
+> **What to expect on the first run after upgrading from 5.24.2.**
+>
+> | you will see | why |
+> |---|---|
+> | **`alignment-report` and `next` list more sibling candidates** on a hub that binds through dbt models, with "Completes" showing `read by <model>` or `bound (ledger)` | #1077. Before, only `source.relation` fields counted, so a dbt-bound table had none |
+> | **Some unit siblings disappear**, such as `JZ_WeightUQ` completing `JZ_InvoiceAmount` | #1077. A shared table-code prefix no longer counts as a word in common |
+>
+> Detection is still a ranking aid: nothing is written to the ledger, and dbt output is
+> byte-identical.
+>
+> **Upgrading from 5.24.1 or earlier?** 5.24.2's first-run notes still apply on top of the
+> above:
 >
 > | you will see | why |
 > |---|---|
@@ -112,6 +119,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.3] — 2026-09-27
+
+### Fixed
+- **Sibling ranking now sees tables bound through dbt models.** In 5.24.2 the ranking of
+  deferred columns that complete a bound field (#1068) only knew the fields of
+  `source.relation` bindings. A hub that binds through contracted dbt models, the path for
+  anything beyond one relation, therefore got almost no candidates: one on a production hub
+  where a lineage trace found about 130. A table's bound fields for sibling detection now
+  also include:
+  - column-grain ledger rows recorded `bound`;
+  - columns a binding's dbtModel chain names (`read_by`, DD-250). The chain's output aliases
+    and type names are ignored, because only a name the bronze vocabulary, the profile or the
+    ledger knows as a column of the table counts. A chain column the ledger keeps `deferred`
+    is not treated as bound (the staged-but-unused case).
+
+  The "Completes" column shows the evidence (`read by <model>`, `bound (ledger)`) where the
+  property is not known. A shared table-code prefix (`JZ_`, `AH_`) no longer counts as a word
+  in common, so `JZ_WeightUQ` stops pairing with `JZ_InvoiceAmount`. Detection is still a
+  ranking aid and never records a decision.
 
 ## [5.24.2] — 2026-09-27
 
