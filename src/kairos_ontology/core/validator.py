@@ -2299,6 +2299,7 @@ def run_validation(
                     "message": (
                         f"{c.system}.{c.table}.{c.column} ({c.data_type}) carries real "
                         f"signal with no canonical home [{c.reason}]"
+                        + (f"; {c.read_by_note()}" if c.read_by else "")
                     ),
                 }
                 for c in undecided_columns

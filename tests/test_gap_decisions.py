@@ -359,7 +359,7 @@ class TestDecisionSheet:
         write_decision_sheet(hub, build_decision_sheet(hub))
         assert apply_decision_sheet(hub) == {
             "names_applied": 0, "families_applied": 0, "columns_written": 0,
-            "skipped_already_decided": 0}
+            "skipped_already_decided": 0, "skipped_bound_by_binding": 0}
 
     def test_apply_without_a_sheet_is_an_explicit_error(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="Draft one first"):

@@ -3563,6 +3563,15 @@ def source_disposition_group() -> None:
     """
 
 
+def _echo_bound_by_binding(stats: dict) -> None:
+    """Say how many sheet decisions an EntityBinding had already made (DD-250)."""
+    if stats.get("skipped_bound_by_binding"):
+        click.echo(
+            f"   ↪ {stats['skipped_bound_by_binding']} left alone: an EntityBinding "
+            "already names them, so they are decided without a ledger row"
+        )
+
+
 def _ledger_progress(system: str, count: int) -> None:
     """One line per source system's ledger file as a batch writes it (#943)."""
     click.echo(f"   ✎ {system}: {count} decision(s) written to its ledger")
@@ -4545,6 +4554,7 @@ def draft_gap_decisions_cmd(
             f"✅ {verb} {stats['families_applied']} family + {stats['names_applied']} "
             f"name-level decision(s) to {stats['columns_written']} source column(s)"
         )
+        _echo_bound_by_binding(stats)
         return
 
     if apply_sheet:
@@ -4555,6 +4565,7 @@ def draft_gap_decisions_cmd(
             f"{stats['names_applied']} name-level decision(s) to "
             f"{stats['columns_written']} source column(s)"
         )
+        _echo_bound_by_binding(stats)
         return
 
     if not auto:
@@ -4632,6 +4643,19 @@ def draft_gap_decisions_cmd(
                 f"   🔎 {s['with_closure_candidates']} name(s) already have a same-named "
                 "property in the import closure (see 'closure_candidates' on each entry); "
                 "never drafted as registered-extension, and held by --accept-proposals"
+            )
+        if s.get("with_binding_read"):
+            # DD-250 (#1062): a dbt model an EntityBinding selects names the column, so
+            # it very likely reaches Silver already; proposed as bound, one confirmation.
+            click.echo(
+                f"   🔗 {s['with_binding_read']} name(s) are named by a dbt model an "
+                "EntityBinding selects (see 'read_by' on each entry); proposed as bound"
+            )
+        if s.get("with_lineage_unconfirmed"):
+            click.echo(
+                f"   🔗 {s['with_lineage_unconfirmed']} name(s) sit on a table a binding's "
+                "dbt model reads with select * (see 'read_by'); never drafted as deferred "
+                "or not-business-data, and held by --accept-proposals until confirmed"
             )
         if s["auto_disposition_conflicts"]:
             click.echo(

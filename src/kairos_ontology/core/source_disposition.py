@@ -62,7 +62,9 @@ DISPOSITIONS_RELPATH = analysis_paths.ANALYSIS_RELPATH / LEGACY_LEDGER_FILENAME
 #:   being junk or the blueprint being broken, so it is what an operator reaches for.
 #: * ``bound`` and ``registered-extension`` assert the table *is* being modelled. They
 #:   are when the gate matters most: an EntityBinding either maps a column or silently
-#:   leaves it behind, and by then the omission looks like a completed mapping.
+#:   leaves it behind, and by then the omission looks like a completed mapping. The
+#:   columns a binding *does* name are decided by that binding (DD-250), read from
+#:   ``integration/bindings/`` rather than from a row here.
 #:
 #: On one real hub, 40 table-grain ``deferred`` records retired 1,643 columns and the
 #: gate never fired once.
@@ -85,10 +87,13 @@ NON_GENERATING_DISPOSITIONS: frozenset[str] = frozenset(
 
 #: The closed set of answers. Each is a decision someone can defend in review.
 DISPOSITIONS: dict[str, str] = {
-    # Derived, never recorded: `audit_source_dispositions` reads it from
+    # Derived at table grain, never recorded: `audit_source_dispositions` reads it from
     # integration/bindings/ before it consults this ledger, so authoring the binding is
     # what states it. A table-grain row saying `bound` adds nothing the bindings
     # directory does not already say, and used to silence the table's columns (#881).
+    # At column grain (DD-250) a `source.relation` binding that names the column derives
+    # it the same way (`bound_columns.load_bound_columns`); a row is written only when a
+    # `source.dbtModel` chain's evidence is confirmed from the decision sheet, or by hand.
     "bound": "An EntityBinding maps this table to a canonical class.",
     # Grain matters here, and the two answers are different commands (#883):
     #   table-grain   the table is a concept the archetype catalog lacks -> register it
@@ -881,7 +886,9 @@ def _ledger_entry(decision: DispositionInput) -> dict[str, Any]:
             "integration/bindings/ before it looks here, so authoring the EntityBinding "
             "is what states it. Recording it as a table-grain row adds nothing and used "
             "to retire the table's columns from the DD-169 gate (#881). Author the "
-            "binding, or record why the table is not being bound."
+            "binding, or record why the table is not being bound. (A column-grain 'bound' "
+            "is accepted: it confirms a dbt model's evidence from the decision sheet, "
+            "DD-250; a column a binding names outright needs no row either.)"
         )
     if decision.disposition in _REQUIRES_RATIONALE and not decision.rationale.strip():
         raise ValueError(f"Disposition {decision.disposition!r} requires a rationale.")

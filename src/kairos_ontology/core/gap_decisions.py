@@ -55,6 +55,7 @@ from .alignment_report import (
     AlignmentReport,
     GapGroup,
     UnmappedColumn,
+    annotate_read_by,
     build_alignment_report,
     group_gaps_by_column,
 )
@@ -66,10 +67,10 @@ from .ai_provider import (
 )
 from .anchor_tables import load_excluded_tables
 from .bi_demand import load_bi_demand
+from .bound_columns import is_gap_column_decided, load_bound_columns
 from .source_disposition import (
     DISPOSITIONS,
     DispositionInput,
-    column_decision,
     load_dispositions,
     record_dispositions,
 )
@@ -124,6 +125,10 @@ _DISPOSITION_FRAMING: dict[str, str] = {
         "Real business data, in scope, not mapped yet. Stays visible as a known gap "
         "for a later modelling pass."
     ),
+    "bound": (
+        "Reaches Silver through an EntityBinding's dbt model, which names the column "
+        "(DD-250); the evidence lists the model."
+    ),
 }
 
 #: Hints that shape a *proposed* disposition for a recurring name. Advisory only:
@@ -157,6 +162,11 @@ class GapProposal:
     #: DD-248: closure properties whose name resembles this column, which the aligner
     #: was never shown. Present, the name is a mapping question before it is a gap.
     closure_candidates: list[dict[str, Any]] = field(default_factory=list)
+    #: DD-250: dbt models in an EntityBinding's ``ref()`` chain whose SQL names this
+    #: column (a ``bound`` proposal), or that read its table with ``select *`` without
+    #: naming it (``lineage_unconfirmed``: no proposal, and no rule may rule it out).
+    read_by: list[str] = field(default_factory=list)
+    lineage_unconfirmed: bool = False
 
     def to_entry(self) -> dict[str, Any]:
         return {
@@ -174,6 +184,8 @@ class GapProposal:
             **({"closure_candidates": self.closure_candidates}
                if self.closure_candidates else {}),
             **({"bi_demand": self.bi_demand} if self.bi_demand else {}),
+            **({"read_by": self.read_by} if self.read_by else {}),
+            **({"lineage_unconfirmed": True} if self.lineage_unconfirmed else {}),
             **(
                 {"role_groups": self.role_groups, "governing_pattern": ROLE_PATTERN}
                 if self.role_groups
@@ -218,6 +230,7 @@ def propose_for_group(
             + " "
             + proposal.reasoning
         )
+    _apply_binding_evidence(proposal, group)
     if not bi_demand:
         return proposal
     proposal.bi_demand = list(bi_demand)
@@ -237,6 +250,51 @@ def propose_for_group(
     else:
         proposal.reasoning = f"{note} {proposal.reasoning}"
     return proposal
+
+
+def _apply_binding_evidence(proposal: GapProposal, group: GapGroup) -> None:
+    """Carry what a ``source.dbtModel`` binding's chain says about the name (DD-250).
+
+    Named by a chain model in every occurrence: propose ``bound``, the reviewer's answer
+    is one confirmation rather than a decision from scratch. Read only through a
+    ``select *`` somewhere: the column may already reach Silver, so a rule proposal that
+    would take it out of Silver (``deferred``, ``not-business-data``) is withdrawn the way
+    BI demand withdraws it (#942), and the reasoning says what to check. Names some
+    occurrences do not touch at all propose nothing new: the evidence is per column, and a
+    name decided once fans out to every occurrence.
+    """
+    named = sorted({m for o in group.occurrences if o.read_by and not o.lineage_unconfirmed
+                    for m in o.read_by})
+    star = sorted({m for o in group.occurrences if o.lineage_unconfirmed for m in o.read_by})
+    if not named and not star:
+        return
+    proposal.read_by = named or star
+    all_named = named and all(o.read_by and not o.lineage_unconfirmed for o in group.occurrences)
+    if all_named:
+        proposal.proposed_disposition = "bound"
+        proposal.confidence = "high"
+        proposal.reasoning = (
+            f"A dbt model an EntityBinding selects names this column ({', '.join(named[:4])}), "
+            "so it already reaches Silver through that binding. Confirm as 'bound'; the "
+            "ledger row records the model as evidence. "
+            + proposal.reasoning
+        )
+        return
+    proposal.lineage_unconfirmed = True
+    note = (
+        f"A dbt model an EntityBinding selects reads this column's table with select * "
+        f"({', '.join(star[:4])}), so the column may already reach Silver. Confirm the "
+        "model's select list, or bind the column explicitly, before ruling it out."
+    )
+    if proposal.proposed_disposition in _WITHDRAWN_UNDER_BI_DEMAND:
+        proposal.reasoning = (
+            f"{note} The name rule would have drafted '{proposal.proposed_disposition}': "
+            f"{proposal.reasoning}"
+        )
+        proposal.proposed_disposition = ""
+        proposal.confidence = "low"
+    else:
+        proposal.reasoning = f"{note} {proposal.reasoning}"
 
 
 def _rule_proposal(group: GapGroup, domain: str = "") -> GapProposal:
@@ -409,6 +467,22 @@ def group_into_families(
                 **(
                     {"bi_demand_members": sorted(m.column for m in coherent if m.bi_demand)}
                     if any(m.bi_demand for m in coherent)
+                    else {}
+                ),
+                # DD-250: members a binding's dbt chain names, or reads through a
+                # select *, so the family is not ruled out while one already reaches Silver.
+                **(
+                    {"read_by_members": sorted(
+                        m.column for m in coherent if m.read_by and not m.lineage_unconfirmed
+                    )}
+                    if any(m.read_by and not m.lineage_unconfirmed for m in coherent)
+                    else {}
+                ),
+                **(
+                    {"lineage_unconfirmed_members": sorted(
+                        m.column for m in coherent if m.lineage_unconfirmed
+                    )}
+                    if any(m.lineage_unconfirmed for m in coherent)
                     else {}
                 ),
                 # DD-248: the closure properties any member resembles, so a family is
@@ -942,6 +1016,7 @@ def apply_auto_dispositions(
         Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
     )
     already = load_dispositions(Path(hub_root))
+    bound = load_bound_columns(Path(hub_root) / "integration" / "bindings", Path(hub_root))
     conflicts = find_disposition_conflicts(Path(hub_root), report=report)
     conflicted = {(c.system, c.table, c.column) for c in conflicts}
 
@@ -959,8 +1034,9 @@ def apply_auto_dispositions(
             key = (column.system, column.table, column.column)
             # The gate's own rule (#948): a table-grain `deferred` or `bound` does not
             # decide the column, so it must not stop the rule from deciding it either.
-            # Writing a column-grain entry never overwrites the table-grain one.
-            if column_decision(already, *key):
+            # Writing a column-grain entry never overwrites the table-grain one. A column
+            # a relation binding names is decided already (DD-250) and gets no row.
+            if is_gap_column_decided(already, bound, *key):
                 skipped += 1
                 continue
             if is_loader_row_identity_column(column.column):
@@ -1027,19 +1103,25 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
         if (column.system, column.table) in excluded_tables
     )
     already = load_dispositions(Path(hub_root))
+    bound = load_bound_columns(Path(hub_root) / "integration" / "bindings", Path(hub_root))
 
     # Only occurrences the DD-169 gate still counts undecided reach the sheet, decided by
     # the gate's own rule (#948): a table-grain `deferred` or `bound` no longer hides
-    # its columns here while the gate blocks on them.
+    # its columns here while the gate blocks on them, and a column a relation binding
+    # names is decided without a row (DD-250).
     # Split each name's occurrences by domain: a disposition is domain-scoped, so
     # `OrderNo` in booking and `OrderNo` in financial are two decisions, not one.
     per_domain: dict[tuple[str, str], GapGroup] = {}
     for g in group_gaps_by_column(report):
         for occurrence in g.occurrences:
-            if column_decision(already, occurrence.system, occurrence.table, occurrence.column):
+            if is_gap_column_decided(
+                already, bound, occurrence.system, occurrence.table, occurrence.column
+            ):
                 continue
             key = (occurrence.domain, g.column)
-            per_domain.setdefault(key, GapGroup(column=g.column)).occurrences.append(occurrence)
+            per_domain.setdefault(key, GapGroup(column=g.column)).occurrences.append(
+                annotate_read_by(occurrence, bound)
+            )
 
     demand = load_bi_demand(Path(hub_root))
     proposals = [
@@ -1068,6 +1150,12 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             # DD-248: names a same-named closure property exists for; never drafted as
             # registered-extension and held out of --accept-proposals.
             "with_closure_candidates": sum(1 for p in proposals if p.closure_candidates),
+            # DD-250: names a binding's dbt chain names (proposed bound) or reads through
+            # a select * (held out of --accept-proposals, never drafted deferred).
+            "with_binding_read": sum(
+                1 for p in proposals if p.read_by and not p.lineage_unconfirmed
+            ),
+            "with_lineage_unconfirmed": sum(1 for p in proposals if p.lineage_unconfirmed),
             "auto_disposition_conflicts": len(conflicts),
             "conflicts_already_recorded": sum(1 for c in conflicts if c.recorded_disposition),
             "schema_catalogue_tables_excluded": len(excluded_tables),
@@ -1139,6 +1227,13 @@ def loose_evidence_fingerprint(entry: dict[str, Any]) -> str:
         {
             "closure_candidates": _candidate_uris(entry),
             "bi_demand": sorted(str(d) for d in entry.get("bi_demand") or []),
+            # DD-250, only when present: adding an always-present key would invalidate
+            # every carried model answer on every hub at upgrade (#1056).
+            **(
+                {"read_by": sorted(str(m) for m in entry.get("read_by") or [])}
+                if entry.get("read_by")
+                else {}
+            ),
             "suggested_properties": sorted(
                 [
                     str(p.get("name") or ""),
@@ -1592,6 +1687,9 @@ def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> di
         if entry.get("bi_demand") or entry.get("bi_demand_members"):
             counts["held-for-bi-demand"] = counts.get("held-for-bi-demand", 0) + 1
             continue
+        if entry.get("lineage_unconfirmed") or entry.get("lineage_unconfirmed_members"):
+            counts["held-for-binding-read"] = counts.get("held-for-binding-read", 0) + 1
+            continue
         if entry.get("closure_candidates") or entry.get("members_with_closure_candidates"):
             counts["held-for-closure-candidate"] = counts.get("held-for-closure-candidate", 0) + 1
             continue
@@ -1744,8 +1842,10 @@ def apply_decision_sheet(
         Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
     )
     already = load_dispositions(Path(hub_root))
+    bound = load_bound_columns(Path(hub_root) / "integration" / "bindings", Path(hub_root))
     applied = 0
     skipped = 0
+    skipped_bound = 0
     pending: list[DispositionInput] = []
     for group in group_gaps_by_column(report):
         for occurrence in group.occurrences:
@@ -1754,13 +1854,21 @@ def apply_decision_sheet(
                 continue
             # The sheet lists only what the gate counts undecided (#948), so applying it
             # writes only those: an occurrence already decided, per column or by a
-            # cascading table-grain entry, keeps the decision it has.
-            if column_decision(already, occurrence.system, occurrence.table, occurrence.column):
+            # cascading table-grain entry, keeps the decision it has; one a relation
+            # binding names needs no row (DD-250).
+            decided = is_gap_column_decided(
+                already, bound, occurrence.system, occurrence.table, occurrence.column
+            )
+            if decided == "binding":
+                skipped_bound += 1
+                continue
+            if decided:
                 skipped += 1
                 continue
             applied += 1
             if dry_run:
                 continue
+            read_by = bound.read_by_models(occurrence.system, occurrence.table, occurrence.column)
             pending.append(
                 DispositionInput(
                     system=occurrence.system,
@@ -1778,7 +1886,12 @@ def apply_decision_sheet(
                         if part
                     ),
                     decided_by=decided_by,
-                    evidence=(f"gap-reason:{occurrence.reason}", f"occurrences:{group.count}"),
+                    evidence=(
+                        f"gap-reason:{occurrence.reason}",
+                        f"occurrences:{group.count}",
+                        # DD-250: a `bound` written from the sheet says which model read it.
+                        *(f"read-by:{model}" for model in sorted(read_by)),
+                    ),
                     proposed_property=drafted.get((occurrence.domain, group.column)),
                 )
             )
@@ -1791,4 +1904,5 @@ def apply_decision_sheet(
         "families_applied": families_applied,
         "columns_written": applied,
         "skipped_already_decided": skipped,
+        "skipped_bound_by_binding": skipped_bound,
     }
