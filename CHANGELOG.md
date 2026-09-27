@@ -5,8 +5,20 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.3** is the latest GA release (2026-09-27), superseding
-> **5.24.2** (2026-09-27). A patch on the deferred backlog's sibling ranking:
+> **Release status.** **5.24.4** is the latest GA release (2026-09-27), superseding
+> **5.24.3** (2026-09-27). A one-fix patch:
+>
+> - The bronze vocabulary scan no longer drops code-list columns (#1080). Every column
+>   `import-source` marked `suggestedEnum` was skipped: 117 of 359 on a client hub.
+>
+> **What to expect on the first run after upgrading from 5.24.3.**
+>
+> | you will see | why |
+> |---|---|
+> | **`generate-bindings` types code-list columns** from the vocabulary instead of falling back to `string` | #1080 |
+> | **A few more sibling candidates** where a bound field or a deferred column is a code-list column | #1080. Its casing was missing, so detection could not pair it |
+>
+> **Upgrading from 5.24.2?** 5.24.3's first-run notes still apply on top of the above:
 >
 > - Sibling detection now sees tables bound through dbt models (#1077). It reads ledger
 >   `bound` rows and the columns a dbtModel chain names, not only relation-binding fields.
@@ -119,6 +131,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.4] — 2026-09-27
+
+### Fixed
+- **Code-list columns are no longer dropped when the bronze vocabulary is scanned.**
+  `load_source_column_types` found a column only when `kairos-bronze:sourceTable` was its last
+  triple. `import-source` writes `kairos-bronze:suggestedEnum` after it on code-list columns,
+  so every such column was skipped: 117 of 359 on a client hub, among them the package and
+  pack-type codes. `generate-bindings` lost their type hints, and the deferred backlog's
+  sibling detection (#1077) missed their casing and so their siblings.
 
 ## [5.24.3] — 2026-09-27
 
