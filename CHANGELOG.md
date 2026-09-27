@@ -5,8 +5,19 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.8** is the latest GA release (2026-09-27), superseding
-> **5.24.7** (2026-09-27). A one-fix patch:
+> **Release status.** **5.24.9** is the latest GA release (2026-09-27), superseding
+> **5.24.8** (2026-09-27). A one-fix patch:
+>
+> - A product that reads a domain as shared no longer fails on that domain's bridge to a
+>   fact it does not have (#1092). The bridge is left out there, reported under
+>   `unresolved_bridges`, with the measures, relationship choices and practice exceptions
+>   that name it.
+>
+> **What to expect on the first run after upgrading from 5.24.8.** A consuming product
+> that failed with `gold.bridge-endpoint-not-materialized` now emits, with a
+> `gold.unresolved-bridge` warning naming the omitted bridge.
+>
+> **Upgrading from 5.24.7?** 5.24.8's first-run notes still apply on top of the above:
 >
 > - A Gold bridge whose endpoint is also a Silver relationship emits that relationship once
 >   (#1093). The copy used to be written inactive, reported as a role-playing finding naming
@@ -178,6 +189,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.9] — 2026-09-27
+
+### Fixed
+- **A shared domain that owns a bridge can be read by a product without the bridge's other
+  endpoint.** A domain in `gold.shared_domains` contributed every table to each product that
+  read it, including a bridge to a fact only the building product has, so the consuming
+  product failed with `gold.bridge-endpoint-not-materialized`. The only way out was to stop
+  sharing the domain and lose its conformed dimensions. In a product that reads the domain
+  as shared, such a bridge is now left out and reported under `unresolved_bridges`, together
+  with the measures that read it and the authored choices and practice exceptions that name
+  it. The product that builds the domain still fails closed on a missing endpoint.
 
 ## [5.24.8] — 2026-09-27
 
