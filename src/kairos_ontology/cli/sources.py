@@ -1312,6 +1312,12 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
     never as a plain row count. The cross-domain section (#489) names bound tables whose
     affinity analysis assigned them a secondary domain nothing binds them to -- one source
     relation may carry several EntityBindings, each with its own grain and target domain.
+
+    Tables are keyed by system and table, so two systems' same-named tables are two
+    tables (#1065). A source.dbtModel binding binds every table its model chain reads, and
+    a column the chain's SQL names counts as referenced (DD-250). When a chain reads a
+    table with 'select *', its other columns are listed as lineage-unconfirmed, not as
+    orphans.
     """
     from ..core.hub_utils import find_hub_root
     from ..core.column_coverage_audit import run_column_coverage_audit
@@ -1334,6 +1340,7 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
         sources_dir=sources_path,
         bindings_dir=bindings_path,
         analysis_dir=analysis_path if analysis_path.is_dir() else None,
+        hub_root=base,
     )
 
     if out_format == "json":
@@ -1346,7 +1353,7 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
         click.echo(f"⚠️  {len(report.unbound_tables)} source table(s) with zero bindings:")
         for finding in report.unbound_tables:
             click.echo(
-                f"   {finding.table} ({finding.column_count} columns, "
+                f"   {finding.system}.{finding.table} ({finding.column_count} columns, "
                 f"rows={finding.volume_label()})"
             )
         click.echo()
@@ -1360,7 +1367,8 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
             bound_note = ", ".join(finding.bound_domains) or "(none)"
             entity = f", looks like: {finding.likely_entity}" if finding.likely_entity else ""
             click.echo(
-                f"   {finding.table} [bound to: {bound_note}] → {finding.candidate_domain} "
+                f"   {finding.system}.{finding.table} [bound to: {bound_note}] → "
+                f"{finding.candidate_domain} "
                 f"({finding.unmapped_column_count} unmapped column(s){entity})"
             )
         click.echo()
@@ -1368,17 +1376,31 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
     if report.orphan_columns:
         click.echo(f"⚠️  {len(report.orphan_columns)} unmapped column(s) with real data:")
         for finding in report.orphan_columns:
-            bindings_note = ", ".join(finding.binding_names)
+            bindings_note = ", ".join(finding.binding_names) or (
+                "dbt model(s) " + ", ".join(finding.read_by_models)
+            )
             # row_count may be absent (#422: capped flatfile reads omit it).
             row_total = "?" if finding.row_count is None else finding.row_count
             click.echo(
-                f"   {finding.table}.{finding.column} "
+                f"   {finding.system}.{finding.table}.{finding.column} "
                 f"(distinct={finding.distinct_count}/{row_total}, "
                 f"type={finding.data_type}) sample={finding.sample_value!r} "
                 f"[bound by: {bindings_note}]"
             )
     else:
         click.echo("✅ No unmapped columns with real data found.")
+
+    if report.lineage_unconfirmed:
+        click.echo()
+        click.echo(
+            f"ℹ️  {len(report.lineage_unconfirmed)} table(s) read with 'select *' by a dbt "
+            "model chain; their other columns are neither proven bound nor orphaned (DD-250):"
+        )
+        for item in report.lineage_unconfirmed:
+            click.echo(
+                f"   {item.system}.{item.table} ({item.column_count} column(s), "
+                f"read by: {', '.join(item.models)})"
+            )
 
     for note in report.notes:
         click.echo(f"   ⚠ {note}")

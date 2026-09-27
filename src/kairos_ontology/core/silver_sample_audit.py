@@ -52,6 +52,11 @@ class SourceColumnSample:
     #: full relation. ``None`` on legacy pre-v1.2 evidence, which must be treated as
     #: untrusted rather than assumed exhaustive.
     distinct_scope: str | None = None
+    #: The ``integration/sources/<system>/`` directory the table's vocabulary lives in.
+    #: That name is the hub-wide system key -- a binding's ``source.relation`` prefix and
+    #: the disposition ledger use it -- while ``system`` is the vocabulary's own label,
+    #: which may differ in case or wording (#1065). Empty for a file at the top level.
+    system_dir: str = ""
 
 
 @dataclass
@@ -142,8 +147,15 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
         return {}
 
     graph = Graph()
+    table_dirs: dict[str, str] = {}
     for ttl in sorted(sources_dir.rglob("*.ttl")):
-        graph.parse(ttl, format="turtle")
+        file_graph = Graph()
+        file_graph.parse(ttl, format="turtle")
+        parts = ttl.relative_to(sources_dir).parts
+        directory = parts[0] if len(parts) > 1 else ""
+        for tbl_uri in file_graph.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
+            table_dirs.setdefault(str(tbl_uri), directory)
+        graph += file_graph
 
     table_names: dict[str, str] = {}
     table_systems: dict[str, str] = {}
@@ -215,6 +227,7 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
             row_count=table_row_counts.get(table_key),
             rows_sampled=table_rows_sampled.get(table_key),
             distinct_scope=table_distinct_scope.get(table_key),
+            system_dir=table_dirs.get(table_key, ""),
         )
     return columns
 
