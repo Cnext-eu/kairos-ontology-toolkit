@@ -5,8 +5,18 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.7** is the latest GA release (2026-09-27), superseding
-> **5.24.6** (2026-09-27). A one-fix patch:
+> **Release status.** **5.24.8** is the latest GA release (2026-09-27), superseding
+> **5.24.7** (2026-09-27). A one-fix patch:
+>
+> - A Gold bridge whose endpoint is also a Silver relationship emits that relationship once
+>   (#1093). The copy used to be written inactive, reported as a role-playing finding naming
+>   one column twice, and it left the bridge's cross-filter direction undecided.
+>
+> **What to expect on the first run after upgrading from 5.24.7.** A product with such a
+> bridge loses the inactive duplicate relationship, and its bridge may now get a default
+> both-directions edge (or be listed as undecided until you author one).
+>
+> **Upgrading from 5.24.6?** 5.24.7's first-run notes still apply on top of the above:
 >
 > - A Gold measure that activates an inactive relationship with `USERELATIONSHIP` compiles
 >   (#1089). It always failed `measure.ambiguous-home-table`, because the relationship's far
@@ -168,6 +178,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.8] — 2026-09-27
+
+### Fixed
+- **A bridge endpoint that is also a Silver relationship is emitted once.** A bridge whose
+  endpoint binding named a column its own EntityBinding already relates (the usual case: a
+  party-role link table relating both the consignment and the party) got that relationship
+  twice, once from Silver and once from the bridge. Power BI keeps one relationship per
+  pair active, so the copy was written `isActive: false`, reported as
+  `gold.role-playing-dimension` naming the same column as both the active and the inactive
+  role, and the bridge's cross-filter direction was never decided. The Silver edge is kept,
+  so existing relationship identities do not change.
 
 ## [5.24.7] — 2026-09-27
 
