@@ -5,17 +5,31 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.1** is the latest GA release (2026-09-27), superseding
-> **5.24.0** (2026-09-27). A patch on the DD-169 gap gate (#1062): the gate reads the hub's
-> bindings, and a column recorded `deferred` stays a visible backlog:
+> **Release status.** **5.24.2** is the latest GA release (2026-09-27), superseding
+> **5.24.1** (2026-09-27). A patch on value objects and the deferred backlog:
 >
-> - A column a `source.relation` binding names is decided by the binding, with no ledger
->   row (DD-250); a `source.dbtModel` chain that names it is offered as `bound` on the sheet.
-> - `next` raises `review-deferred-columns`, `alignment-report` shows a per-domain deferred
->   backlog, `draft-gap-decisions --include-deferred` re-lists deferred names, and every new
->   ledger row carries `recorded_on` (DD-251).
+> - A binding can map a single-valued value object's scalars onto its parent with `via`
+>   (DD-252, #811). The bound must be declared in OWL.
+> - The deferred backlog ranks sibling columns of bound fields first (#1068). A binding
+>   that maps a deferred column now retires it (#1069).
+> - `audit-column-coverage` keys tables by system and reads dbtModel bindings (#1065).
+>   `fit-report` counts relationships as populated (#1070).
 >
-> **What to expect on the first run after upgrading from 5.24.0.**
+> **What to expect on the first run after upgrading from 5.24.1.**
+>
+> | you will see | why |
+> |---|---|
+> | **`next` JSON `schema_version` is 10**, and its deferred line counts columns "completing a bound field" | #1068. The observation gains `with_siblings` and `sibling_tables` |
+> | **`alignment-report` counts fewer deferred columns**, and gains "Sibling candidates" and "Deferred rows a binding has retired" sections | #1069, #1068. A deferred column a binding maps is bound, and its ledger row is listed as stale |
+> | **`audit-column-coverage` JSON `schema_version` is 2**, text prints `system.table`, and tables read by a dbtModel chain are no longer "unbound" | #1065. `select *` reads are listed as lineage-unconfirmed, not as orphans |
+> | **`fit-report` lists fewer unpopulated properties** and splits the rest into datatype and object | #1070, DD-252. A relationship or a `via` field populates its object property |
+> | **`compile --check` rejecting an object property in `fields:`** now points at `via` | DD-252. Map a value object's scalar with `via`; the bound must be in OWL (`binding.value-object-not-single-valued` prints the restriction) |
+> | **`update` refreshes the design-mapping, design-domain and design-source skills** | DD-252, #1068 |
+>
+> A hub that authors no `via` field gets byte-identical dbt output.
+>
+> **Upgrading from 5.24.0 or earlier?** 5.24.1's first-run notes still apply on top of the
+> above:
 >
 > | you will see | why |
 > |---|---|
@@ -98,6 +112,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.2] — 2026-09-27
+
+### Added
+- **The deferred backlog puts sibling columns of bound fields first.** A deferred column
+  often completes a field its table already binds: the unit of a bound weight
+  (`JZ_WeightUQ` next to `JZ_Weight`), the currency of a bound amount, the description of
+  a bound code, or a measure, amount or date next to a bound one. These are the cheapest next
+  step into Silver, and until now a reviewer had to find them by hand among thousands of rows.
+  Now each backlog column is related to the `fields:` a `source.relation` binding maps on the
+  same table, and:
+  - the backlog ranks by BI demand, then puts empty or constant columns last (from the
+    DD-189 profile), then siblings first, then table size;
+  - `alignment-report` opens its "Deferred backlog" section with "Sibling candidates": the
+    column, the bound field it completes, the kind, and the closure property the alignment
+    suggests;
+  - `kairos-ontology next` says how many siblings there are and which tables hold them, in
+    `review-deferred-columns`. JSON output moves to `schema_version: 10`;
+  - `draft-gap-decisions --include-deferred` marks `siblings` on a re-listed name, and
+    `sibling_members` on a family.
+
+  A sibling is a suggestion for the binding author, never a decision. The sheet does not
+  propose `bound` for it, because only a binding that maps the column can state that. The
+  rules are narrow, because name matching was measured at 62% precision on real data. A
+  unit, currency or description must pair by exact stem. A currency with no stem pairs only
+  when the table binds exactly one amount. The profile vetoes a shape mismatch, so a
+  `code-like` "amount" such as `JR_A9_CostVATClass` is not paired. A date next to a bound
+  date is a "sibling date", not a claimed temporal-quartet member.
+- **A binding can map a value object's scalars onto its parent with `via` (DD-252).**
+  Reference models put much of their meaning in object properties whose range is a value
+  object, such as `cargo:hasGrossWeight` to `Weight{weightValue, weightUnit}`. `fields:`
+  took scalars only. So the choice was a companion binding plus a relationship, which made
+  one Silver table per value object, or a `purpose: carried` technical field with no
+  ontology property behind it. Now a field can name the object property that reaches the
+  value object:
+
+  ```yaml
+  fields:
+    - property: cargo:weightValue
+      via: cargo:hasGrossWeight
+      expression: GROSSWEIGHT
+  ```
+
+  The value lands on the parent's table as `gross_weight_value`. The column is named from
+  both hops, with the shared word written once. Its provenance records both the scalar
+  property and the `via`. Two value objects of one class, such as gross and net weight,
+  give two columns. `fit-report` counts the `via` object property as populated.
+
+  `via` must be single-valued in OWL: `owl:FunctionalProperty`, or a max-1 restriction on
+  the class or an ancestor (DD-241). Most accelerator value objects declare no bound, so
+  `binding.value-object-not-single-valued` blocks the field and prints the restriction to
+  add to the hub's own class. The binding never asserts the bound. A class governed by a
+  Silver contract, and a value object inside a value object, are refused with their own
+  diagnostics for now. A hub that authors no `via` field gets byte-identical output.
+
+### Fixed
+- **`audit-column-coverage` keys tables by system and table, and reads dbtModel bindings.**
+  The audit keyed every binding by table name alone. Two systems with a table of the same
+  name shared one bucket, so a binding on one system's `customers` hid the other's as
+  bound and reported its columns as orphans of the wrong binding. A `source.dbtModel`
+  binding was attached to a table named `""`, and every table its model chain reads was
+  reported unbound, with all its columns as orphans. Now:
+  - every finding is keyed by `(system, table)`, where the system is the
+    `integration/sources/<system>/` directory, the same name a binding's `source.relation`
+    carries;
+  - a table a dbtModel chain reads is bound, and a column the chain's SQL names is
+    referenced (DD-250);
+  - when a chain reads a table with `select *`, its other columns are listed in a new
+    lineage-unconfirmed section instead of as orphans.
+
+  JSON output moves to `schema_version: 2`. Every finding carries `system`, orphans carry
+  `read_by_models`, and a `lineage_unconfirmed` list is added. Text output prints
+  `system.table`. A table bound only through a chain is not checked for cross-domain
+  candidates, and a note says so.
+- **A deferred column that a binding now maps leaves the deferred backlog.** DD-251 says a
+  binding that names a deferred column retires it, but the backlog read the ledger alone. A
+  column deferred, then modelled and bound, stayed "deferred" in `next`, in the
+  `alignment-report` backlog, and on `draft-gap-decisions --include-deferred`, so the
+  backlog could only grow. Now a column-grain `deferred` row gives way to a `source.relation`
+  binding that names the column. `alignment-report` counts the column as bound and lists the
+  stale ledger row in a new "Deferred rows a binding has retired" section. The sheet no
+  longer re-lists it. Only `deferred` gives way: a ruled-out column a binding still names
+  keeps its ledger decision. A `source.dbtModel` chain that reads the column is still
+  evidence only (DD-250), so the column stays in the backlog.
+- **`fit-report` counts an object property a binding realizes through `relationships:`.**
+  It read only a binding's `fields:`, and an object property can never be there
+  (`binding.object-property-in-fields`). So every relationship a binding realized was still
+  reported unpopulated. A hub that bound a value object in its own binding and linked it,
+  as the compiler advises, saw no change in the report. Such a property is now listed as
+  populated, with a source like `relationship -> party:Address on address_id`. In text
+  output, the unpopulated count splits datatype from object properties. Each unpopulated
+  object property is marked with how to reach it: bind the range class and add a
+  `relationships:` entry.
+
+### Decisions
+- **DD-252:** a single-valued value object's scalars are fields of its parent, named
+  through `via`.
 
 ## [5.24.1] — 2026-09-27
 
