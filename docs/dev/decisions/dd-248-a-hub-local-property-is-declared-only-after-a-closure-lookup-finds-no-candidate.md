@@ -61,10 +61,13 @@ shortlist; and the DD-244 disclosure line never counted the classes the shortlis
 3. **The gap sheet never drafts an extension over a candidate.** The rule proposes
    nothing and names the candidates; the suggest prompts render them through
    `prompt_context.render_closure_candidates` and forbid `registered-extension` unless
-   the reasoning says why the candidate does not fit; `--accept-proposals` holds an entry
-   with candidates whose proposal is `registered-extension` or empty
-   (`held-for-closure-candidate`). The `deferred` fallback would bury a one-line mapping
-   answer, so it is withheld too.
+   the reasoning says why the candidate does not fit; `--accept-proposals` holds every
+   undecided entry with candidates (`held-for-closure-candidate`), whatever its score and
+   whatever the rule or the model proposed (#1057). A weak candidate still holds: ruling
+   one out is a reviewer's judgement, and the candidate stays visible on the entry for
+   that reviewer. The `deferred` fallback would bury a one-line mapping answer, and a
+   model `deferred` or `blueprint-gap` over a candidate does the same, so no proposal
+   escapes the hold. A human decision on the entry is never overridden.
 4. **A targeted second pass, not a wider pool.** For a table whose custom columns have
    candidates, `propose-alignment` makes one further call with the anchor pinned, only
    those columns, and only the candidate classes with the candidate properties listed
@@ -90,7 +93,9 @@ shortlist; and the DD-244 disclosure line never counted the classes the shortlis
   columns are `closure-candidate-not-shown`; the retry mapped 93 of the 207 columns
   that had a candidate (45 %); `--accept-proposals` held 13 names for a human; after
   `--suggest` the model still proposed `registered-extension` for 8 of the 17 candidate
-  names, so the hold, not the prompt wording, is the guard that matters.
+  names, so the hold, not the prompt wording, is the guard that matters. That is why the
+  hold was widened after measurement (#1057): the first version let a non-extension
+  proposal through, and a guard the model can talk its way past is prompt wording again.
 - Existing hubs gain advisory warnings for near-duplicate local properties (about 20 on
   the measured hub) and no namespace errors: every local property there is already in the
   client namespace.

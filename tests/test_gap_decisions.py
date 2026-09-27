@@ -1005,8 +1005,12 @@ class _CapturingClient:
                 outer.prompts.append(kwargs["messages"][0]["content"])
                 schema = kwargs["response_format"]["json_schema"]["schema"]
                 outer.schemas.append(schema)
-                keys = schema["properties"]["columns"]["required"]
-                payload = {"columns": {key: dict(outer._answer) for key in keys}}
+                [top] = schema["properties"]  # "columns" or "families"
+                keys = schema["properties"][top]["required"]
+                answer = dict(outer._answer)
+                if top == "families":
+                    answer.setdefault("coherent", True)
+                payload = {top: {key: dict(answer) for key in keys}}
 
                 class _Message:
                     content = json.dumps(payload)
@@ -1124,3 +1128,165 @@ class TestSuggestLooseDispositions:
 
         assert sheet["decisions"][0]["proposed_disposition"] == ""
         assert sheet["decisions"][0]["reasoning"] == "an opaque legacy code"
+
+
+# ---------------------------------------------------------------------------
+# A --suggest answer survives a rebuild while its evidence is unchanged (#1056)
+# ---------------------------------------------------------------------------
+
+_CANDIDATE = {
+    "uri": "urn:bsp#loner", "name": "loner", "class": "Party", "score": 1.0, "match": "exact",
+}
+
+
+def _write_model_hub(tmp_path, *, loner_candidates=None):
+    analysis = tmp_path / "integration" / "sources" / "_analysis"
+    analysis.mkdir(parents=True, exist_ok=True)
+    cols = [{"column": f"pickup_{s}", "data_type": "varchar(max)"}
+            for s in ("city", "country", "postcode", "street")]
+    loner = {"column": "loner", "data_type": "int"}
+    if loner_candidates:
+        loner["closure_candidates"] = loner_candidates
+    cols.append(loner)
+    (analysis / "party-alignment.yaml").write_text(
+        yaml.safe_dump({"domain": "party", "tables": [
+            {"system": "qargo", "table": "stops", "ref_class": "C",
+             "columns": [], "custom_columns": cols}]}),
+        encoding="utf-8")
+    return tmp_path
+
+
+def _suggested_sheet(hub):
+    sheet = build_decision_sheet(hub)
+    client = _CapturingClient(
+        answer={"proposed_disposition": "deferred", "reasoning": "the model's reading"}
+    )
+    suggest_family_dispositions(sheet, client=client, model="m")
+    suggest_loose_dispositions(sheet, client=client, model="m")
+    return sheet
+
+
+def _saved(path):
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _loner(sheet):
+    return next(e for e in sheet["decisions"] if e["column"] == "loner")
+
+
+def _pickup(sheet):
+    return next(f for f in sheet["families"] if f["family"] == "pickup")
+
+
+class TestModelProposalsSurviveARedraft:
+    def test_suggest_stamps_provenance_and_evidence(self, tmp_path):
+        from kairos_ontology.core.gap_decisions import (
+            family_evidence_fingerprint,
+            loose_evidence_fingerprint,
+        )
+
+        sheet = _suggested_sheet(_write_model_hub(tmp_path))
+
+        assert _loner(sheet)["proposed_by"] == "model"
+        assert _loner(sheet)["evidence"] == loose_evidence_fingerprint(_loner(sheet))
+        assert _pickup(sheet)["proposed_by"] == "model"
+        assert _pickup(sheet)["evidence"] == family_evidence_fingerprint(_pickup(sheet))
+        assert len(_loner(sheet)["evidence"]) == 12
+
+    def test_a_model_proposal_and_reasoning_survive_a_rebuild(self, tmp_path):
+        hub = _write_model_hub(tmp_path)
+        write_decision_sheet(hub, _suggested_sheet(hub))
+
+        saved = _saved(write_decision_sheet(hub, build_decision_sheet(hub)))
+
+        loner = _loner(saved)
+        assert loner["proposed_disposition"] == "deferred"
+        assert loner["reasoning"] == "the model's reading"
+        assert loner["proposed_by"] == "model"
+        assert loner["decision"] == ""
+
+    def test_a_family_keeps_its_coherent_verdict_and_proposal(self, tmp_path):
+        hub = _write_model_hub(tmp_path)
+        sheet = _suggested_sheet(hub)
+        _pickup(sheet)["coherent"] = False
+        write_decision_sheet(hub, sheet)
+
+        saved = _saved(write_decision_sheet(hub, build_decision_sheet(hub)))
+
+        pickup = _pickup(saved)
+        assert pickup["coherent"] is False
+        assert pickup["proposed_disposition"] == "deferred"
+        assert pickup["reasoning"] == "the model's reading"
+
+    def test_a_new_closure_candidate_invalidates_the_model_answer(self, tmp_path):
+        """The model answered without the candidate; the rule's draft must stand."""
+        hub = _write_model_hub(tmp_path)
+        write_decision_sheet(hub, _suggested_sheet(hub))
+        _write_model_hub(tmp_path, loner_candidates=[_CANDIDATE])
+
+        saved = _saved(write_decision_sheet(hub, build_decision_sheet(hub)))
+
+        loner = _loner(saved)
+        assert "proposed_by" not in loner
+        assert loner["proposed_disposition"] == ""
+        assert "import closure already has a property" in loner["reasoning"]
+
+    def test_decided_by_travels_with_the_decision(self, tmp_path):
+        hub = _write_model_hub(tmp_path)
+        sheet = build_decision_sheet(hub)
+        _loner(sheet).update(decision="deferred", decided_by="autopilot")
+        write_decision_sheet(hub, sheet)
+
+        saved = _saved(write_decision_sheet(hub, build_decision_sheet(hub)))
+
+        assert _loner(saved)["decision"] == "deferred"
+        assert _loner(saved)["decided_by"] == "autopilot"
+
+    def test_a_rule_only_entry_is_redrawn_not_carried(self, tmp_path):
+        hub = _write_model_hub(tmp_path)
+        sheet = build_decision_sheet(hub)
+        rule_reasoning = _loner(sheet)["reasoning"]
+        _loner(sheet).update(proposed_disposition="blueprint-gap", reasoning="stale draft")
+        write_decision_sheet(hub, sheet)
+
+        saved = _saved(write_decision_sheet(hub, build_decision_sheet(hub)))
+
+        assert _loner(saved)["reasoning"] == rule_reasoning
+        assert _loner(saved)["proposed_disposition"] != "blueprint-gap"
+
+    def test_a_model_entry_with_a_foreign_fingerprint_is_not_carried(self, tmp_path):
+        hub = _write_model_hub(tmp_path)
+        sheet = _suggested_sheet(hub)
+        _loner(sheet)["evidence"] = "000000000000"
+        write_decision_sheet(hub, sheet)
+
+        saved = _saved(write_decision_sheet(hub, build_decision_sheet(hub)))
+
+        assert "proposed_by" not in _loner(saved)
+
+    def test_merge_writes_nothing(self, tmp_path):
+        from kairos_ontology.core.gap_decisions import merge_decision_sheet
+
+        hub = _write_model_hub(tmp_path)
+        path = write_decision_sheet(hub, _suggested_sheet(hub))
+        before = path.read_bytes()
+
+        merged = merge_decision_sheet(hub, build_decision_sheet(hub))
+
+        assert _loner(merged)["proposed_by"] == "model"
+        assert path.read_bytes() == before
+
+    def test_a_carried_answer_is_not_asked_again(self, tmp_path):
+        """Merged before --suggest, a still-current answer costs no second call."""
+        from kairos_ontology.core.gap_decisions import merge_decision_sheet
+
+        hub = _write_model_hub(tmp_path)
+        write_decision_sheet(hub, _suggested_sheet(hub))
+        client = _CapturingClient()
+
+        stats = suggest_loose_dispositions(
+            merge_decision_sheet(hub, build_decision_sheet(hub)), client=client, model="m"
+        )
+
+        assert stats["names_described"] == 0
+        assert client.prompts == []

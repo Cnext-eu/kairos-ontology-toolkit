@@ -686,8 +686,8 @@ kairos-ontology draft-gap-decisions [OPTIONS]
 | `--auto` |  | Record the rule-decidable dispositions (operational / vendor-slot columns). |
 | `--apply` |  | Apply every filled-in 'decision' in the sheet to the disposition ledger. |
 | `--min-occurrences` | `1` | Only draft column names appearing in at least this many tables (default: 1). |
-| `--suggest` |  | One model call to characterise each family: names the concept, drafts a disposition, and flags families whose members do not belong together. |
-| `--accept-proposals` |  | Fill every empty 'decision' from its drafted proposal (empty ones default to 'deferred'), then apply. Recorded as decided_by=autopilot, never as a human decision. Use only when you have read the drafts and accept them. |
+| `--suggest` |  | Model calls to characterise each family and single name: names the concept, drafts a disposition, and flags families whose members do not belong together. Proposals are stamped proposed_by=model and survive a redraft while their evidence is unchanged; with --dry-run they are printed, not written. Not combinable with --auto or --accept-proposals: run --suggest, read the sheet, then accept. |
+| `--accept-proposals` |  | Fill every empty 'decision' from its drafted proposal (empty ones default to 'deferred'), then apply. Recorded as decided_by=autopilot, never as a human decision. Entries a Power BI model uses or with closure candidates are held for a human. With --dry-run nothing is written. Use only when you have read the drafts and accept them. |
 | `--dry-run` |  | Show what would change. |
 
 

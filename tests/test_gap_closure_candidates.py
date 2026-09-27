@@ -215,18 +215,56 @@ class TestAcceptProposalsHold:
             ],
         }
 
-    def test_an_extension_over_a_candidate_is_held_and_the_rest_accepted(self):
+    def test_any_proposal_over_a_candidate_is_held_and_the_rest_accepted(self):
+        """#1057: a model `deferred` over a candidate buries the mapping answer too."""
         sheet = self._sheet()
 
         counts = accept_proposals(sheet)
 
-        assert counts == {
-            "held-for-closure-candidate": 3, "deferred": 1, "registered-extension": 1,
-        }
+        assert counts == {"held-for-closure-candidate": 4, "registered-extension": 1}
         assert sheet["families"][0]["decision"] == ""
         assert [e["decision"] for e in sheet["decisions"]] == [
-            "", "", "deferred", "registered-extension",
+            "", "", "", "registered-extension",
         ]
+
+    def test_a_weak_candidate_still_holds(self):
+        weak = {**TRADING, "score": 0.42}
+        sheet = {"families": [], "decisions": [
+            {"column": "X", "domain": "party", "decision": "",
+             "proposed_disposition": "registered-extension", "closure_candidates": [weak]},
+        ]}
+
+        assert accept_proposals(sheet) == {"held-for-closure-candidate": 1}
+        assert sheet["decisions"][0]["decision"] == ""
+
+    def test_a_model_deferred_or_blueprint_gap_over_a_candidate_holds(self):
+        sheet = {"families": [], "decisions": [
+            {"column": c, "domain": "party", "decision": "", "proposed_by": "model",
+             "proposed_disposition": d, "closure_candidates": [LEGAL]}
+            for c, d in (("X", "deferred"), ("Y", "blueprint-gap"))
+        ]}
+
+        assert accept_proposals(sheet) == {"held-for-closure-candidate": 2}
+
+    def test_a_family_with_candidate_members_holds(self):
+        sheet = {"decisions": [], "families": [
+            {"family": "pickup", "domain": "party", "decision": "",
+             "proposed_disposition": "deferred",
+             "members_with_closure_candidates": ["pickup_name"]},
+        ]}
+
+        assert accept_proposals(sheet) == {"held-for-closure-candidate": 1}
+
+    def test_bi_demand_still_takes_precedence_and_a_human_decision_stands(self):
+        sheet = {"families": [], "decisions": [
+            {"column": "X", "domain": "party", "decision": "", "bi_demand": ["m: t.X"],
+             "closure_candidates": [LEGAL]},
+            {"column": "Y", "domain": "party", "decision": "deferred",
+             "closure_candidates": [LEGAL]},
+        ]}
+
+        assert accept_proposals(sheet) == {"held-for-bi-demand": 1}
+        assert sheet["decisions"][1]["decision"] == "deferred"
 
 
 class TestEndToEnd:
