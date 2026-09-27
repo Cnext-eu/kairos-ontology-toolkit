@@ -261,6 +261,14 @@ def _render_expression(expression: Any) -> str:
     return f"<{type(expression).__name__}>"
 
 
+def _render_relationship(relationship: Any) -> str:
+    """How a relationship populates its property, for the ``source`` column."""
+    reference = relationship.external_reference
+    target = reference.name if reference is not None else relationship.target
+    joins = ", ".join(item.local for item in relationship.on)
+    return f"relationship -> {target}" + (f" on {joins}" if joins else "")
+
+
 def _autodetect_binding(
     loaded, ontology_path: Path, bindings_dir: Path, class_uri: str
 ) -> tuple[Path | None, tuple[str, ...]]:
@@ -316,6 +324,14 @@ def _binding_evidence(
         resolved = resolve_token_uri(loaded, ontology_path, field_mapping.property)
         if resolved in universe_by_uri and resolved not in populated:
             populated[resolved] = _render_expression(field_mapping.expression)
+    # An object property is populated through ``relationships:``, never ``fields:`` (the
+    # adapter rejects it there). Counting only ``fields:`` reported every realized
+    # relationship as unpopulated, so a hub that bound a value object in its own binding
+    # and linked it saw no change here (#1070).
+    for relationship in binding.relationships:
+        resolved = resolve_token_uri(loaded, ontology_path, relationship.property)
+        if resolved in universe_by_uri and resolved not in populated:
+            populated[resolved] = _render_relationship(relationship)
 
     technical_fields = tuple(
         TechnicalFieldSummary(name=item.name, purpose=item.purpose)

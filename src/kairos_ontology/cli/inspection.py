@@ -295,9 +295,19 @@ def _render_fit_report_text(result) -> None:
     for item in result.populated:
         click.echo(f"     ✓ {item.name} [{item.origin}] ← {item.source}")
     click.echo("")
-    click.echo(f"   Unpopulated ({len(result.unpopulated)}):")
+    objects = sum(1 for item in result.unpopulated if item.property_type == "object")
+    split = (
+        f": {len(result.unpopulated) - objects} datatype, {objects} object"
+        if objects
+        else ""
+    )
+    click.echo(f"   Unpopulated ({len(result.unpopulated)}{split}):")
     for item in result.unpopulated:
-        click.echo(f"     • {item.name} [{item.origin}] ({item.property_uri})")
+        # An object property is reached through relationships:, not fields: (#1070).
+        kind = " {object: bind the range class and add a relationships: entry}" if (
+            item.property_type == "object"
+        ) else ""
+        click.echo(f"     • {item.name} [{item.origin}]{kind} ({item.property_uri})")
     if result.orphan_columns:
         click.echo("")
         click.echo(f"   Orphan columns ({len(result.orphan_columns)}):")
