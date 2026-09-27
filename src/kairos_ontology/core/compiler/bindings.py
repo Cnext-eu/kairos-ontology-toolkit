@@ -248,6 +248,14 @@ class FieldMapping:
     property: str
     expression: Expression
     pointer: str = ""
+    #: DD-252: a single-valued object property of the bound class whose range declares
+    #: ``property``. Empty for an ordinary scalar field of the bound class itself.
+    via: str = ""
+
+    @property
+    def key(self) -> str:
+        """What identifies this field's target: the property, or ``via`` then property."""
+        return f"{self.via} -> {self.property}" if self.via else self.property
 
 
 @dataclass(frozen=True, slots=True)
@@ -699,6 +707,7 @@ def _build_binding(data: dict, resolver: _MarkResolver, path: str) -> EntityBind
                 property=str(raw["property"]),
                 expression=expression,
                 pointer=f"/fields/{index}",
+                via=str(raw.get("via") or ""),
             )
         )
 

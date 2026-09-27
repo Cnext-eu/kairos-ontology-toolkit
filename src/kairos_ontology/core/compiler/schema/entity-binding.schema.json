@@ -212,6 +212,7 @@
       "required": ["property", "expression"],
       "properties": {
         "property": {"$ref": "#/definitions/nonEmptyString"},
+        "via": {"$ref": "#/definitions/nonEmptyString"},
         "expression": {}
       }
     },
