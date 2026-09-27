@@ -311,5 +311,6 @@ during cleanup.
 | [DD-246](decisions/dd-246-agentsmd-carries-the-agent-instructions-for-the-toolkit-hubs-and-dataplatforms-copilot.md) | AGENTS.md carries the agent instructions for the toolkit, hubs and dataplatforms; copilot-instructions.md is a pointer | Accepted | 2026-09-26 |
 | [DD-247](decisions/dd-247-a-shared-owner-tie-is-broken-on-evidence-not-on-domain-order.md) | A shared-owner tie is broken on evidence, not on domain order | Accepted | 2026-09-26 |
 | [DD-248](decisions/dd-248-a-hub-local-property-is-declared-only-after-a-closure-lookup-finds-no-candidate.md) | A hub-local property is declared only after a closure lookup finds no candidate | Accepted | 2026-09-26 |
+| [DD-249](decisions/dd-249-a-bound-table-follows-its-bindings-domain-unless-a-human-pinned-it.md) | A bound table follows its binding's domain unless a human pinned it | Accepted | 2026-09-26 |
 
 ---

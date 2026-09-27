@@ -18,6 +18,7 @@ from kairos_ontology.core.source_disposition import (
     clear_dispositions,
     ledger_files,
     ledger_path,
+    load_binding_owners,
     load_bound_relations,
     load_dispositions,
     load_source_tables,
@@ -804,3 +805,90 @@ class TestBoundRelationsMemo:
         _write_binding(tmp_path, "qargo", "companies")
         self._bound(tmp_path).add(("injected", "row"))
         assert self._bound(tmp_path) == {("qargo", "companies")}
+
+
+class TestBindingOwners:
+    """#1048 (DD-249): who owns a bound table, with the ownership walk's stop rule."""
+
+    MODELS = "integration/transforms/dbt/models/intermediate"
+
+    def _hub(self, hub: Path) -> Path:
+        models = hub / self.MODELS
+        models.mkdir(parents=True)
+        (models / "int_merged__legal_entity.sql").write_text(
+            "select * from {{ source('cw', 'glbcompany') }}\n", encoding="utf-8"
+        )
+        (models / "int_merged__party.sql").write_text(
+            "select * from {{ source('cw', 'orgheader') }} "
+            "join {{ ref('int_merged__legal_entity') }} using (id)\n",
+            encoding="utf-8",
+        )
+        bindings = hub / "integration" / "bindings"
+        bindings.mkdir(parents=True)
+        for stem, domain, model in (
+            ("legal-entity", "fracht-company", "int_merged__legal_entity"),
+            ("party", "party", "int_merged__party"),
+        ):
+            (bindings / f"{stem}.binding.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "metadata": {"domain": domain},
+                        "source": {"dbtModel": {"sqlPath": f"{self.MODELS}/{model}.sql"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return bindings
+
+    def test_the_walk_stops_at_another_bindings_selected_model(self, tmp_path: Path) -> None:
+        bindings = self._hub(tmp_path)
+        assert load_binding_owners(bindings, tmp_path) == {
+            ("cw", "glbcompany"): frozenset({("fracht-company", "legal-entity.binding.yaml")}),
+            ("cw", "orgheader"): frozenset({("party", "party.binding.yaml")}),
+        }
+        # The bound set keeps its full walk: nothing changes for load_bound_relations.
+        assert load_bound_relations(bindings, tmp_path) == {
+            ("cw", "glbcompany"),
+            ("cw", "orgheader"),
+        }
+
+    def test_a_source_table_read_directly_by_two_bindings_has_both_owners(
+        self, tmp_path: Path
+    ) -> None:
+        bindings = self._hub(tmp_path)
+        party_sql = tmp_path / self.MODELS / "int_merged__party.sql"
+        party_sql.write_text(
+            party_sql.read_text(encoding="utf-8")
+            + "union all select * from {{ source('cw', 'glbcompany') }}\n",
+            encoding="utf-8",
+        )
+        owners = load_binding_owners(bindings, tmp_path)
+        assert {dom for dom, _ in owners[("cw", "glbcompany")]} == {"fracht-company", "party"}
+
+    def test_key_set_matches_the_bound_set_without_cross_selection(
+        self, tmp_path: Path
+    ) -> None:
+        _write_binding(tmp_path, "qargo", "companies")
+        _write_dbt_model_binding(tmp_path, "qargo", "assignments", "standing_orders")
+        bindings = tmp_path / "integration" / "bindings"
+        owners = load_binding_owners(bindings, tmp_path)
+        assert set(owners) == load_bound_relations(bindings, tmp_path)
+        assert owners[("qargo", "companies")] == frozenset(
+            {("party", "qargo-companies.binding.yaml")}
+        )
+
+    def test_the_memo_is_invalidated_by_an_edit(self, tmp_path: Path) -> None:
+        _write_binding(tmp_path, "qargo", "companies")
+        bindings = tmp_path / "integration" / "bindings"
+        assert set(load_binding_owners(bindings, tmp_path)) == {("qargo", "companies")}
+        path = bindings / "qargo-companies.binding.yaml"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("domain: party", "domain: billing"),
+            encoding="utf-8",
+        )
+        assert load_binding_owners(bindings, tmp_path)[("qargo", "companies")] == frozenset(
+            {("billing", "qargo-companies.binding.yaml")}
+        )
+
+    def test_no_bindings_directory_is_empty(self, tmp_path: Path) -> None:
+        assert load_binding_owners(tmp_path / "missing", tmp_path) == {}

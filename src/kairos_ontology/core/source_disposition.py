@@ -329,6 +329,95 @@ def _load_bound_relations_uncached(
     return bound
 
 
+def load_binding_owners(
+    bindings_dir: Path, hub_root: Path
+) -> dict[tuple[str, str], frozenset[tuple[str, str]]]:
+    """Return ``{(system, table): {(domain, binding file name)}}`` -- who owns a bound table.
+
+    The key set answers the same question as :func:`load_bound_relations`, but the
+    ``dbtModel`` walk is an *ownership* walk (#1048, DD-249): it stops at, and does not
+    read, any model SQL that *another* binding selects as its ``dbtModel.sqlPath``. A
+    merge model that ``ref()``s another binding's selected model joins that entity in; it
+    does not make the joined entity's tables its own. Without the stop rule one
+    ``glbcompany`` read through ``int_merged__party -> int_merged__fracht_legal_entity``
+    counted as owned by both party and fracht-company. The binding's own selected model is
+    always read, even when a second binding selects the same file.
+
+    ``domain`` is the binding's ``metadata.domain`` (``""`` when absent). Memoized with
+    the same discipline as :func:`load_bound_relations`: a hit is trusted only after
+    re-hashing every file read and re-listing the inputs.
+    """
+    key = (str(Path(bindings_dir).resolve()), str(Path(hub_root).resolve()))
+    listing = _inputs_listing(bindings_dir, hub_root)
+    hit = _BINDING_OWNERS_CACHE.get(key)
+    if hit is not None and hit[2] == listing and _files_unchanged(hit[1]):
+        return dict(hit[0])
+    read: dict[Path, str] = {}
+    owners = _load_binding_owners_uncached(bindings_dir, hub_root, read)
+    _BINDING_OWNERS_CACHE.clear()  # one hub state at a time is all a run needs
+    _BINDING_OWNERS_CACHE[key] = (dict(owners), read, listing)
+    return owners
+
+
+#: ``load_binding_owners`` results: key -> (answer, {file read: sha256}, input listing).
+_BINDING_OWNERS_CACHE: dict[
+    tuple[str, str],
+    tuple[dict[tuple[str, str], frozenset[tuple[str, str]]], dict[Path, str], tuple[str, ...]],
+] = {}
+
+
+def _selected_model_path(source: dict[str, Any], hub_root: Path) -> Path | None:
+    """The resolved ``dbtModel.sqlPath`` a binding selects, or ``None``."""
+    model = source.get("dbtModel")
+    sql_path = model.get("sqlPath") if isinstance(model, dict) else None
+    if not isinstance(sql_path, str) or not sql_path.strip():
+        return None
+    try:
+        return (Path(hub_root) / sql_path).resolve()
+    except OSError:
+        return None
+
+
+def _load_binding_owners_uncached(
+    bindings_dir: Path, hub_root: Path, read: dict[Path, str]
+) -> dict[tuple[str, str], frozenset[tuple[str, str]]]:
+    """The implementation :func:`load_binding_owners` memoizes; *read* collects inputs."""
+    if not bindings_dir.is_dir():
+        return {}
+    bindings: list[tuple[str, str, dict[str, Any]]] = []
+    for path in sorted(bindings_dir.glob("*.yaml")):
+        read[path] = _digest(path)
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception:  # defensive: a malformed binding is the compiler's problem
+            continue
+        if not isinstance(payload, dict):
+            continue
+        raw_source = payload.get("source")
+        source: dict[str, Any] = raw_source if isinstance(raw_source, dict) else {}
+        metadata = payload.get("metadata")
+        domain = metadata.get("domain") if isinstance(metadata, dict) else None
+        bindings.append((path.name, str(domain).strip() if domain else "", source))
+    selected = [(name, _selected_model_path(source, hub_root)) for name, _, source in bindings]
+    owners: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    model_index: dict[str, list[Path]] | None = None
+    for name, domain, source in bindings:
+        tables: set[tuple[str, str]] = set()
+        relation = source.get("relation")
+        if isinstance(relation, str) and "." in relation:
+            system, _, table = relation.partition(".")
+            tables.add((system.strip(), table.strip()))
+        if model_index is None:
+            model_index = _model_index(hub_root)
+        stop_at = frozenset(
+            path for other, path in selected if other != name and path is not None
+        )
+        tables |= _dbt_model_source_pairs(source, hub_root, model_index, read, stop_at)
+        for pair in tables:
+            owners.setdefault(pair, set()).add((domain, name))
+    return {pair: frozenset(found) for pair, found in owners.items()}
+
+
 def _model_index(hub_root: Path) -> dict[str, list[Path]]:
     """Authored model SQL by stem -- ``ref()`` names match stems exactly, as in dbt."""
     models_dir = Path(hub_root) / "integration" / "transforms" / "dbt" / "models"
@@ -344,8 +433,13 @@ def _dbt_model_source_pairs(
     hub_root: Path,
     model_index: dict[str, list[Path]],
     read: dict[Path, str] | None = None,
+    stop_at: frozenset[Path] = frozenset(),
 ) -> set[tuple[str, str]]:
     """Return the source tables a ``source.dbtModel`` binding's own SQL reads.
+
+    *stop_at* holds resolved model paths the ``ref()`` walk must not read or descend into
+    (the ownership walk of :func:`load_binding_owners`); the selected model itself is
+    always read. Empty for :func:`load_bound_relations`, whose full walk is unchanged.
 
     Split out so the two authored source forms read as the independent alternatives they
     are, and so the compiler import stays local: ``source_disposition`` is imported by
@@ -378,7 +472,7 @@ def _dbt_model_source_pairs(
         pairs |= extract_source_pairs(text)
         for ref_name in extract_refs(text):
             matches = model_index.get(ref_name, [])
-            if len(matches) == 1:
+            if len(matches) == 1 and matches[0].resolve() not in stop_at:
                 pending.append(matches[0])
     return pairs
 
