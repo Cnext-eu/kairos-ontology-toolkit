@@ -5,8 +5,22 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.5** is the latest GA release (2026-09-27), superseding
-> **5.24.4** (2026-09-27). A one-fix patch:
+> **Release status.** **5.24.6** is the latest GA release (2026-09-27), superseding
+> **5.24.5** (2026-09-27). A one-fix patch:
+>
+> - Emit waits out a transient Windows holder (antivirus, indexer, editor watcher) on the
+>   staged directory swap for up to three minutes, instead of failing after about five
+>   seconds (#1086). `KAIROS_EMIT_SWAP_TIMEOUT` (seconds) changes the budget; `0` restores
+>   the short wait.
+>
+> **What to expect on the first run after upgrading from 5.24.5.**
+>
+> | you will see | why |
+> |---|---|
+> | **`emit-gold` no longer fails intermittently with WinError 5** right after a large `compile --all --emit` | #1086. The swap keeps retrying while scanners finish |
+> | **A warning `... is still held open by another process`** and a pause of up to 3 minutes | The holder did not clear within the short backoff. A permanent holder (an open `.pbip`) still fails, with the same hint, once the budget is spent |
+>
+> **Upgrading from 5.24.4?** 5.24.5's first-run notes still apply on top of the above:
 >
 > - `compile --all --emit` publishes a change to a dbt model several domains share (#1083).
 >   It used to fail the first domain to emit the change with `ArtifactCollisionError`, and
@@ -144,6 +158,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.24.6] — 2026-09-27
+
+### Fixed
+- **Emit now waits out a Windows antivirus or indexer scan instead of failing after five
+  seconds.** The staged directory swap that every `compile --emit` and `emit-gold` ends with
+  retried a sharing violation (WinError 5/32/145) for only about five seconds in total. When
+  thousands of files were written just before, as with `compile --all --emit`, `project` and then
+  `emit-gold`, scanners kept a large Gold tree busy for minutes, and the emit failed until it was
+  re-run by hand, sometimes more than a dozen times. After the short backoff, the swap now keeps
+  retrying every five seconds for up to three minutes, and logs a warning naming the held path
+  once it starts waiting. Set `KAIROS_EMIT_SWAP_TIMEOUT` (seconds) to change the budget; `0`
+  restores the old short behaviour, for when an open `.pbip` in Power BI Desktop is the likelier
+  holder. A failed swap still leaves the previous output untouched and reports the same hint.
 
 ## [5.24.5] — 2026-09-27
 
