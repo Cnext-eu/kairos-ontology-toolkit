@@ -536,7 +536,9 @@ class TestRetiredByBinding:
         rendered = render_markdown(report, overlay=overlay)
         retired = rendered.split("## Deferred rows a binding has retired")[1]
         assert "tms.shipment `eta`" in retired
-        assert "`eta`" not in rendered.split("## Deferred backlog")[1].split("## Deferred rows")[0]
+        backlog = rendered.split("## Deferred backlog")[1].split("## Deferred rows")[0]
+        # No backlog row for it; it may still appear as the bound field a sibling completes.
+        assert "| tms.shipment | `eta` |" not in backlog
 
     def test_include_deferred_does_not_relist_it(self, tmp_path: Path) -> None:
         sheet = build_decision_sheet(self._hub(tmp_path), include_deferred=True)

@@ -205,7 +205,13 @@ column dispositioned `deferred` is the opposite: in scope, not modelled yet, a b
 item the workflow keeps raising (DD-251). `kairos-ontology next` lists it as
 `review-deferred-columns`, `alignment-report` shows the backlog per domain with each
 entry's rationale, row count and BI demand, and modelling it here is the expected
-outcome, not a reversal. Once a binding names the column its `bound` state is derived
+outcome, not a reversal. Start with its "Sibling candidates": deferred columns that
+complete a field their table already binds, such as the unit of a bound weight, the currency
+of a bound amount, or the description of a bound code (#1068). Each is usually a new field on
+the binding that already reads the table, not new ontology. A unit or currency whose
+property lives on a value object waits on value-object fields (#811); carry it as a
+`technicalFields` entry next to its measure meanwhile. Once a binding names the column its
+`bound` state is derived
 from the binding (DD-250); to re-decide it explicitly, run
 `kairos-ontology draft-gap-decisions --include-deferred`, type the new decision, and
 `--apply`.

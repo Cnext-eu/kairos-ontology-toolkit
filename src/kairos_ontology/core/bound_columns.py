@@ -93,6 +93,11 @@ class BoundColumns:
     read_by: Mapping[tuple[str, str], _Columns]
     #: Tables a chain model reads with ``select *`` (or a star macro): those model stems.
     unconfirmed: Mapping[tuple[str, str], frozenset[str]]
+    #: Relation bindings' ``fields:`` only: column -> the property tokens it fills. A
+    #: subset of ``named``; what a deferred column can be a sibling of (#1068). Unlike the
+    #: other maps the column keeps the binding's casing: ``AH_InvoiceDate`` carries word
+    #: boundaries that ``ah_invoicedate`` has lost, and sibling detection needs them.
+    fields: Mapping[tuple[str, str], _Columns] = MappingProxyType({})
 
     def decided_by_binding(self, system: str, table: str, column: str) -> frozenset[str]:
         """Binding files that name *column* outright -- non-empty means decided."""
@@ -110,6 +115,10 @@ class BoundColumns:
         if self.read_by_models(system, table, column):
             return frozenset()
         return self.unconfirmed.get((system, table), frozenset())
+
+    def bound_fields(self, system: str, table: str) -> _Columns:
+        """Columns (authored casing) a relation binding's ``fields:`` maps -> properties."""
+        return self.fields.get((system, table), MappingProxyType({}))
 
     @property
     def empty(self) -> bool:
@@ -287,6 +296,7 @@ def _load_bound_columns_uncached(
     if not bindings_dir.is_dir():
         return EMPTY_BOUND_COLUMNS
     named: dict[tuple[str, str], dict[str, set[str]]] = {}
+    fields: dict[tuple[str, str], dict[str, set[str]]] = {}
     read_by: dict[tuple[str, str], dict[str, set[str]]] = {}
     unconfirmed: dict[tuple[str, str], set[str]] = {}
     model_index: dict[str, list[Path]] | None = None
@@ -308,9 +318,14 @@ def _load_bound_columns_uncached(
                 binding = load_entity_binding(text, path=str(path))
             except Exception:  # a binding compile rejects decides nothing (fail to report)
                 continue
-            columns = named.setdefault((system.strip(), table.strip()), {})
+            key = (system.strip(), table.strip())
+            columns = named.setdefault(key, {})
             for column in binding_referenced_columns(binding):
                 columns.setdefault(column, set()).add(path.name)
+            mapped = fields.setdefault(key, {})
+            for field_mapping in binding.fields:
+                for column in _field_columns(field_mapping.expression):
+                    mapped.setdefault(column, set()).add(field_mapping.property)
         model = source.get("dbtModel")
         if isinstance(model, dict):
             if model_index is None:
@@ -320,7 +335,14 @@ def _load_bound_columns_uncached(
         named=_freeze(named),
         read_by=_freeze(read_by),
         unconfirmed=MappingProxyType({k: frozenset(v) for k, v in unconfirmed.items()}),
+        fields=_freeze(fields),
     )
+
+
+def _field_columns(expression: Any) -> set[str]:
+    from .compiler.adapter import _expression_columns
+
+    return set(_expression_columns(expression))
 
 
 def _freeze(

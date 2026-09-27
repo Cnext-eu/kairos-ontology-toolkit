@@ -64,7 +64,10 @@ from enum import Enum
 #: routed to kairos-design-domain (DD-251, #1062). A column-grain ``deferred`` was the
 #: honest answer for "real data, not modelled yet" and also the answer nothing ever showed
 #: again: the gate counted it decided, the sheet dropped it, no action named it.
-SCHEMA_VERSION = 9
+#: v10 adds ``with_siblings`` and ``sibling_tables`` to the deferred-column observation
+#: (#1068): how many deferred columns complete a field their table already binds, and the
+#: tables that hold most of them, so ``review-deferred-columns`` can say where to start.
+SCHEMA_VERSION = 10
 
 
 class InputStatus(str, Enum):
@@ -322,6 +325,10 @@ class DeferredColumnObservation:
     columns_total: int = 0
     with_bi_demand: int = 0
     by_domain: tuple[tuple[str, int], ...] = ()
+    #: #1068: columns that complete a field their table already binds, and
+    #: ``(("system.table", count), ...)`` for the tables with most of them, largest first.
+    with_siblings: int = 0
+    sibling_tables: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -699,6 +706,13 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
             if backlog.with_bi_demand
             else ""
         )
+        if backlog.with_siblings:
+            tables = ", ".join(f"{t} {n}" for t, n in backlog.sibling_tables[:4])
+            demand += (
+                f" {backlog.with_siblings} complete a field their table already binds "
+                f"(a unit, currency, description, measure, amount or date); start with "
+                f"those, as fields of the binding that reads the table: {tables}."
+            )
         actions.append(
             _action(
                 "review-deferred-columns",

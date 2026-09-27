@@ -335,6 +335,8 @@ def _deferred_column_status(root: Path) -> DeferredColumnObservation:
         columns_total=backlog.total,
         with_bi_demand=backlog.with_bi_demand,
         by_domain=tuple((domain, len(cols)) for domain, cols in backlog.by_domain().items()),
+        with_siblings=backlog.with_siblings,
+        sibling_tables=tuple((table, len(cols)) for table, cols in backlog.siblings_by_table()),
     )
 
 
