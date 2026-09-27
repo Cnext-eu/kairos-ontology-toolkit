@@ -266,6 +266,58 @@ class TestABridgeEndpointThatIsAlsoASilverRelationship:
         assert "isActive: false" not in customer_edges[0]
 
 
+_SHARED_PARTY_GOLD = (
+    _PARTY_GOLD
+    + """
+<https://example.test/ontology/party>
+  kairos-ext:goldRelationshipCrossFilter "bridge_customer_invoice.code -> dim_customer.customer_sk = both" ;
+  kairos-ext:practiceException "semantic-model.bridge-allocation on table bridge_customer_invoice: equal weight is the intent" .
+"""
+)
+
+
+class TestASharedDomainsBridgeInAProductWithoutItsOtherEndpoint:
+    """#1092: a shared domain is read for its conformed dimensions. A bridge it also owns
+    joins a fact only the building product has, so in a product without that fact it
+    relates nothing -- it is left out there, with what names it, instead of failing."""
+
+    def _artifacts(self, tmp_path):
+        hub = _hub(tmp_path, other_endpoint=_CROSS_DOMAIN, other_binding="Invoice=country_name")
+        (hub / "model" / "extensions" / "party-gold-ext.ttl").write_text(
+            _SHARED_PARTY_GOLD.format(
+                other_endpoint=_CROSS_DOMAIN, other_binding="Invoice=country_name"
+            ),
+            encoding="utf-8",
+        )
+        product = GoldProductConfig(
+            name="customers", domains=("party",), shared_domains=("party",)
+        )
+        return generate_gold_from_compile_plans([build_compile_plan(hub, "party")], product)
+
+    def test_the_product_emits_without_the_bridge(self, tmp_path):
+        artifacts = self._artifacts(tmp_path)
+        report = _report(artifacts)
+        names = {table["name"] for table in report["tables"]}
+        assert "dim_customer" in names
+        assert "bridge_customer_invoice" not in names
+        assert report["unresolved_bridges"] == [
+            {
+                "bridge": "bridge_customer_invoice",
+                "endpoint": "https://example.test/ontology/billing#Invoice",
+            }
+        ]
+
+    def test_the_owning_product_still_fails_closed(self, tmp_path):
+        """Not shared, the same missing endpoint is still an authoring error."""
+        hub = _cross_domain_hub(tmp_path)
+        with pytest.raises(GoldContractError) as excinfo:
+            generate_gold_from_compile_plans(
+                [build_compile_plan(hub, "party")],
+                GoldProductConfig(name="party", domains=("party",)),
+            )
+        assert excinfo.value.code == "gold.bridge-endpoint-not-materialized"
+
+
 class TestTheDeferredEndpointIsPrinted:
     """Deferred on the plan but never shown: `compile party --check` was green with no word
     about the endpoint, and `emit-gold` on the product then failed on exactly that."""

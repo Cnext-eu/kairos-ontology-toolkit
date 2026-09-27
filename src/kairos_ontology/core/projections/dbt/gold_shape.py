@@ -468,6 +468,67 @@ def _check_measure_names(
         seen[key] = measure.measure_id
 
 
+_AUTHORED_REFERENCE_FIELDS = (
+    "primary_relationships",
+    "excluded_relationships",
+    "relationship_cross_filters",
+    "bpa_ignore_rules",
+)
+
+
+def _without_omitted(
+    member: "GoldDomainInput",
+    omitted: set[str],
+    tables: tuple[GoldTableSpec, ...],
+) -> "GoldDomainInput":
+    """*member* without what reads a bridge this product left out (#1092).
+
+    Only a shared domain is trimmed: it is read for its conformed dimensions, and a bridge
+    it also owns may join a fact only the building product has. What goes with the bridge:
+    the measures that read it (directly or through another measure), and every authored
+    relationship choice or practice exception that names the bridge or one of those
+    measures. Each of those fails closed when its target is missing, which is right in the
+    building product and wrong here, where the target is absent by design.
+    """
+    policy = member.policy
+    measures = tuple(policy.gold.measures)
+    dropped: set[str] = set()
+    for measure in measures:
+        for dependency in measure.dependencies.columns.value:
+            resolved = _column_by_property(tables, dependency, has_calendar=True)
+            if resolved is not None and resolved[0] in omitted:
+                dropped.add(measure.resource_uri)
+                break
+    changed = True
+    while changed:
+        changed = False
+        for measure in measures:
+            if measure.resource_uri not in dropped and any(
+                item in dropped for item in measure.dependencies.measures.value
+            ):
+                dropped.add(measure.resource_uri)
+                changed = True
+    names = set(omitted) | {
+        measure.measure_id.value for measure in measures if measure.resource_uri in dropped
+    }
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_])(?:" + "|".join(re.escape(name) for name in sorted(names)) + r")"
+        r"(?![A-Za-z0-9_])"
+    )
+
+    def keeps(value: str) -> bool:
+        # The target is everything before the reason; a relationship value has no reason.
+        return pattern.search(value.split(": ", 1)[0]) is None
+
+    changes: dict[str, object] = {
+        "measures": tuple(item for item in measures if item.resource_uri not in dropped)
+    }
+    for field in _AUTHORED_REFERENCE_FIELDS:
+        values = tuple(getattr(policy.gold, field, ()) or ())
+        changes[field] = tuple(value for value in values if keeps(value))
+    return replace(member, policy=replace(policy, gold=replace(policy.gold, **changes)))
+
+
 def _shape_measures(
     policy: MedallionPolicySpec,
     tables: tuple[GoldTableSpec, ...],
@@ -2138,6 +2199,7 @@ def _shape_dimensional_product(
     # the reason `bridge` exists -- impossible to author at all (#763).
     included = {table.resource_uri for table in ordered}
     unresolved_bridges: list[tuple[str, str]] = []
+    omitted_bridges: set[str] = set()
     for table in ordered:
         if table.role is not GoldTableRole.BRIDGE:
             continue
@@ -2147,12 +2209,27 @@ def _shape_dimensional_product(
             if defer_bridges:
                 unresolved_bridges.extend((table.name, uri) for uri in missing)
                 continue
+            # #1092: a shared domain is read for its conformed dimensions. A bridge it also
+            # owns may join a fact only the building product has; in a product without
+            # that endpoint the bridge relates nothing, so it is left out here -- with the
+            # measures that read it -- instead of failing the product.
+            if table.shared and table.bridge_endpoints is not None:
+                omitted_bridges.add(table.name)
+                unresolved_bridges.extend((table.name, uri) for uri in missing)
+                continue
             _fail(
                 "gold.bridge-endpoint-not-materialized",
                 f"bridge {table.name!r} endpoints must both be explicit Gold tables",
                 rule_id="DD-112-bridge",
                 resource_uri=table.resource_uri,
             )
+
+    if omitted_bridges:
+        members = tuple(
+            _without_omitted(member, omitted_bridges, ordered) if member.shared else member
+            for member in members
+        )
+        ordered = tuple(table for table in ordered if table.name not in omitted_bridges)
 
     models: dict[str, SilverModelSpec] = {}
     descriptors: list[ForeignKeyDescriptorSpec] = []
