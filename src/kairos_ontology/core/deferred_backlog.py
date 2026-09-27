@@ -33,6 +33,7 @@ from .bound_columns import (
     load_bound_columns,
     retired_by_binding,
 )
+from .sibling_columns import Sibling, column_profiles, detect_sibling, sinks
 from .source_disposition import column_decision, load_dispositions, load_source_tables
 
 #: How a decided gap column is summarised per domain. ``ruled_out`` groups the two
@@ -58,12 +59,28 @@ class DeferredColumn:
     row_count: int | None = None
     #: Where an imported Power BI model uses this column name (#942).
     bi_demand: tuple[str, ...] = ()
+    #: The bound field on the same table this column completes (#1068), if any.
+    sibling: Sibling | None = None
+    #: The DD-189 profile says the column is empty or constant: it sorts last (#1068).
+    sunk: bool = False
+    #: The first DD-248 closure candidate the alignment found for the column: a field
+    #: suggestion for the binding author, never a ledger ``bound`` row (#1068).
+    suggested_property: str = ""
 
     @property
-    def rank(self) -> tuple[int, int, str, str, str]:
-        """BI demand first, then the largest table, then name order."""
+    def rank(self) -> tuple[int, int, int, int, str, str, str]:
+        """BI demand, then not empty or constant, then a sibling of a bound field, then
+        the largest table, then name order (#1068)."""
         rows = self.row_count if self.row_count is not None else -1
-        return (0 if self.bi_demand else 1, -rows, self.system, self.table, self.column)
+        return (
+            0 if self.bi_demand else 1,
+            1 if self.sunk else 0,
+            0 if self.sibling else 1,
+            -rows,
+            self.system,
+            self.table,
+            self.column,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +93,9 @@ class DeferredColumn:
             "recorded_on": self.recorded_on,
             "row_count": self.row_count,
             "bi_demand": list(self.bi_demand),
+            "sibling": self.sibling.to_dict() if self.sibling else None,
+            "sunk": self.sunk,
+            "suggested_property": self.suggested_property,
         }
 
 
@@ -95,6 +115,21 @@ class DeferredBacklog:
     @property
     def with_bi_demand(self) -> int:
         return sum(1 for c in self.columns if c.bi_demand)
+
+    @property
+    def with_siblings(self) -> int:
+        return sum(1 for c in self.columns if c.sibling)
+
+    def siblings_by_table(self) -> list[tuple[str, list[DeferredColumn]]]:
+        """``("system.table", ranked siblings)``, the table with most siblings first."""
+        grouped: dict[str, list[DeferredColumn]] = {}
+        for column in self.columns:
+            if column.sibling:
+                grouped.setdefault(f"{column.system}.{column.table}", []).append(column)
+        return sorted(
+            ((table, sorted(cols, key=lambda c: c.rank)) for table, cols in grouped.items()),
+            key=lambda kv: (-len(kv[1]), kv[0]),
+        )
 
     def by_domain(self) -> dict[str, list[DeferredColumn]]:
         """Ranked columns per domain, largest domain first; the domainless last."""
@@ -116,6 +151,7 @@ class DeferredBacklog:
         return {
             "total": self.total,
             "with_bi_demand": self.with_bi_demand,
+            "with_siblings": self.with_siblings,
             "retired_by_binding": [c.to_dict() for c in self.retired],
             "domains": [
                 {
@@ -134,6 +170,7 @@ def load_deferred_columns(
     *,
     domain_of: Callable[[str, str, str], str] | None = None,
     bound: BoundColumns | None = None,
+    closure_of: Callable[[str, str, str], str] | None = None,
 ) -> DeferredBacklog:
     """Read the deferred backlog from the ledger, joined with what ranks it.
 
@@ -149,6 +186,12 @@ def load_deferred_columns(
     A row whose column a ``source.relation`` binding now names is retired, not backlog
     (DD-251, #1069): it goes to :attr:`DeferredBacklog.retired`. *bound* lets a caller
     that already holds the bindings' view pass it in; unreadable bindings retire nothing.
+
+    Each backlog column is also related to its table's bound fields (#1068). ``sibling``
+    names the bound field it completes, ``sunk`` says the profile found it empty or
+    constant, and ``suggested_property`` carries the first closure candidate *closure_of*
+    answers. The alignment report has those candidates, so only a caller holding one can
+    fill it in.
     """
     root = Path(hub_root)
     try:
@@ -167,6 +210,7 @@ def load_deferred_columns(
     anchors = _anchor_domains(root)
     row_counts = _row_counts(root)
     demand = _bi_demand(root)
+    profile = column_profiles(root)
     columns: list[DeferredColumn] = []
     retired: list[DeferredColumn] = []
     for (system, table, column), entry in deferred:
@@ -174,6 +218,7 @@ def load_deferred_columns(
         if not domain:
             domain = anchors.get((system, table), NO_DOMAIN)
         count = row_counts.get((system, table))
+        column_profile = profile(system, table, column)
         target = retired if retired_by_binding(entry, bound, system, table, column) else columns
         target.append(
             DeferredColumn(
@@ -186,9 +231,15 @@ def load_deferred_columns(
                 recorded_on=str(entry.get("recorded_on") or ""),
                 row_count=count if count is not None and count >= 0 else None,
                 bi_demand=tuple(demand(column)),
+                sibling=detect_sibling(
+                    column, bound.bound_fields(system, table), profile=column_profile
+                ),
+                sunk=sinks(column_profile),
+                suggested_property=closure_of(system, table, column) if closure_of else "",
             )
         )
     return DeferredBacklog(columns, retired)
+
 
 
 def _bound_columns(hub_root: Path) -> BoundColumns:
@@ -284,10 +335,14 @@ def decision_overlay(report: AlignmentReport, hub_root: Path) -> DecisionOverlay
     bound = load_bound_columns(root / "integration" / "bindings", root)
     status: dict[tuple[str, str, str], str] = {}
     domains: dict[tuple[str, str, str], str] = {}
+    closure: dict[tuple[str, str, str], str] = {}
     for domain in report.domains:
         for column in domain.gap_columns:
             key = (column.system, column.table, column.column)
             domains.setdefault(key, domain.domain)
+            if column.closure_candidates and key not in closure:
+                first = column.closure_candidates[0]
+                closure[key] = str(first.get("name") or first.get("uri") or "")
             decided = is_gap_column_decided(recorded, bound, *key)
             if decided == "binding":
                 status[key] = "bound"
@@ -300,5 +355,6 @@ def decision_overlay(report: AlignmentReport, hub_root: Path) -> DecisionOverlay
         root,
         domain_of=lambda system, table, column: domains.get((system, table, column), ""),
         bound=bound,
+        closure_of=lambda system, table, column: closure.get((system, table, column), ""),
     )
     return DecisionOverlay(status=status, bound=bound, backlog=backlog)

@@ -2067,7 +2067,8 @@ def _render_next_text(proposal, snapshot) -> None:
         click.echo(
             f"     deferred cols:  {snapshot.deferred_columns.columns_total} column(s) "
             f"recorded deferred ({snapshot.deferred_columns.with_bi_demand} used by a "
-            "Power BI model) — the modelling backlog, DD-251"
+            f"Power BI model, {snapshot.deferred_columns.with_siblings} completing a bound "
+            "field) — the modelling backlog, DD-251"
         )
     if not proposal.actions:
         return
@@ -2156,6 +2157,11 @@ def next_action_cmd(domains, output_format, no_compile):
                     "with_bi_demand": snapshot.deferred_columns.with_bi_demand,
                     "by_domain": [
                         [domain, count] for domain, count in snapshot.deferred_columns.by_domain
+                    ],
+                    "with_siblings": snapshot.deferred_columns.with_siblings,
+                    "sibling_tables": [
+                        [table, count]
+                        for table, count in snapshot.deferred_columns.sibling_tables
                     ],
                 },
             },

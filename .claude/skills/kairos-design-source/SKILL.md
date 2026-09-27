@@ -190,7 +190,8 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     `deferred` is a backlog, not an archive (DD-251). Every column-grain `deferred` row
     carries `recorded_on`; `kairos-ontology next` raises `review-deferred-columns` while
     any exist; `alignment-report` lists them per domain under "Deferred backlog", ranked
-    by BI demand and table size; and
+    by BI demand, then columns that complete a field their table already binds (its
+    "Sibling candidates", #1068), then table size, with empty or constant columns last; and
     `kairos-ontology draft-gap-decisions --include-deferred` re-lists them on the sheet
     with their original rationale, so a later pass re-decides them from what was known.
     A binding that names such a column retires it from the backlog without a new row.

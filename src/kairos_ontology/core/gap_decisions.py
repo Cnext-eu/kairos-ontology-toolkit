@@ -68,6 +68,7 @@ from .ai_provider import (
 from .anchor_tables import load_excluded_tables
 from .bi_demand import load_bi_demand
 from .bound_columns import is_gap_column_decided, load_bound_columns
+from .sibling_columns import column_profiles, detect_sibling
 from .source_disposition import (
     DISPOSITIONS,
     DispositionInput,
@@ -174,6 +175,10 @@ class GapProposal:
     previous_decided_by: str = ""
     recorded_on: str = ""
     previously_deferred_occurrences: int = 0
+    #: #1068: re-listed occurrences that complete a field their table already binds,
+    #: ``{table, kind, of_column, of_property}``. A field suggestion for the binding
+    #: author, never grounds for a ``bound`` decision: no binding maps the column yet.
+    siblings: list[dict[str, str]] = field(default_factory=list)
 
     def to_entry(self) -> dict[str, Any]:
         return {
@@ -204,6 +209,7 @@ class GapProposal:
                 if self.previous_decision
                 else {}
             ),
+            **({"siblings": self.siblings} if self.siblings else {}),
             **(
                 {"role_groups": self.role_groups, "governing_pattern": ROLE_PATTERN}
                 if self.role_groups
@@ -510,6 +516,13 @@ def group_into_families(
                         m.column for m in coherent if m.previous_decision
                     )}
                     if any(m.previous_decision for m in coherent)
+                    else {}
+                ),
+                # #1068: re-listed members that complete a field their table binds, with
+                # the field. A reason to split the family, never to rule it `bound`.
+                **(
+                    {"sibling_members": {m.column: m.siblings for m in coherent if m.siblings}}
+                    if any(m.siblings for m in coherent)
                     else {}
                 ),
                 # DD-248: the closure properties any member resembles, so a family is
@@ -1147,6 +1160,8 @@ def build_decision_sheet(
     # `OrderNo` in booking and `OrderNo` in financial are two decisions, not one.
     per_domain: dict[tuple[str, str], GapGroup] = {}
     previously_deferred: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    siblings: dict[tuple[str, str], list[dict[str, str]]] = {}
+    profile = column_profiles(Path(hub_root)) if include_deferred else None
     for g in group_gaps_by_column(report):
         for occurrence in g.occurrences:
             key = (occurrence.domain, g.column)
@@ -1163,6 +1178,17 @@ def build_decision_sheet(
                 ):
                     continue
                 previously_deferred.setdefault(key, []).append(entry)
+                sibling = detect_sibling(
+                    occurrence.column,
+                    bound.bound_fields(occurrence.system, occurrence.table),
+                    profile=profile(occurrence.system, occurrence.table, occurrence.column)
+                    if profile
+                    else None,
+                )
+                if sibling is not None:
+                    siblings.setdefault(key, []).append(
+                        {"table": f"{occurrence.system}.{occurrence.table}", **sibling.to_dict()}
+                    )
             per_domain.setdefault(key, GapGroup(column=g.column)).occurrences.append(
                 annotate_read_by(occurrence, bound)
             )
@@ -1184,6 +1210,7 @@ def build_decision_sheet(
             proposal.previous_decided_by = str(latest.get("decided_by") or "")
             proposal.recorded_on = str(latest.get("recorded_on") or "")
             proposal.previously_deferred_occurrences = len(previous)
+            proposal.siblings = siblings.get((domain, group.column), [])
         proposals.append(proposal)
     families, loose = group_into_families(proposals)
 
@@ -1212,6 +1239,8 @@ def build_decision_sheet(
             "with_lineage_unconfirmed": sum(1 for p in proposals if p.lineage_unconfirmed),
             # DD-251: names re-listed from the deferred backlog (--include-deferred only).
             "previously_deferred": sum(1 for p in proposals if p.previous_decision),
+            # #1068: of those, the names that complete a field their table already binds.
+            "previously_deferred_siblings": sum(1 for p in proposals if p.siblings),
             "auto_disposition_conflicts": len(conflicts),
             "conflicts_already_recorded": sum(1 for c in conflicts if c.recorded_disposition),
             "schema_catalogue_tables_excluded": len(excluded_tables),
@@ -1244,7 +1273,10 @@ def build_decision_sheet(
                 "deferred backlog (DD-251) with the rationale, author and date they were "
                 "recorded with; a decision typed on one overwrites exactly those "
                 "occurrences on --apply, and a blank leaves them deferred. "
-                "--accept-proposals never touches them."
+                "--accept-proposals never touches them. 'siblings' (and a family's "
+                "'sibling_members') name a bound field on the same table that the column "
+                "completes (#1068): add it as a field of that binding. It is never a reason "
+                "to decide 'bound', which only a binding that maps the column can state."
                 if include_deferred
                 else ""
             )

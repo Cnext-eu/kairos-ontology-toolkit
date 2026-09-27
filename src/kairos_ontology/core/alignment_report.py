@@ -1009,6 +1009,45 @@ def render_markdown(
             "`kairos-ontology draft-gap-decisions --include-deferred`."
         )
         lines.append("")
+        sibling_tables = backlog.siblings_by_table()
+        if sibling_tables:
+            lines.append("### Sibling candidates")
+            lines.append("")
+            lines.append(
+                f"**{backlog.with_siblings:,} deferred column(s)** complete a field their "
+                "table already binds: the unit or currency of a bound measure or amount, "
+                "the description of a bound code, a measure, amount or date next to a bound "
+                "one (#1068). They are the cheapest next step into Silver: add each as a "
+                "field of the binding that already reads the table. A suggested property is "
+                "a closure candidate to map it to, not a decision. A unit or currency whose "
+                "property lives on a value object (for example a weight's unit) cannot be a "
+                "field of the parent until #811 lands; carry it as a `technicalFields` "
+                "entry next to its measure meanwhile."
+            )
+            lines.append("")
+            lines.append("| Table | Column | Completes | Kind | Suggested property | Rows |")
+            lines.append("|---|---|---|---|---|---:|")
+            shown = 0
+            for table, columns in sibling_tables:
+                for column in columns:
+                    if shown >= backlog_limit:
+                        break
+                    sibling = column.sibling
+                    assert sibling is not None
+                    rows = f"{column.row_count:,}" if column.row_count is not None else "?"
+                    completes = f"`{sibling.of_column}` ({sibling.of_property})"
+                    lines.append(
+                        f"| {table} | `{column.column}` | {completes} | {sibling.kind} "
+                        f"| {column.suggested_property or '—'} | {rows} |"
+                    )
+                    shown += 1
+            if backlog.with_siblings > shown:
+                lines.append("")
+                lines.append(
+                    f"_…and {backlog.with_siblings - shown:,} more; use `--format json` "
+                    "for every sibling._"
+                )
+            lines.append("")
         for domain, columns in backlog.by_domain().items():
             demanded = sum(1 for c in columns if c.bi_demand)
             lines.append(
