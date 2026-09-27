@@ -1034,6 +1034,48 @@ def test_stage5_emit_reconciles_contracted_dependencies_across_domains(tmp_path,
     validate_dbt_project(target, "fabric-warehouse", structural_only=True)
 
 
+def test_all_emit_publishes_a_change_to_a_dbt_model_several_domains_share(
+    tmp_path, monkeypatch
+):
+    """#1083: a partial emit still refuses a changed shared model (test above), but a
+    whole-hub run re-emits every domain, so it must publish the change instead of
+    colliding with the not-yet-re-emitted domains' prior state."""
+    hub = _copy_hub(tmp_path)
+    _, _, shared, shared_sql = _add_contracted_multi_domain_fixture(hub)
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    env = {"KAIROS_SKILL_CONTEXT": "1"}
+    first = runner.invoke(cli, ["compile", "--all", "--emit", "--confirm-emit"], env=env)
+    assert first.exit_code == 0, first.output
+
+    changed = shared_sql.replace("customer_name", "customer_name as name")
+    shared.write_text(changed, encoding="utf-8")
+    second = runner.invoke(cli, ["compile", "--all", "--emit", "--confirm-emit"], env=env)
+    assert second.exit_code == 0, second.output
+
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    emitted = target / "models" / "intermediate" / "shared" / "stg_shared.sql"
+    assert emitted.read_text(encoding="utf-8") == changed
+    snapshot = {
+        path.relative_to(target).as_posix(): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    }
+
+    # Every domain's state now agrees with the published bytes: a repeat is a no-op and a
+    # partial emit of one sharing domain is accepted again.
+    third = runner.invoke(cli, ["compile", "--all", "--emit", "--confirm-emit"], env=env)
+    assert third.exit_code == 0, third.output
+    assert {
+        path.relative_to(target).as_posix(): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    } == snapshot
+    partial = runner.invoke(cli, ["compile", "party", "--emit", "--confirm-emit"], env=env)
+    assert partial.exit_code == 0, partial.output
+    validate_dbt_project(target, "fabric-warehouse", structural_only=True)
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected"),
     [

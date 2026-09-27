@@ -557,9 +557,14 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
 
 
 def _load_dependency_states(
-    target: Path,
+    target: Path, pending_domains: frozenset[str] = frozenset()
 ) -> tuple[dict[str, list[dict[str, str]]], dict[str, str]]:
-    """Load compiler-owned dependency selections and verify their emitted bytes."""
+    """Load compiler-owned dependency selections and verify their emitted bytes.
+
+    A domain in *pending_domains* has still to emit in this whole-hub run (#1083): an
+    earlier domain of the run may already have rewritten a file it shares, so its
+    recorded digest is allowed to trail the manifest. Every other check still applies.
+    """
     manifest_path = target / _DEPENDENCY_MANIFEST_NAME
     if not manifest_path.exists() and not manifest_path.is_symlink():
         return {}, {}
@@ -622,7 +627,8 @@ def _load_dependency_states(
                 not _dependency_entry_is_valid(entry["kind"], path, entry["model_name"])
                 or len(digest) != 64
                 or any(character not in "0123456789abcdef" for character in digest)
-                or owned.get(path) != digest
+                or path not in owned
+                or (owned[path] != digest and domain not in pending_domains)
             ):
                 raise ManifestError(
                     f"unsafe or inconsistent file entry in dbt dependency state {state_path!r}"
@@ -717,8 +723,19 @@ def _check_cross_domain_model_collisions(result, target: Path) -> None:
             )
 
 
-def _reconciled_dbt_dependencies(result, target: Path) -> dict[str, str] | None:
-    """Reconcile plan-selected contracted dbt files across sequential domain emits."""
+def _reconciled_dbt_dependencies(
+    result, target: Path, pending_domains: frozenset[str] = frozenset()
+) -> dict[str, str] | None:
+    """Reconcile plan-selected contracted dbt files across sequential domain emits.
+
+    *pending_domains* are the domains a whole-hub run (``compile --all --emit``) has
+    still to emit, this one included (#1083). Their recorded dependency state predates
+    this run, so a shared model the run has changed no longer matches it: checking it
+    would fail the first domain to emit the change. For another pending domain the sha
+    check is skipped, and a path this domain also provides takes this domain's current
+    bytes; each pending domain rewrites its own state when it emits. A partial emit
+    passes nothing, so a genuinely stale sibling still fails loudly.
+    """
     from ..core.compiler.emit import ArtifactCollisionError
 
     plan_dependencies = result.plan.dbt_dependencies if result.plan is not None else ()
@@ -727,7 +744,7 @@ def _reconciled_dbt_dependencies(result, target: Path) -> dict[str, str] | None:
     if not plan_dependencies and not manifest_exists:
         return None
 
-    states, prior_content = _load_dependency_states(target)
+    states, prior_content = _load_dependency_states(target, pending_domains)
     states.pop(result.domain, None)
     current_content: dict[str, str] = {}
     if plan_dependencies:
@@ -753,8 +770,12 @@ def _reconciled_dbt_dependencies(result, target: Path) -> dict[str, str] | None:
         artifacts[_dependency_state_name(domain)] = _dependency_state_text(domain, entries)
         for entry in sorted(entries, key=lambda item: item["path"]):
             path = entry["path"]
-            content = current_content[path] if domain == result.domain else prior_content[path]
-            if _content_sha256(content) != entry["sha256"]:
+            pending = domain != result.domain and domain in pending_domains
+            if domain == result.domain or (pending and path in current_content):
+                content = current_content[path]
+            else:
+                content = prior_content[path]
+            if not pending and _content_sha256(content) != entry["sha256"]:
                 raise ArtifactCollisionError(
                     f"contracted dbt dependency {path!r} no longer matches domain {domain!r}"
                 )
@@ -853,7 +874,9 @@ def _emit_diagram_artifacts(result, hub: Path, diagrams: dict[str, str]) -> Path
     return target
 
 
-def _emit_compile_artifacts(result, emit_dir: Path, hub: Path) -> Path:
+def _emit_compile_artifacts(
+    result, emit_dir: Path, hub: Path, pending_domains: frozenset[str] = frozenset()
+) -> Path:
     from ..core.compiler.emit import EmitPart, emit_artifact_batch
     from ..core.compiler.provenance import provenance_artifact
 
@@ -872,7 +895,7 @@ def _emit_compile_artifacts(result, emit_dir: Path, hub: Path) -> Path:
         provenance_path, provenance_content = provenance_artifact(scope)
         domain_artifacts[provenance_path] = provenance_content
     shared_artifacts = _reconciled_shared_artifacts(result, target)
-    dependency_artifacts = _reconciled_dbt_dependencies(result, target)
+    dependency_artifacts = _reconciled_dbt_dependencies(result, target, pending_domains)
     # One transaction for the domain's own, shared and dependency manifests (#598). They
     # used to be three emits, each staging and swapping the whole dbt project, behind a
     # preflight that validated all three first so a failing later one could not leave an
@@ -1068,6 +1091,13 @@ def compile_cmd(
                     whole_hub=all_domains,
                     quiet=quiet,
                     plans=plans if check_mode else None,
+                    # #1083: the domains this whole-hub run has still to emit, this one
+                    # included (its own recorded state is replaced by this emit).
+                    pending_domains=(
+                        frozenset(selected[index - 1 :])
+                        if all_domains and emit_mode
+                        else frozenset()
+                    ),
                 )
                 if not succeeded and span.status == "ok":
                     span.set_status("error")
@@ -1343,6 +1373,7 @@ def _compile_one_domain(
     whole_hub: bool = False,
     quiet: bool = False,
     plans: dict[str, Any] | None = None,
+    pending_domains: frozenset[str] = frozenset(),
 ) -> tuple[bool, dict[str, Any] | None]:
     """Run every gate, then compile, for exactly one domain.
 
@@ -1544,7 +1575,9 @@ def _compile_one_domain(
         # always land in the sibling publish root, never inside the hub.
         with spans.task_span("stage", "emit"):
             requested_target = publish_root(hub) / _DBT_EMIT_SUBPATH
-            emit_target = _emit_compile_artifacts(result, requested_target, hub)
+            emit_target = _emit_compile_artifacts(
+                result, requested_target, hub, pending_domains
+            )
             # Only meaningful for a partial emit: `--all` has just refreshed everything,
             # so anything it would report is already fixed (#796).
             if not whole_hub:
