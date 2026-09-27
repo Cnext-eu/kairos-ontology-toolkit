@@ -1033,6 +1033,22 @@ def render_markdown(
                 lines.append(f"_…and {len(columns) - backlog_limit:,} more in {domain or 'this group'}._")
             lines.append("")
 
+    if overlay is not None and overlay.backlog.retired:
+        retired = overlay.backlog.retired
+        lines.append("## Deferred rows a binding has retired")
+        lines.append("")
+        lines.append(
+            f"**{len(retired):,} column(s)** are still recorded `deferred`, but a binding now "
+            "maps them (DD-251, #1069). They are not backlog. The ledger rows are stale: "
+            "remove them, or re-record the column if the binding is wrong."
+        )
+        lines.append("")
+        for column in retired[:backlog_limit]:
+            lines.append(f"- {column.system}.{column.table} `{column.column}`")
+        if len(retired) > backlog_limit:
+            lines.append(f"- _…and {len(retired) - backlog_limit:,} more._")
+        lines.append("")
+
     for notice in report.notices:
         lines.append(f"> {notice}")
     return "\n".join(lines)

@@ -136,14 +136,41 @@ def is_gap_column_decided(
     that names the column decides it without a row (DD-250). A dbtModel chain never
     decides here -- its evidence reaches the reviewer through
     :meth:`BoundColumns.read_by_models` instead.
+
+    One exception to ledger-first: a column-grain ``deferred`` row is retired by a binding
+    that names the column (DD-251, #1069). ``deferred`` means "model it later"; once a
+    binding maps it, it has been modelled, so the answer is ``"binding"``.
     """
     from .source_disposition import column_decision
 
-    if column_decision(recorded, system, table, column):
+    entry = column_decision(recorded, system, table, column)
+    if entry is not None and not retired_by_binding(entry, bound, system, table, column):
         return "ledger"
     if bound.decided_by_binding(system, table, column):
         return "binding"
     return ""
+
+
+def retired_by_binding(
+    entry: Mapping[str, Any],
+    bound: BoundColumns,
+    system: str,
+    table: str,
+    column: str,
+) -> bool:
+    """Whether a ledger *entry* for one column is a ``deferred`` a binding has retired.
+
+    Only a column-grain ``deferred`` retires (DD-251): it is the one disposition that says
+    "not modelled yet". A ruled-out column a binding still names is a contradiction for a
+    reviewer, not something to resolve here. Only a ``source.relation`` binding counts; a
+    dbtModel chain's ``read_by`` stays evidence (DD-250).
+    """
+    return (
+        bool(column)
+        and str(entry.get("column") or "") == column
+        and str(entry.get("disposition") or "") == "deferred"
+        and bool(bound.decided_by_binding(system, table, column))
+    )
 
 
 def binding_referenced_columns(binding: EntityBinding) -> set[str]:
