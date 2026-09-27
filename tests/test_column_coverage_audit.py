@@ -327,6 +327,6 @@ def test_report_is_json_serializable(tmp_path):
         sources_dir=sources_dir, bindings_dir=bindings_dir, analysis_dir=analysis
     )
     payload = json.loads(json.dumps(report.to_dict()))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["unbound_tables"][0]["row_count"] == 10
     assert payload["cross_domain_columns"][0]["candidate_domain"] == "commercial"

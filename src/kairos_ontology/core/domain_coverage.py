@@ -234,9 +234,22 @@ def load_source_affinity_tables(analysis_dir: Optional[Path]) -> dict[str, dict[
     """Return ``{table name: {primary, secondary, likely_entity, system}}`` from affinity.
 
     The per-table view of :func:`load_source_affinity`, kept separate because consumers
-    want either the per-domain counts or the per-table detail, never both.
+    want either the per-domain counts or the per-table detail, never both. Keyed by table
+    name alone, so two systems' tables of the same name collide (the later file wins);
+    :func:`load_source_affinity_by_table` is the system-aware form (#1065).
     """
-    tables: dict[str, dict[str, Any]] = {}
+    return {table: row for (_, table), row in load_source_affinity_by_table(analysis_dir).items()}
+
+
+def load_source_affinity_by_table(
+    analysis_dir: Optional[Path],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Return ``{(system, table): {primary, secondary, likely_entity, system}}``.
+
+    The system is the affinity file's own ``system`` (else its key), the same name a
+    binding's ``source.relation`` prefix carries.
+    """
+    tables: dict[tuple[str, str], dict[str, Any]] = {}
     if analysis_dir is None or not Path(analysis_dir).is_dir():
         return tables
     for affinity_file in analysis_paths.iter_keyed_paths(Path(analysis_dir), analysis_paths.AFFINITY):
@@ -256,7 +269,7 @@ def load_source_affinity_tables(analysis_dir: Optional[Path]) -> dict[str, dict[
                 for entry in (table.get("secondary_domains") or [])
                 if isinstance(entry, dict) and (entry.get("domain") or "").strip()
             )
-            tables[str(table["table"])] = {
+            tables[(str(system), str(table["table"]))] = {
                 "system": str(system),
                 "primary": (table.get("domain") or "").strip(),
                 "secondary": secondary,

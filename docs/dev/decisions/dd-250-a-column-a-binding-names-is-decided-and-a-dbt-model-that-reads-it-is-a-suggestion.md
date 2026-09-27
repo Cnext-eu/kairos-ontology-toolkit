@@ -98,8 +98,10 @@ Two facts shape the answer.
 - `apply_decision_sheet` reports `skipped_bound_by_binding`; an old sheet decision typed
   for a column a binding now names is left alone and counted, never written.
 - `audit-column-coverage` imports `binding_referenced_columns` from here. Its keying by
-  table name without system, which attaches every dbtModel binding's columns to table
-  `""`, is a separate defect left for a follow-up issue.
+  table name without system, which attached every dbtModel binding's columns to table
+  `""`, was a separate defect. #1065 fixed it: the audit keys by `(system, table)` and
+  reads chains through `load_bound_columns`, with a `select *` read reported as
+  lineage-unconfirmed.
 - A hand-written column-grain `bound` row is still accepted; on a column a relation
   binding names it is now redundant.
 - A ledger cannot hold column lineage that does not exist. A hub whose stages all say
