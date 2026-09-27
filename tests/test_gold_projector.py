@@ -395,6 +395,70 @@ def test_measure_dax_referencing_unemitted_table_blocks(tmp_path: Path):
         _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
 
 
+_USERELATIONSHIP_MEASURE = """
+acme-inv:InvoicesByDate a kairos-ext:Measure ;
+    kairos-ext:measureId "invoice.total-by-invoice-date" ;
+    kairos-ext:measureDisplayName "Total Invoice Amount by Invoice Date" ;
+    kairos-ext:measureDefinition "The total amount, filtered through the invoice-date role." ;
+    kairos-ext:measureExpression "CALCULATE([Total Invoice Amount], USERELATIONSHIP(fact_invoice[invoice_date], dim_date[full_date]))" ;
+    kairos-ext:measureColumnDependency "fact_invoice.invoice_date" ;
+    kairos-ext:measureColumnDependency "dim_date.full_date" ;
+    kairos-ext:measureDependency acme-inv:TotalInvoiceAmount ;
+    kairos-ext:measureLifecycleState "provisional" ;
+    kairos-ext:measureDataType "decimal" ;
+    kairos-ext:measureFormatString "#,##0.00" ;
+    kairos-ext:measureFolder "Finance" .
+"""
+
+
+def _with_userelationship_measure(text: str, *, expression: str | None = None) -> str:
+    measure = _USERELATIONSHIP_MEASURE
+    if expression is not None:
+        measure = measure.replace(
+            "CALCULATE([Total Invoice Amount], USERELATIONSHIP(fact_invoice[invoice_date], "
+            "dim_date[full_date]))",
+            expression,
+        )
+    registered = text.replace(
+        "kairos-ext:measure acme-inv:TotalInvoiceAmount, acme-inv:TotalLineAmount ;",
+        "kairos-ext:measure acme-inv:TotalInvoiceAmount, acme-inv:TotalLineAmount, "
+        "acme-inv:InvoicesByDate ;",
+        1,
+    )
+    assert registered != text
+    return registered + measure
+
+
+def test_a_userelationship_measure_keeps_the_fact_as_its_home_table(tmp_path: Path):
+    """#1089: USERELATIONSHIP names both ends of a relationship, and the far end --
+    dim_date[full_date] here -- used to count as a second home table, failing
+    measure.ambiguous-home-table. That made the measure the role-playing and
+    ambiguous-path checks recommend impossible to author."""
+    text = _with_userelationship_measure(_gold_text("invoice"))
+    artifacts = _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
+
+    measure = next(
+        item
+        for item in _report(artifacts, "invoice")["measures"]
+        if item["id"] == "invoice.total-by-invoice-date"
+    )
+    assert measure["home_table"] == "fact_invoice"
+
+
+def test_a_calendar_column_read_as_a_value_still_counts_as_a_home_table(tmp_path: Path):
+    """Only a column used solely as a USERELATIONSHIP endpoint is set aside; the same
+    column read as a value elsewhere in the expression still decides the home table."""
+    text = _with_userelationship_measure(
+        _gold_text("invoice"),
+        expression=(
+            "CALCULATE([Total Invoice Amount], USERELATIONSHIP(fact_invoice[invoice_date], "
+            "dim_date[full_date])) + COUNTROWS(VALUES(dim_date[full_date]))"
+        ),
+    )
+    with pytest.raises(GoldContractError, match="ambiguous-home-table"):
+        _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
+
+
 def test_approved_measure_keeps_base_column_and_emits_dax(invoice_gold):
     fact_sql = _gold_dbt("invoice")["models/gold/invoice/fact_invoice.sql"]
     ddl = invoice_gold["invoice/invoice-gold-ddl.sql"]
