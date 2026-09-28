@@ -5,8 +5,18 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.24.9** is the latest GA release (2026-09-27), superseding
-> **5.24.8** (2026-09-27). A one-fix patch:
+> **Release status.** **5.25.0** is the latest GA release (2026-09-28), superseding
+> **5.24.9** (2026-09-27). A minor release with one addition:
+>
+> - The time-intelligence calculation group compares against the prior period: `PM`,
+>   `PY`, `MoM %` and `YoY %` next to `Current`/`YTD`/`QTD`/`MTD` (#1098), so every
+>   measure gets the comparison a confirmed insight names, with no per-measure authoring.
+>
+> **What to expect on the first run after upgrading from 5.24.9.** Every Gold product with
+> an approved calendar re-emits its `time-intelligence.tmdl` with four more items. Existing
+> items and ordinals are unchanged, so reports built on them keep working.
+>
+> **Upgrading from 5.24.8?** 5.24.9's first-run notes still apply on top of the above:
 >
 > - A product that reads a domain as shared no longer fails on that domain's bridge to a
 >   fact it does not have (#1092). The bridge is left out there, reported under
@@ -189,6 +199,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.25.0] — 2026-09-28
+
+### Added
+- **The time-intelligence calculation group compares against the prior period.** Next to
+  `Current`, `YTD`, `QTD` and `MTD` it now carries `PM` (prior month), `PY` (prior year),
+  `MoM %` and `YoY %`. The two percentage items format as `0.0%`, and the others keep the
+  measure's own format. Every measure gets its comparison without per-measure authoring,
+  which a hub could not do anyway: a measure naming `dim_date[full_date]` in `DATEADD`
+  counted the calendar as a second home table. Additive: no existing item or ordinal
+  changes. Verified on a deployed Direct Lake model through `executeQueries`.
 
 ## [5.24.9] — 2026-09-27
 
