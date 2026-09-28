@@ -20,6 +20,9 @@ creates one immutable `CompilePlan`; emitted artifacts are pinned and consumed h
 - Keep downstream-only logic in ordinary dbt models.
 - Keep profiles and credentials outside Git.
 - Do not treat compile success as release publication or deployment evidence.
+- Authored Power BI reports live in `powerbi/reports/`, listed in `reports.yml`; see its
+  `README.md`. Never name one after a semantic model, and never commit a model ID per
+  environment.
 
 Dataplatform setup supports `fabric-lakehouse`, `fabric-warehouse`, and `databricks`;
 compiler adapters are `fabric` and `databricks`.

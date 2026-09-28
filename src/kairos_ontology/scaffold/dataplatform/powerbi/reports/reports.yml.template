@@ -1,0 +1,14 @@
+# The Power BI reports this repository authors (DD-253). See README.md in this folder.
+#
+# Every <Name>.Report folder here needs an entry; `model` is the display name of the
+# semantic model it reads, which the deploy looks up in each target workspace.
+#
+# theme: theme/brand.json            # optional: one theme every report shares
+# reports:
+#   - folder: Finance.JobProfitability.Report
+#     model: Finance
+#     product: finance                # optional: the hub's Gold product
+#     insights: [ins-001, ins-004]    # optional: the confirmed insights it answers
+#     theme: false                    # optional: keep this report's own theme
+schema_version: "1"
+reports: []

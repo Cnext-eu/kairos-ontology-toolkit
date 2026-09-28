@@ -167,10 +167,11 @@ After the target environment's dbt build succeeds, it uses that GitHub Environme
 to deploy both `SemanticModel` and `Report` item types. DEV, UAT, and PROD receive the same archive;
 only approved workspace and connection parameterization changes.
 
-Power BI rollback redeploys the previously successful archive. Never regenerate or hand-edit TMDL,
-PBIR, or report JSON in the dataplatform. Any wrapper generation or TMDL normalization happens in
-the hub before the archive is validated and checksummed; downstream deployment is read-only over
-item content.
+Power BI rollback redeploys the previously successful archive. Never regenerate or hand-edit the
+TMDL, PBIR or report JSON **of the hub archive** in the dataplatform. Any wrapper generation or TMDL
+normalization happens in the hub before the archive is validated and checksummed;
+downstream deployment is read-only over the archive's item content. Reports this repository
+authors itself are a different thing and do belong here: see "Authored reports" below.
 
 The dataplatform-side normalization script that used to strip `///` doc comments and rewrite
 partition keywords is **gone**. Everything it backfilled is emitted correctly by the hub, and those
@@ -193,6 +194,33 @@ it produces a reviewable proposal that a hub author merges into the owning domai
 If a report needs a measure, column or relationship the model lacks, that is a hub change request —
 working around it in the report layer is how one governed measure acquires three competing
 definitions.
+
+### Authored reports
+
+The reports the BI engineer builds live in this repository, under `powerbi/reports/`, one
+`<Product>.<Report>.Report/` folder each, saved from Power BI Desktop as a PBIR project
+(DD-253). `powerbi/reports/README.md` walks through it; in short:
+
+- **`powerbi/reports/reports.yml` lists every report** with the display name of the semantic
+  model it reads (`model:`), and optionally the hub product and the confirmed insight ids it
+  answers. A report folder missing from it fails `pr-validate`.
+- **The model is bound at deploy time.** A report binds to a model by ID, and every workspace's
+  copy of the model has its own. After the models are published and framed, the deploy workflow
+  looks the model up by display name in the target workspace, writes its ID into a staged copy
+  of each `definition.pbir` (`kairos-ontology stage-authored-reports`), and publishes the staged
+  reports in a second fabric-cicd pass limited to `Report` items. Nothing per-environment is
+  committed, and the pass never touches the hub archive. A `parameter.yml` you put in
+  `powerbi/reports/` is still applied, for anything else that differs per environment; one that
+  only swapped model IDs is no longer needed.
+- **Reports can live in their own workspace.** Set the `FABRIC_REPORTS_WORKSPACE_ID` Environment
+  variable (or secret) to publish them there; the models are still looked up in
+  `FABRIC_WORKSPACE_ID`. The service principal needs Contributor on both, and report users need
+  read access to the model itself, not only to the report.
+- **One theme for every report.** Declare it once as `theme:` in `reports.yml`, run
+  `kairos-ontology apply-report-theme`, and commit the result. `pr-validate` fails a report that
+  carries no copy, or an older one, of the shared theme; a report opts out with `theme: false`.
+- **Never name a report after a semantic model.** The hub republishes its stub report under each
+  model's name on every release, and would overwrite yours.
 
 ### Direct Lake connection overrides
 

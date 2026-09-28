@@ -1784,6 +1784,11 @@ def _managed_dataplatform_map() -> dict[str, Path]:
     if contributing.is_file():
         result["CONTRIBUTING.md"] = contributing
 
+    # DD-253: managed so a dataplatform scaffolded before #1102 receives it on `update`.
+    reports_readme = _DATAPLATFORM_SCAFFOLD / "powerbi" / "reports" / "README.md"
+    if reports_readme.is_file():
+        result["powerbi/reports/README.md"] = reports_readme
+
     ci = _SCAFFOLD_DIR / "dataplatform-copilot-instructions.md"
     if ci.is_file():
         result[".github/copilot-instructions.md"] = ci
@@ -2739,6 +2744,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         # Pre-#998 hub generation, before the architecture drift check moved out of
         # `compile` into its own parallel job.
         "hub-pr-validate/7.template",
+        # Pre-#1102 dataplatform generation, before the authored-reports check.
+        "dataplatform-pr-validate/5.template",
     ),
     # Pre-#771 generation, before every `uv run` gained `--no-sync`. Also carries the
     # pre-#721 skill-context placement for full-validate.
@@ -2774,6 +2781,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "dataplatform-deploy-powerbi-semantic-model/4.template",
         # #982: one workspace-ID source for every step, BPA per semantic model.
         "dataplatform-deploy-powerbi-semantic-model/5.template",
+        # Pre-#1102 generation, before the second pass publishing authored reports.
+        "dataplatform-deploy-powerbi-semantic-model/6.template",
     ),
     # DD-240: the notebook embeds the BPA profile, which moved to version 2.
     "fabric/KairosModelBpa.Notebook/notebook-content.py": (

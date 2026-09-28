@@ -6,9 +6,7 @@ name: Deploy Power BI Semantic Model
 # or any TMDL/PBIP file. The one exception is deploy-time parameterisation of the
 # extracted `parameter.yml`, which is this side's job by design (issue #662) and is
 # logged before/after. Every input below must verify before extraction (fail closed),
-# and deployment must not run ahead of the target environment's own dbt build. The
-# reports this repository authors (powerbi/reports/, DD-253) are published in a second,
-# separate pass that never touches the archive.
+# and deployment must not run ahead of the target environment's own dbt build.
 on:
   workflow_dispatch:
     inputs:
@@ -220,8 +218,7 @@ jobs:
       # and the override step refuses to continue when it is not.
       #
       # §8 dataplatform responsibility item 6: both Fabric item types the hub ships
-      # (SemanticModel and its stub Report) are deployed together. The reports this
-      # repository authors are published after framing, below.
+      # (SemanticModel and Report) are deployed together.
       - name: Publish semantic model and report to Fabric workspace
         env:
           FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
@@ -343,84 +340,6 @@ jobs:
                     "environment's dbt build created the gold_* tables, and that the "
                     "service principal can read the Warehouse. See CICD.md.")
               sys.exit(1)
-          PY
-
-      # DD-253 / #1102: the Power BI reports this repository authors itself, under
-      # powerbi/reports/. They go second because they bind to the models just published.
-      # A report binds to a model by ID and every workspace's copy of the model has its own,
-      # so the models are looked up by display name here, and the ID lands in a *staged*
-      # copy of each definition.pbir -- the committed reports are never rewritten, and
-      # nothing in this pass reads or writes the hub archive. Fails closed when reports.yml
-      # names a model this workspace does not have.
-      - name: Bind authored reports to this workspace's semantic models
-        if: hashFiles('powerbi/reports/**/definition.pbir') != ''
-        env:
-          FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import urllib.parse
-          import urllib.request
-
-          from azure.identity import AzureCliCredential
-
-          token = AzureCliCredential().get_token("https://api.fabric.microsoft.com/.default").token
-          base = (
-              "https://api.fabric.microsoft.com/v1/workspaces/" + os.environ["FABRIC_WORKSPACE_ID"]
-              + "/items?type=SemanticModel"
-          )
-          models, url = {}, base
-          while url:
-              request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-              with urllib.request.urlopen(request) as response:
-                  page = json.loads(response.read())
-              models.update({item["displayName"]: item["id"] for item in page["value"]})
-              continuation = page.get("continuationToken")
-              url = (
-                  base + "&continuationToken=" + urllib.parse.quote(continuation)
-                  if continuation else None
-              )
-          with open("authored-report-models.json", "w", encoding="utf-8") as handle:
-              json.dump(models, handle)
-          print("Semantic models in the workspace:", ", ".join(sorted(models)) or "none")
-          PY
-          uv run --no-sync kairos-ontology stage-authored-reports \
-            --reports-dir powerbi/reports \
-            --model-ids authored-report-models.json \
-            --out authored-reports
-
-      # FABRIC_REPORTS_WORKSPACE_ID publishes the reports to their own workspace; unset, they
-      # go beside the models. A parameter.yml in powerbi/reports/ is applied as usual. No
-      # orphan cleanup here either (DD-239).
-      - name: Publish authored reports to Fabric workspace
-        if: hashFiles('powerbi/reports/**/definition.pbir') != ''
-        env:
-          FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
-          FABRIC_REPORTS_WORKSPACE_ID: >-
-            ${{ vars.FABRIC_REPORTS_WORKSPACE_ID || secrets.FABRIC_REPORTS_WORKSPACE_ID }}
-          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
-        run: |
-          python - <<'PY'
-          import os
-          from pathlib import Path
-
-          from azure.identity import AzureCliCredential
-          from fabric_cicd import FabricWorkspace, publish_all_items
-
-          workspace_id = (
-              os.environ.get("FABRIC_REPORTS_WORKSPACE_ID") or os.environ["FABRIC_WORKSPACE_ID"]
-          )
-          reports_dir = Path("authored-reports").resolve()
-          target_workspace = FabricWorkspace(
-              workspace_id=workspace_id,
-              environment=os.environ["TARGET_ENVIRONMENT"],
-              repository_directory=str(reports_dir),
-              item_type_in_scope=["Report"],
-              token_credential=AzureCliCredential(),
-          )
-          publish_all_items(target_workspace)
-          print(f"Published authored Report items from: {reports_dir}")
           PY
 
       # DD-238 / #982: advisory Best Practice Analyzer run against the model just

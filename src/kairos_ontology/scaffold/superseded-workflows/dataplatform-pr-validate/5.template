@@ -152,15 +152,6 @@ jobs:
             --models-dir models/hub \
             --format json
 
-      # DD-253 / #1102: the Power BI reports this repository authors itself. Offline, like the
-      # step above: every report folder is listed in reports.yml with the semantic model it
-      # reads, binds to a model, is not named after one (the hub's stub would overwrite it),
-      # and carries the current shared theme. The deploy resolves the model per workspace, so
-      # a report missing from reports.yml would otherwise fail only there.
-      - name: Check authored Power BI reports
-        if: hashFiles('powerbi/reports/**/definition.pbir') != ''
-        run: uv run --no-sync kairos-ontology check-authored-reports
-
       # Opt-in, and the single highest-value gate available here (DD-215).
       #
       # `--empty` runs every model with `limit 0`: the warehouse still parses,

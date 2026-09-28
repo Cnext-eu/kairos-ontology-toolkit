@@ -1861,6 +1861,19 @@ def init_dataplatform(name, dest, platform, org_override):
         _copy_managed(contributing_src, repo_dir / "CONTRIBUTING.md")
         click.echo("  ✓ CONTRIBUTING.md")
 
+    # DD-253: the reports this repository authors. The README is managed; the manifest is
+    # the repository's own and is written only when absent.
+    reports_src = _DATAPLATFORM_SCAFFOLD / "powerbi" / "reports"
+    reports_dst = repo_dir / "powerbi" / "reports"
+    if (reports_src / "README.md").is_file():
+        _copy_managed(reports_src / "README.md", reports_dst / "README.md")
+        click.echo("  ✓ powerbi/reports/README.md")
+    manifest_src = reports_src / "reports.yml.template"
+    if manifest_src.is_file() and not (reports_dst / "reports.yml").exists():
+        reports_dst.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(manifest_src, reports_dst / "reports.yml")
+        click.echo("  ✓ powerbi/reports/reports.yml")
+
     # Copy macros
     for macro_name in ("extract_source_schema.sql", "generate_schema_name.sql", "print_query.sql"):
         macro_src = _DATAPLATFORM_SCAFFOLD / "macros" / macro_name

@@ -478,7 +478,8 @@ class TestInitDataplatform:
             for item in workflow["jobs"]["deploy"]["steps"]
             if "FABRIC_WORKSPACE_ID" in item.get("env", {})
         }
-        assert len(sources) == 4, sources
+        # Override, publish, refresh, the two authored-report steps (#1102), BPA.
+        assert len(sources) == 6, sources
         assert set(sources.values()) == {
             "${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}"
         }
@@ -647,6 +648,59 @@ class TestInitDataplatform:
         guard_index = content.index("Guard against local")
         deps_index = content.index("Install toolkit and dbt adapter")
         assert guard_index < deps_index
+
+    # --- DD-253 / #1102: reports this repository authors ------------------------------
+
+    def test_authored_reports_folder_is_scaffolded(self, dataplatform_output):
+        from kairos_ontology.core.authored_reports import check_authored_reports, load_manifest
+
+        reports = dataplatform_output / "powerbi" / "reports"
+        readme = (reports / "README.md").read_text(encoding="utf-8")
+        assert "kairos-ontology-toolkit:managed" in readme
+        assert "stage-authored-reports" in readme
+        manifest = load_manifest(reports)
+        assert manifest is not None and manifest.reports == ()
+        assert check_authored_reports(reports) == []
+
+    def test_cicd_guide_scopes_read_only_to_the_hub_archive(self, dataplatform_output):
+        cicd = (dataplatform_output / "CICD.md").read_text(encoding="utf-8")
+        assert "report JSON **of the hub archive**" in cicd
+        assert "### Authored reports" in cicd
+        assert "FABRIC_REPORTS_WORKSPACE_ID" in cicd
+
+    def test_authored_reports_publish_after_framing_in_their_own_pass(self, dataplatform_output):
+        _, workflow = self._deploy(dataplatform_output)
+        steps = workflow["jobs"]["deploy"]["steps"]
+        names = [step.get("name", "") for step in steps]
+        archive = names.index("Publish semantic model and report to Fabric workspace")
+        refresh = names.index("Refresh the semantic model (Direct Lake)")
+        bind = names.index("Bind authored reports to this workspace's semantic models")
+        publish = names.index("Publish authored reports to Fabric workspace")
+        bpa = names.index("Advisory Best Practice Analyzer run (non-blocking)")
+        assert archive < refresh < bind < publish < bpa
+
+        guard = "hashFiles('powerbi/reports/**/definition.pbir') != ''"
+        for step in (steps[bind], steps[publish]):
+            assert step["if"] == guard
+            # Never the hub archive: it stays read-only over item content (DD-206).
+            assert "semantic-model" not in step["run"]
+        assert "stage-authored-reports" in steps[bind]["run"]
+        assert 'item_type_in_scope=["Report"]' in steps[publish]["run"]
+        assert 'Path("authored-reports")' in steps[publish]["run"]
+        assert "unpublish" not in steps[publish]["run"]
+
+    def test_pr_validate_checks_authored_reports(self, dataplatform_output):
+        import yaml
+
+        wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
+        steps = [
+            step
+            for job in yaml.safe_load(wf.read_text(encoding="utf-8"))["jobs"].values()
+            for step in job["steps"]
+        ]
+        (check,) = [s for s in steps if s.get("name") == "Check authored Power BI reports"]
+        assert "check-authored-reports" in check["run"]
+        assert "powerbi/reports" in check["if"]
 
 
 class TestInitDataplatformEdgeCases:
@@ -936,6 +990,15 @@ class TestUpdateDataplatform:
             return CliRunner().invoke(cli, ["update", *args])
         finally:
             os.chdir(old_cwd)
+
+    def test_update_adds_the_authored_reports_readme_but_not_a_manifest(self, tmp_path):
+        """DD-253: the README is the toolkit's; reports.yml is the repository's own."""
+        result = self._update(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        readme = tmp_path / "powerbi" / "reports" / "README.md"
+        assert "kairos-ontology-toolkit:managed" in readme.read_text(encoding="utf-8")
+        assert not (tmp_path / "powerbi" / "reports" / "reports.yml").exists()
 
     def test_update_installs_no_hub_only_agent_files(self, tmp_path):
         """#1033: the settings deny-list, read hooks and MCP server serve a hub's ontology."""
