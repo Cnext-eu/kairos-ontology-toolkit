@@ -39,6 +39,12 @@ Treat the ontology hub as the producer and the dataplatform as the runtime consu
   generated `<Product>.Report`, which every hub release republishes. Model edits made in
   Desktop or Fabric return to the hub through `kairos-ontology harvest-gold`, never into this
   repository.
+- Authored reports live in `powerbi/reports/<Product>.<Report>.Report/`, each listed in
+  `powerbi/reports/reports.yml` with the display name of the model it reads (DD-253; the
+  folder's `README.md` has the steps). The deploy binds each one to that model's ID in the
+  target workspace and publishes it in a second pass after framing. Never commit a per-environment
+  model ID, and never name a report after a model. Run `kairos-ontology check-authored-reports`
+  before a PR, and `apply-report-theme` after changing the shared theme.
 - The deploy job runs in the GitHub Environment named by `target_environment` and refreshes
   (frames) every Direct Lake model after publishing; a model that cannot read its tables
   fails the deploy (DD-239). Check `FABRIC_ITEM_ID` points at the Warehouse dbt writes Gold
@@ -59,9 +65,9 @@ Consume optional Gold semantic-model and MDM profile artifacts from the same Com
 generated `deploy-powerbi-semantic-model.yml` workflow already verifies the hub release tag resolves
 to the expected hub SHA and that the downloaded `powerbi-semantic-model.zip` matches its recorded
 SHA-256 before extraction — never bypass or work around that verification, and never hand-edit or
-regenerate its TMDL/PBIR/report JSON downstream. Validate TMDL/DAX, relationships, security, adapter
-behavior, and MDM runtime integration in their own toolchains. Consumer configuration must not
-change canonical EntityBinding semantics.
+regenerate the archive's TMDL/PBIR/report JSON downstream. Validate TMDL/DAX, relationships,
+security, adapter behavior, and MDM runtime integration in their own toolchains. Consumer
+configuration must not change canonical EntityBinding semantics.
 
 When a concept is missing, open a focused ontology/binding change request with domain, affected
 class/property, source relation, expected semantics, and downstream test. Regenerate rather than

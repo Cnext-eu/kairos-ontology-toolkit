@@ -43,4 +43,5 @@ This answers the question DD-223 deferred.
   PBIR skeleton for a human to fill. Both put layout decisions in the hub for little gain
   over a brief a person, or Copilot, reads in a minute.
 - Still open: a hub-wide theme and feeding insight demand into `design-landscape`, as DD-223
-  lists them. They are unaffected by this.
+  lists them. They are unaffected by this. The theme was settled later by DD-253: there is one
+  per dataplatform, applied to authored reports, and this stub stays blank.

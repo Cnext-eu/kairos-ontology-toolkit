@@ -6,5 +6,6 @@ only the rules that must never be missed:
 
 - Never edit compiler-owned output; keep downstream-only logic in ordinary dbt models.
 - Pin an immutable Git revision or versioned artifact, never a moving production branch.
+- Authored Power BI reports live in `powerbi/reports/`; follow its `README.md`.
 - Invoke the owning `kairos-*` skill under `.claude/skills/` before changing how this repository
   consumes the hub.

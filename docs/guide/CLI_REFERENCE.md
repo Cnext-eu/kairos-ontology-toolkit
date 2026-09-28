@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-105 commands.
+108 commands.
 
 ## Index
 
@@ -27,12 +27,14 @@ not reasoning.
 | [`analyse-sources`](#analyse-sources) | Analyse source vocabularies against reference model domains (LLM-powered). |
 | [`anchor-tables`](#anchor-tables) | Anchor every source table against the full reference class catalog (DD-185). |
 | [`apply-gold-connection`](#apply-gold-connection) | Point one environment's Direct Lake target at dataplatform-owned infrastructure. |
+| [`apply-report-theme`](#apply-report-theme) | Install the shared theme reports.yml declares into every authored report. |
 | [`audit-column-coverage`](#audit-column-coverage) | Advisory gate: source columns with real data that no binding references (issue #353). |
 | [`audit-silver-samples`](#audit-silver-samples) | Offline advisory audit of generated silver dbt mappings using source samples. |
 | [`build-glossary`](#build-glossary) | Build the SKOS company glossary TTL from confirmed extractions (DD-062). |
 | [`bump-hub`](#bump-hub) | Pin the hub dbt package in packages.yml to REF's full commit SHA. |
 | [`catalog-test`](#catalog-test) | Test catalog resolution for imports. |
 | [`check-ai-config`](#check-ai-config) | Check AI provider configuration and optional reachability (DD-159). |
+| [`check-authored-reports`](#check-authored-reports) | Check the authored reports before they reach a deploy. |
 | [`class-disposition`](#class-disposition) | Record why a hub class is deliberately not bound to Silver (DD-231). |
 | [`class-disposition clear`](#class-disposition-clear) | Withdraw recorded dispositions -- as auditable as recording them. |
 | [`class-disposition init`](#class-disposition-init) | Create the ledger, turning undecided classes from warnings into errors. |
@@ -117,6 +119,7 @@ not reasoning.
 | [`source-disposition list`](#source-disposition-list) | Show every source table's decision state, and what is still undecided. |
 | [`source-disposition set`](#source-disposition-set) | Record one table's disposition in the hub ledger. |
 | [`source-privacy`](#source-privacy) | Check or sanitize persisted source sample artifacts without exposing values. |
+| [`stage-authored-reports`](#stage-authored-reports) | Copy the authored reports, each bound to its model's ID in the target workspace. |
 | [`suggest-anchor`](#suggest-anchor) | Suggest reference-model anchors for DOMAIN's unanchored classes and properties. |
 | [`suggest-shapes`](#suggest-shapes) | DD-076: generate a DRAFT SHACL file from bronze source profiling metadata. |
 | [`suggest-type`](#suggest-type) | Suggest the canonical type for a SQL/source column type. |
@@ -207,6 +210,19 @@ kairos-ontology apply-gold-connection [OPTIONS]
 | `--package-dir` | **required** | Directory the verified semantic-model archive was extracted into. |
 | `--environment` | **required** | Target environment key, matching the one passed to fabric-cicd. |
 | `--config` |  | Override file (default: .github/fabric/gold-connections.yml). |
+
+
+## apply-report-theme
+
+Install the shared theme reports.yml declares into every authored report. Copies the theme into each report's StaticResources/RegisteredResources and makes it the report's custom theme, as importing it in Power BI Desktop would. Commit the result: the deploy never changes report content. A report with `theme: false` is skipped.
+
+```
+kairos-ontology apply-report-theme [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--reports-dir` | `powerbi/reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
 
 
 ## audit-column-coverage
@@ -307,6 +323,20 @@ kairos-ontology check-ai-config [OPTIONS]
 | `--strict` |  | Exit non-zero on warnings (unprobed) as well as errors. |
 | `--warn-only` |  | Report status but always exit 0. |
 | `--format` | `text` | Output format (default: text -- human-readable). Use --format json for machine-readable output. |
+
+
+## check-authored-reports
+
+Check the authored reports before they reach a deploy. Every `<Name>.Report` folder needs an entry in reports.yml naming the semantic model it reads, a definition.pbir bound to a model, and a name no semantic model uses -- the hub republishes a stub report under each model's name (DD-236). When reports.yml declares a shared `theme:`, each report must carry the current copy of it. Exit 1 on any finding.
+
+```
+kairos-ontology check-authored-reports [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--reports-dir` | `powerbi/reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
+| `--format` | `text` |  |
 
 
 ## class-disposition
@@ -1725,6 +1755,21 @@ kairos-ontology source-privacy [OPTIONS]
 |---|---|---|
 | `--sources` |  | Source directory to inspect (default: integration/sources). |
 | `--fix` |  | Rewrite affected source YAML and vocabulary TTL with opaque redaction tokens. |
+
+
+## stage-authored-reports
+
+Copy the authored reports, each bound to its model's ID in the target workspace. A report binds to a semantic model by ID, and every workspace's copy of the model has its own, so the ID cannot be committed. The deploy lists the target workspace's models and passes them in; this writes each report's definition.pbir as the long `byConnection` form Fabric's import accepts. The committed reports are never modified. Fails when a model reports.yml names is not in the workspace.
+
+```
+kairos-ontology stage-authored-reports [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--reports-dir` | `powerbi/reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
+| `--model-ids` | **required** | JSON object mapping each semantic model's display name to its ID in the target workspace. |
+| `--out` | **required** | Directory to stage the bound reports in; replaced if it exists. |
 
 
 ## suggest-anchor
