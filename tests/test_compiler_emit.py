@@ -615,20 +615,75 @@ def test_windows_backup_rename_failure_carries_the_same_hint(tmp_path: Path, mon
     emit_artifacts({"models/customer.sql": "first"}, target)
     original_replace = os.replace
 
-    def block_the_backup(source, destination):
-        if str(source) == str(target):
+    def block_the_target_and_its_children(source, destination):
+        # Held so thoroughly that the contents-swap fallback cannot help either.
+        if str(source) == str(target) or Path(source).parent == target:
             raise _sharing_violation(32)
         return original_replace(source, destination)
 
-    monkeypatch.setattr(emit_module.os, "replace", block_the_backup)
+    monkeypatch.setattr(emit_module.os, "replace", block_the_target_and_its_children)
     with pytest.raises(EmissionError) as excinfo:
         emit_artifacts({"models/customer.sql": "second"}, target)
 
     message = str(excinfo.value)
-    assert "could not move emission target to backup" in message
+    assert "could not swap staged artifacts into" in message
     assert "antivirus" in message and "Power BI Desktop" in message
     # The previous target is untouched.
     assert (target / "models/customer.sql").read_text() == "first"
+
+
+def _block_only_the_target_folder(monkeypatch, target: Path) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(emit_module.time, "sleep", lambda _: None)
+    original_replace = os.replace
+
+    def blocked(source, destination):
+        if str(source) == str(target):
+            raise _sharing_violation(5)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(emit_module.os, "replace", blocked)
+
+
+def test_a_target_folder_held_open_is_committed_by_swapping_its_contents(tmp_path: Path, monkeypatch):
+    """A terminal whose current directory is the target, or a watcher on exactly that
+    folder, holds the folder but none of its children: the folder cannot be renamed, but
+    every child can. The commit swaps the contents instead of failing."""
+    target = tmp_path / "powerbi"
+    emit_artifacts({"models/old.sql": "first", "models/kept.sql": "first"}, target)
+    _block_only_the_target_folder(monkeypatch, target)
+
+    emit_artifacts({"models/kept.sql": "second"}, target)
+
+    assert (target / "models/kept.sql").read_text() == "second"
+    assert not (target / "models/old.sql").exists()
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name != "powerbi"]
+    assert leftovers == [], leftovers
+
+
+def test_a_failed_contents_swap_restores_the_previous_output(tmp_path: Path, monkeypatch):
+    target = tmp_path / "powerbi"
+    emit_artifacts({"a/file.sql": "first", "b/file.sql": "first"}, target)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(emit_module.time, "sleep", lambda _: None)
+    original_replace = os.replace
+    calls = {"in": 0}
+
+    def fail_midway(source, destination):
+        if str(source) == str(target):
+            raise _sharing_violation(5)
+        if Path(destination).parent == target:
+            calls["in"] += 1
+            if calls["in"] == 2:  # the second staged child cannot move in
+                raise _sharing_violation(2)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(emit_module.os, "replace", fail_midway)
+    with pytest.raises(EmissionError):
+        emit_artifacts({"a/file.sql": "second", "b/file.sql": "second"}, target)
+
+    assert (target / "a/file.sql").read_text() == "first"
+    assert (target / "b/file.sql").read_text() == "first"
 
 
 def test_emit_rejects_an_unknown_manifest_schema(tmp_path: Path):

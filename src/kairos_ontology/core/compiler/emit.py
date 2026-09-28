@@ -659,10 +659,14 @@ def _swap_delays() -> list[float]:
     return delays
 
 
-def _rename_with_retry(source: Path, destination: Path) -> None:
-    """Rename, retrying only a Windows sharing violation."""
+def _rename_with_retry(source: Path, destination: Path, *, extended: bool = True) -> None:
+    """Rename, retrying only a Windows sharing violation.
+
+    *extended* False keeps to the short backoff: the caller has a fallback, so waiting the
+    whole budget would only delay it.
+    """
     short_phase = len(_SWAP_BACKOFF_SECONDS)
-    delays = _swap_delays()
+    delays = _swap_delays() if extended else list(_SWAP_BACKOFF_SECONDS)
     for attempt, delay in enumerate(delays):
         try:
             os.replace(source, destination)
@@ -683,6 +687,49 @@ def _rename_with_retry(source: Path, destination: Path) -> None:
     os.replace(source, destination)
 
 
+def _swap_contents(stage: Path, target: Path) -> Path:
+    """Replace *target*'s children with *stage*'s, keeping the target folder in place.
+
+    The fallback when the target folder cannot be renamed. Every previous child moves into
+    a backup folder first, then every staged child moves in; any failure moves both sets
+    back, so the previous output stays whole. Returns the backup, which the caller removes
+    once the commit is final, like the backup of a whole-folder swap.
+    """
+    backup = _unique_backup_path(target)
+    backup.mkdir()
+    moved_out: list[str] = []
+    moved_in: list[str] = []
+    try:
+        for child in sorted(target.iterdir()):
+            _rename_with_retry(child, backup / child.name)
+            moved_out.append(child.name)
+        for child in sorted(stage.iterdir()):
+            _rename_with_retry(child, target / child.name)
+            moved_in.append(child.name)
+    except OSError as swap_error:
+        try:
+            for name in reversed(moved_in):
+                os.replace(target / name, stage / name)
+            for name in reversed(moved_out):
+                os.replace(backup / name, target / name)
+        except OSError as rollback_error:
+            raise EmissionRollbackError(
+                "emission content swap failed and rollback was incomplete; "
+                f"the previous content remains at {backup}",
+                backup_path=backup,
+            ) from rollback_error
+        _best_effort_remove(backup)
+        detail = f"could not swap staged artifacts into {target}: {swap_error}"
+        if sys.platform == "win32":
+            detail = f"{detail}. {_WINDOWS_SWAP_HINT}"
+        raise EmissionError(detail) from swap_error
+    try:
+        stage.rmdir()
+    except OSError:
+        pass
+    return backup
+
+
 def _commit_stage(stage: Path, target: Path) -> Path | None:
     backup: Path | None = None
     previous_moved = False
@@ -691,9 +738,20 @@ def _commit_stage(stage: Path, target: Path) -> Path | None:
             raise EmissionError(f"emission target must be a directory: {target}")
         backup = _unique_backup_path(target)
         try:
-            _rename_with_retry(target, backup)
+            _rename_with_retry(target, backup, extended=False)
             previous_moved = True
         except OSError as exc:
+            if _is_transient_swap_error(exc):
+                # A handle on the target *directory itself* -- a terminal or tool whose
+                # current directory it is, or a watcher on exactly that folder -- blocks
+                # renaming the folder while every child still moves. Swap the contents
+                # instead of the folder.
+                logger.warning(
+                    "%s cannot be renamed (%s); swapping its contents in place instead",
+                    target,
+                    exc,
+                )
+                return _swap_contents(stage, target)
             # #748: the same sharing violation that blocks the stage -> target swap blocks
             # this rename first when the previous target is what is held open, so it needs
             # the same hint -- this branch used to raise without one.
