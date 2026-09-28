@@ -294,6 +294,14 @@ class TestInitDataplatform:
             content = skill_file.read_text(encoding="utf-8")
             assert "kairos-ontology-toolkit" in content
 
+        # The whole folder, not SKILL.md alone: a file SKILL.md links to must exist (#1102).
+        from kairos_ontology.cli.shared import _SCAFFOLD_DIR
+
+        for skill in _DATAPLATFORM_SKILLS:
+            shipped = {p.name for p in (_SCAFFOLD_DIR / "skills" / skill).iterdir() if p.is_file()}
+            installed = {p.name for p in (skills_dir / skill).iterdir() if p.is_file()}
+            assert installed == shipped, skill
+
         # Cnext-internal, deliberately not shipped (DD-219): SC-merge-pr documents this
         # repository's own release process, SC-document drives a Cnext Outline workspace.
         for excluded in ("SC-merge-pr", "SC-document", "kairos-toolkit-dogfood"):

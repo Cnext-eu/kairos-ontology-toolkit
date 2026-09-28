@@ -55,6 +55,7 @@ from .shared import (
     _managed_region_update,
     _managed_files_transaction,
     _managed_scaffold_map,
+    _managed_skill_assets,
     _parse_hub_package_pin,
     _read_hub_channel,
     _read_pinned_toolkit_version,
@@ -474,7 +475,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
         outside it is yours and is kept (an AGENTS.md without the block gets it
         prepended)
       .github/copilot-instructions.md (a pointer to AGENTS.md)
-      .claude/skills/*/SKILL.md
+      .claude/skills/<skill>/ -- SKILL.md and every file the skill ships beside it
       the per-directory README.md guides under ontology-hub/ and .import/
       ontology-hub/decisions/{README.md,HUB-DD-template.md.template}
 
@@ -797,6 +798,26 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
         else:
             local_file.write_text(new_content, encoding="utf-8")
             updated.append((rel_path, local_ver or "unmanaged"))
+
+    # --- Skill assets without a marker (#1102) --------------------------------
+    # A skill's exemplar .ttl/.yaml cannot carry the HTML-comment marker, so identity is
+    # the LF-normalized bytes: a checkout's line endings never count as drift.
+    for rel_path, scaffold_src in _managed_skill_assets(is_dataplatform).items():
+        local_file = repo_root / rel_path
+        if not local_file.is_file():
+            if check:
+                missing.append(rel_path)
+            else:
+                local_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(scaffold_src, local_file)
+                created.append(rel_path)
+        elif _lf_normalized_bytes(local_file) == _lf_normalized_bytes(scaffold_src):
+            current.append(rel_path)
+        elif check:
+            outdated.append((rel_path, "differs"))
+        else:
+            shutil.copy2(scaffold_src, local_file)
+            updated.append((rel_path, "differs"))
 
     # --- Stale managed-skill cleanup ----------------------------------------
     stale: list[str] = []

@@ -47,7 +47,7 @@ fails `update --check` until it is refreshed or declared.
 
 Owned and replaced on update: `CICD.md`, `CONTRIBUTING.md`,
 `.github/copilot-instructions.md` (a short pointer to `AGENTS.md`),
-`.claude/skills/*/SKILL.md`, and the per-directory `README.md` guides. Edits to these are
+every file under a shipped skill's `.claude/skills/<skill>/`, and the per-directory `README.md` guides. Edits to these are
 lost.
 
 Shared: `AGENTS.md` carries the agent instructions. The toolkit owns only the block between

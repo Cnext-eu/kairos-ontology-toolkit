@@ -2012,10 +2012,18 @@ def init_dataplatform(name, dest, platform, org_override):
     skills_src = _SCAFFOLD_DIR / "skills"
     claude_dir = repo_dir / ".claude"
     for skill_name in _DATAPLATFORM_SKILLS:
-        skill_file = skills_src / skill_name / "SKILL.md"
-        if skill_file.is_file():
-            _copy_managed(skill_file, claude_dir / "skills" / skill_name / "SKILL.md")
-            click.echo(f"  ✓ .claude/skills/{skill_name}/SKILL.md")
+        skill_dir = skills_src / skill_name
+        if not (skill_dir / "SKILL.md").is_file():
+            continue
+        # The whole folder, as `init` installs it: a sibling SKILL.md links to must exist.
+        for src_file in sorted(skill_dir.iterdir()):
+            dst_file = claude_dir / "skills" / skill_name / src_file.name
+            if src_file.is_file() and src_file.suffix == ".md":
+                _copy_managed(src_file, dst_file)
+            elif src_file.is_file():
+                dst_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_file, dst_file)
+        click.echo(f"  ✓ .claude/skills/{skill_name}/")
 
     # Create minimal Python package so hatchling can build the project
     pkg_name = project_name.replace("-", "_")

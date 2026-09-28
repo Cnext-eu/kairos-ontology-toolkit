@@ -1762,13 +1762,50 @@ def _managed_scaffold_map() -> dict[str, Path]:
     skills = _SCAFFOLD_DIR / "skills"
     if skills.is_dir():
         for skill_dir in sorted(skills.iterdir()):
-            if skill_dir.is_dir():
-                skill_file = skill_dir / "SKILL.md"
-                if skill_file.is_file():
-                    # .claude/skills/ is read directly by both Claude Code and
-                    # GitHub Copilot (since Copilot's Dec 2025 Agent Skills release).
-                    result[f".claude/skills/{skill_dir.name}/SKILL.md"] = skill_file
+            if skill_dir.is_dir() and (skill_dir / "SKILL.md").is_file():
+                # .claude/skills/ is read directly by both Claude Code and
+                # GitHub Copilot (since Copilot's Dec 2025 Agent Skills release).
+                result.update(_skill_documents(skill_dir))
 
+    return result
+
+
+def _skill_documents(skill_dir: Path) -> dict[str, Path]:
+    """The stamped Markdown files of one scaffold skill: ``SKILL.md`` and its siblings.
+
+    A sibling a skill links to -- ``kairos-design-gold/report-design-inspiration.md`` --
+    used to reach a hub only through ``init``, which copies the whole folder; ``update``
+    refreshed ``SKILL.md`` alone, so an older hub got the link without the file (#1102).
+    """
+    return {
+        f"{_MANAGED_SKILLS_TREE}/{skill_dir.name}/{path.name}": path
+        for path in sorted(skill_dir.iterdir())
+        if path.is_file() and path.suffix == ".md"
+    }
+
+
+def _managed_skill_assets(is_dataplatform: bool = False) -> dict[str, Path]:
+    """``{repo_relative_path: scaffold_source}`` for the non-Markdown files of skills.
+
+    The exemplar ``.ttl`` and ``.yaml`` files a skill ships beside ``SKILL.md`` cannot carry
+    the managed marker -- it is an HTML comment -- so they are kept out of the managed map,
+    whose every entry is stamped, and ``update`` compares their bytes instead (#1102).
+    """
+    skills = _SCAFFOLD_DIR / "skills"
+    if is_dataplatform:
+        names = list(_DATAPLATFORM_SKILLS)
+    elif skills.is_dir():
+        names = sorted(d.name for d in skills.iterdir() if d.is_dir())
+    else:
+        names = []
+    result: dict[str, Path] = {}
+    for name in names:
+        skill_dir = skills / name
+        if not (skill_dir / "SKILL.md").is_file():
+            continue
+        for path in sorted(skill_dir.iterdir()):
+            if path.is_file() and path.suffix != ".md":
+                result[f"{_MANAGED_SKILLS_TREE}/{name}/{path.name}"] = path
     return result
 
 
@@ -1794,9 +1831,8 @@ def _managed_dataplatform_map() -> dict[str, Path]:
 
     skills = _SCAFFOLD_DIR / "skills"
     for skill_name in _DATAPLATFORM_SKILLS:
-        skill_file = skills / skill_name / "SKILL.md"
-        if skill_file.is_file():
-            result[f".claude/skills/{skill_name}/SKILL.md"] = skill_file
+        if (skills / skill_name / "SKILL.md").is_file():
+            result.update(_skill_documents(skills / skill_name))
 
     return result
 
