@@ -1283,12 +1283,41 @@ def _perspectives_tmdl(spec: DimensionalGoldSpec) -> str:
 #: The time-intelligence calculation items, in the order a report author reads them. The
 #: ordinal is emitted explicitly and drives `sortByColumn: Ordinal`, so the group sorts
 #: chronologically instead of alphabetically (which would read Current, MTD, QTD, YTD).
-_TIME_INTELLIGENCE_ITEMS: tuple[tuple[str, str], ...] = (
-    ("Current", "SELECTEDMEASURE()"),
-    ("YTD", "CALCULATE(SELECTEDMEASURE(), DATESYTD('dim_date'[full_date]))"),
-    ("QTD", "CALCULATE(SELECTEDMEASURE(), DATESQTD('dim_date'[full_date]))"),
-    ("MTD", "CALCULATE(SELECTEDMEASURE(), DATESMTD('dim_date'[full_date]))"),
+#
+#: #1098: every number needs a comparison, and a confirmed insight names one (`prior
+#: month`). The comparison items apply to every measure, so a hub does not author N near-
+#: identical "X PM" measures -- which it could not anyway: a measure naming
+#: `dim_date[full_date]` in DATEADD counts the calendar as a second home table. The two
+#: percentage items carry their own format string; the others keep the measure's.
+_PRIOR_MONTH = "CALCULATE(SELECTEDMEASURE(), DATEADD('dim_date'[full_date], -1, MONTH))"
+_PRIOR_YEAR = "CALCULATE(SELECTEDMEASURE(), DATEADD('dim_date'[full_date], -1, YEAR))"
+_TIME_INTELLIGENCE_ITEMS: tuple[tuple[str, str, str], ...] = (
+    ("Current", "SELECTEDMEASURE()", ""),
+    ("YTD", "CALCULATE(SELECTEDMEASURE(), DATESYTD('dim_date'[full_date]))", ""),
+    ("QTD", "CALCULATE(SELECTEDMEASURE(), DATESQTD('dim_date'[full_date]))", ""),
+    ("MTD", "CALCULATE(SELECTEDMEASURE(), DATESMTD('dim_date'[full_date]))", ""),
+    ("PM", _PRIOR_MONTH, ""),
+    ("PY", _PRIOR_YEAR, ""),
+    (
+        "MoM %",
+        f"VAR _current = SELECTEDMEASURE() VAR _prior = {_PRIOR_MONTH} "
+        "RETURN DIVIDE(_current - _prior, ABS(_prior))",
+        "0.0%",
+    ),
+    (
+        "YoY %",
+        f"VAR _current = SELECTEDMEASURE() VAR _prior = {_PRIOR_YEAR} "
+        "RETURN DIVIDE(_current - _prior, ABS(_prior))",
+        "0.0%",
+    ),
 )
+
+
+def _tmdl_name(name: str) -> str:
+    """A TMDL object name, quoted when it is not a bare identifier."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        return name
+    return "'" + name.replace("'", "''") + "'"
 
 
 def _time_intelligence_tmdl(calendar: GoldCalendarSpec) -> str:
@@ -1316,14 +1345,14 @@ def _time_intelligence_tmdl(calendar: GoldCalendarSpec) -> str:
         "",
         "\tcalculationGroup",
     ]
-    for ordinal, (name, expression) in enumerate(_TIME_INTELLIGENCE_ITEMS):
-        lines.extend(
-            [
-                f"\t\tcalculationItem {name} = {expression}",
-                f"\t\t\tordinal: {ordinal}",
-                "",
-            ]
-        )
+    for ordinal, (name, expression, format_string) in enumerate(_TIME_INTELLIGENCE_ITEMS):
+        lines.append(f"\t\tcalculationItem {_tmdl_name(name)} = {expression}")
+        lines.append(f"\t\t\tordinal: {ordinal}")
+        # An expression property runs until the next line at its own depth or shallower,
+        # so it must be the item's last property: TOM rejected an `ordinal:` after it.
+        if format_string:
+            lines.append(f'\t\t\tformatStringDefinition = "{format_string}"')
+        lines.append("")
     lines.extend(
         [
             "\tcolumn 'Time Calculation'",

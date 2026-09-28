@@ -1217,10 +1217,24 @@ class TestCalculationGroupIsALoadableTomObject:
 
     def test_every_calculation_item_carries_a_deterministic_ordinal(self, invoice_gold):
         group = self._group(invoice_gold)
-        items = re.findall(r"^\t\tcalculationItem (\S+) =", group, re.MULTILINE)
+        items = re.findall(r"^\t\tcalculationItem ('[^']+'|\S+) =", group, re.MULTILINE)
         ordinals = re.findall(r"^\t\t\tordinal: (\d+)$", group, re.MULTILINE)
-        assert items == ["Current", "YTD", "QTD", "MTD"]
-        assert ordinals == ["0", "1", "2", "3"]
+        assert items == ["Current", "YTD", "QTD", "MTD", "PM", "PY", "'MoM %'", "'YoY %'"]
+        assert ordinals == [str(index) for index in range(8)]
+
+    def test_the_comparison_items_compare_against_the_prior_period(self, invoice_gold):
+        """#1098: every number needs a comparison, and confirmed insights name one."""
+        group = self._group(invoice_gold)
+        prior_month = "DATEADD('dim_date'[full_date], -1, MONTH)"
+        prior_year = "DATEADD('dim_date'[full_date], -1, YEAR)"
+        assert f"calculationItem PM = CALCULATE(SELECTEDMEASURE(), {prior_month})" in group
+        assert f"calculationItem PY = CALCULATE(SELECTEDMEASURE(), {prior_year})" in group
+        mom = group.split("calculationItem 'MoM %' = ")[1].split("\n\t\tcalculationItem")[0]
+        assert "DIVIDE(_current - _prior, ABS(_prior))" in mom
+        assert 'formatStringDefinition = "0.0%"' in mom
+        # The value items keep the measure's own format.
+        pm = group.split("calculationItem PM = ")[1].split("\n\t\tcalculationItem")[0]
+        assert "formatStringDefinition" not in pm
 
     def test_the_group_has_a_partition(self, invoice_gold):
         assert "\tpartition 'Time Intelligence' = calculationGroup" in self._group(invoice_gold)
