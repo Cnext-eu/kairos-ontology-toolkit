@@ -222,7 +222,7 @@ kairos-ontology apply-report-theme [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--reports-dir` | `powerbi\reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
+| `--reports-dir` | `powerbi/reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
 
 
 ## audit-column-coverage
@@ -335,7 +335,7 @@ kairos-ontology check-authored-reports [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--reports-dir` | `powerbi\reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
+| `--reports-dir` | `powerbi/reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
 | `--format` | `text` |  |
 
 
@@ -1767,7 +1767,7 @@ kairos-ontology stage-authored-reports [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--reports-dir` | `powerbi\reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
+| `--reports-dir` | `powerbi/reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
 | `--model-ids` | **required** | JSON object mapping each semantic model's display name to its ID in the target workspace. |
 | `--out` | **required** | Directory to stage the bound reports in; replaced if it exists. |
 

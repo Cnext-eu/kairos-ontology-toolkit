@@ -20,7 +20,7 @@ from ..core.authored_reports import (
 
 _REPORTS_DIR_OPTION = click.option(
     "--reports-dir",
-    default=str(DEFAULT_REPORTS_DIR),
+    default=DEFAULT_REPORTS_DIR.as_posix(),
     show_default=True,
     type=click.Path(file_okay=False, path_type=Path),
     help=f"Directory holding the `<Name>.Report` folders and {MANIFEST_NAME}.",
