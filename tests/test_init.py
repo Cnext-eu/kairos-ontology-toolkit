@@ -30,6 +30,7 @@ from kairos_ontology.cli.shared import (
     _V5_OUTPUT_DIRECTORIES,
     _get_region_version,
     _managed_region_update,
+    _managed_skill_assets,
 )
 from kairos_ontology.core.conformance_artifact import check_discovery_gate
 from kairos_ontology.core.hub_inspection import gather_hub_input_snapshot
@@ -926,6 +927,14 @@ def _stage_current_hub_workflows(td) -> None:
         )
 
 
+def _stage_skill_assets(td) -> None:
+    """Write the skills' marker-less exemplar files byte-identical to the scaffold (#1102)."""
+    for rel_path, scaffold_src in _managed_skill_assets().items():
+        dst = Path(td) / rel_path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(scaffold_src, dst)
+
+
 class TestClaudeSettingsReconciliation:
     """`update` classification of `.claude/settings.json` (issue #684).
 
@@ -958,6 +967,7 @@ class TestClaudeSettingsReconciliation:
                 _managed_content(rel_path, scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
             )
         _stage_current_hub_workflows(td)
+        _stage_skill_assets(td)
         settings = Path(td) / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_bytes(settings_bytes)
@@ -1034,6 +1044,7 @@ def test_update_check_exit_code_zero_when_current(tmp_path):
             content = scaffold_src.read_text(encoding="utf-8")
             dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
         _stage_current_hub_workflows(td)
+        _stage_skill_assets(td)
 
         result = runner.invoke(cli, ["update", "--check"])
 
@@ -1055,6 +1066,7 @@ def test_update_noop_when_current(tmp_path):
             content = scaffold_src.read_text(encoding="utf-8")
             dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
         _stage_current_hub_workflows(td)
+        _stage_skill_assets(td)
         _stage_git_hygiene(td)
 
         result = runner.invoke(cli, ["update"])
@@ -1100,6 +1112,7 @@ def test_update_creates_missing_git_hygiene_files(tmp_path):
                 _managed_content(rel_path, scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
             )
         _stage_current_hub_workflows(td)
+        _stage_skill_assets(td)
 
         result = runner.invoke(cli, ["update"])
 
@@ -1126,6 +1139,7 @@ def test_update_check_reports_an_outdated_gitignore_instead_of_claiming_success(
                 _managed_content(rel_path, scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
             )
         _stage_current_hub_workflows(td)
+        _stage_skill_assets(td)
         _stage_git_hygiene(td)
         # A hub predating the `.import` block: its own rules kept, the template's lost.
         (Path(td) / ".gitignore").write_text(".env\n__pycache__/\n", encoding="utf-8")
@@ -1150,6 +1164,7 @@ def test_update_never_overwrites_a_customized_gitignore(tmp_path):
                 _managed_content(rel_path, scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
             )
         _stage_current_hub_workflows(td)
+        _stage_skill_assets(td)
         _stage_git_hygiene(td)
         gitignore = Path(td) / ".gitignore"
         gitignore.write_text(
@@ -1176,6 +1191,7 @@ def test_update_check_reports_missing_workflow_as_drift(tmp_path):
             content = scaffold_src.read_text(encoding="utf-8")
             dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
         _stage_current_hub_workflows(td)
+        _stage_skill_assets(td)
         # Simulate a repo scaffolded before pr-validate.yml existed.
         (Path(td) / ".github" / "workflows" / "pr-validate.yml").unlink()
 
@@ -1200,6 +1216,7 @@ def test_update_reports_missing_workflow_without_creating_it(tmp_path):
             content = scaffold_src.read_text(encoding="utf-8")
             dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
         _stage_current_hub_workflows(td)
+        _stage_skill_assets(td)
         (Path(td) / ".github" / "workflows" / "pr-validate.yml").unlink()
 
         result = runner.invoke(cli, ["update"])
@@ -1268,12 +1285,98 @@ def test_update_creates_new_skill_file(tmp_path):
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
             dst.write_text(_managed_content(rel_path, content, ver), encoding="utf-8")
+        _stage_skill_assets(td)
 
         result = runner.invoke(cli, ["update"])
 
     assert result.exit_code == 0, result.output
     assert "Created 1 new file" in result.output
     assert skill_paths[-1] in result.output
+
+
+def _stage_hub_with_skill_md_only(td, version: str, *, siblings: bool = False) -> None:
+    """A current hub whose skill folders hold SKILL.md alone -- one refreshed before #1102.
+
+    *siblings* stages the skills' other files as well, making it a fully current hub.
+    """
+    for rel_path, scaffold_src in _managed_scaffold_map().items():
+        skill_sibling = rel_path.startswith(".claude/skills/") and not rel_path.endswith(
+            "/SKILL.md"
+        )
+        if skill_sibling and not siblings:
+            continue
+        dst = Path(td) / rel_path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        content = scaffold_src.read_text(encoding="utf-8")
+        dst.write_text(_managed_content(rel_path, content, version), encoding="utf-8")
+    if siblings:
+        _stage_skill_assets(td)
+    _stage_current_hub_workflows(td)
+    _stage_git_hygiene(td)
+
+
+def test_update_installs_the_files_a_skill_links_to(tmp_path):
+    """#1102: `update` refreshed SKILL.md alone, so a hub got the link without the file."""
+    from kairos_ontology import __version__ as ver
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        _stage_hub_with_skill_md_only(td, ver)
+
+        result = runner.invoke(cli, ["update"])
+        assert result.exit_code == 0, result.output
+
+        gold = Path(td) / ".claude/skills/kairos-design-gold"
+        inspiration = gold / "report-design-inspiration.md"
+        assert inspiration.is_file()
+        assert _get_managed_version(inspiration.read_text(encoding="utf-8")) == ver
+        for rel_path, scaffold_src in _managed_skill_assets().items():
+            assert (Path(td) / rel_path).read_bytes() == scaffold_src.read_bytes(), rel_path
+        # The Turtle exemplars are copied verbatim: a marker would make them invalid Turtle.
+        exemplar = Path(td) / ".claude/skills/kairos-design-domain/exemplar-domain.ttl"
+        assert "toolkit:managed" not in exemplar.read_text(encoding="utf-8")
+
+        again = runner.invoke(cli, ["update", "--check"])
+        assert again.exit_code == 0, again.output
+        assert "up to date" in again.output
+
+
+def test_update_check_reports_a_missing_skill_sibling(tmp_path):
+    from kairos_ontology import __version__ as ver
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        _stage_hub_with_skill_md_only(td, ver)
+
+        result = runner.invoke(cli, ["update", "--check"])
+
+    assert result.exit_code == 1, result.output
+    assert ".claude/skills/kairos-design-gold/report-design-inspiration.md" in result.output
+    assert ".claude/skills/kairos-design-mapping/exemplar-binding.yaml" in result.output
+
+
+def test_update_restores_an_edited_skill_asset_and_ignores_line_endings(tmp_path):
+    from kairos_ontology import __version__ as ver
+
+    rel_path = ".claude/skills/kairos-design-mapping/exemplar-binding.yaml"
+    source = _managed_skill_assets()[rel_path]
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        _stage_hub_with_skill_md_only(td, ver, siblings=True)
+        asset = Path(td) / rel_path
+        asset.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
+
+        crlf = runner.invoke(cli, ["update", "--check"])
+        assert crlf.exit_code == 0, crlf.output
+
+        asset.write_bytes(b"edited: true\n")
+        edited = runner.invoke(cli, ["update", "--check"])
+        assert edited.exit_code == 1
+        assert rel_path in edited.output
+
+        fixed = runner.invoke(cli, ["update"])
+        assert fixed.exit_code == 0, fixed.output
+        assert asset.read_bytes() == source.read_bytes()
 
 
 def test_update_removes_stale_managed_skill(tmp_path):

@@ -29,6 +29,7 @@ from kairos_ontology.core.hub_utils import _is_managed_root
 from .test_init import (
     _managed_content,
     _stage_current_hub_workflows,
+    _stage_skill_assets,
     _stage_git_hygiene,
 )
 
@@ -52,6 +53,7 @@ def _stage_current_hub(td: str) -> None:
             encoding="utf-8",
         )
     _stage_current_hub_workflows(td)
+    _stage_skill_assets(td)
     _stage_git_hygiene(td)
 
 
