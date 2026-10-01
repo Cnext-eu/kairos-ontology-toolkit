@@ -316,5 +316,6 @@ during cleanup.
 | [DD-251](decisions/dd-251-a-deferred-column-is-a-backlog-item-the-workflow-keeps-raising-not-a-decision.md) | A deferred column is a backlog item the workflow keeps raising, not a decision | Accepted | 2026-09-27 |
 | [DD-252](decisions/dd-252-a-single-valued-value-objects-scalars-are-fields-of-its-parent-named-through-via.md) | A single-valued value object's scalars are fields of its parent, named through via | Accepted | 2026-09-27 |
 | [DD-253](decisions/dd-253-authored-reports-live-in-the-dataplatform-and-bind-to-their-model-by-name-at-deploy-time.md) | Authored reports live in the dataplatform and bind to their model by name at deploy time | Accepted | 2026-09-28 |
+| [DD-254](decisions/dd-254-a-business-validation-document-is-generated-facts-plus-a-confirmed-narrative.md) | A business validation document is generated facts plus a confirmed narrative | Accepted | 2026-10-01 |
 
 ---

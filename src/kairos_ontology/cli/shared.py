@@ -171,6 +171,8 @@ _SKILL_COVERED_COMMANDS = {
     "promote-transform": "kairos-develop-dbt-transformation",
     "validate-mapping": "kairos-design-mapping",
     "scaffold-mapping": "kairos-design-mapping",
+    # The narrative a reviewer signs is confirmed block by block in the skill (DD-254).
+    "business-doc": "kairos-design-business-validation",
 }
 
 

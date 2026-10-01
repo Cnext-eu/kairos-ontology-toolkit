@@ -88,6 +88,7 @@ copy; Copilot resolves the same tree.
 | Create or change OWL classes/properties | `kairos-design-domain` |
 | Bounded contexts, aggregates, invariants, ubiquitous language, classes deliberately not in Silver | `kairos-design-architecture` |
 | Author source-to-canonical EntityBinding YAML | `kairos-design-mapping` |
+| Business validation / sign-off document for a domain's model | `kairos-design-business-validation` |
 | Create a complex contracted dbt model | `kairos-develop-dbt-transformation` |
 | Design Gold/Power BI products | `kairos-design-gold` |
 | Validate ontology and compile diagnostics | `kairos-execute-validate` |

@@ -24,6 +24,7 @@ DESIGN_SKILLS = [
     "kairos-design-mdm",
     "kairos-develop-dbt-transformation",
     "kairos-design-architecture",
+    "kairos-design-business-validation",
 ]
 
 

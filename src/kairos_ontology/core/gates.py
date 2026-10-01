@@ -412,6 +412,10 @@ UNGATED_FLAGS: dict[str, str] = {
     ),
     "--force-managed": "Hidden maintenance flag for toolkit-managed file rewrites.",
     "--no-cache": "Performance. Forces a clean reparse; the answer is unchanged.",
+    "--no-pdf": (
+        "Skips the PDF preview of a business validation document (DD-254). The Word document "
+        "is the artefact a reviewer signs; the preview is a convenience and gates nothing."
+    ),
     "--no-closure-retry": (
         "Cost. Skips the one extra alignment call per table that re-offers closure "
         "candidates (DD-248 §4); the candidates are still recorded on every column and "

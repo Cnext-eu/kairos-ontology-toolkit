@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-108 commands.
+109 commands.
 
 ## Index
 
@@ -32,6 +32,7 @@ not reasoning.
 | [`audit-silver-samples`](#audit-silver-samples) | Offline advisory audit of generated silver dbt mappings using source samples. |
 | [`build-glossary`](#build-glossary) | Build the SKOS company glossary TTL from confirmed extractions (DD-062). |
 | [`bump-hub`](#bump-hub) | Pin the hub dbt package in packages.yml to REF's full commit SHA. |
+| [`business-doc`](#business-doc) | Build a domain's logical data model document for business sign-off. |
 | [`catalog-test`](#catalog-test) | Test catalog resolution for imports. |
 | [`check-ai-config`](#check-ai-config) | Check AI provider configuration and optional reachability (DD-159). |
 | [`check-authored-reports`](#check-authored-reports) | Check the authored reports before they reach a deploy. |
@@ -290,6 +291,30 @@ kairos-ontology bump-hub [OPTIONS] REF
 | Argument | Arity |
 |---|---|
 | `REF` | required |
+
+
+## business-doc
+
+Build a domain's logical data model document for business sign-off.  --facts derives every fact from the ontology closure, the Silver contract, the compile plan, the source ledgers and the decisions; the same hub gives the same bytes. --render joins those facts with the confirmed narrative and writes <domain>-validation-v<N>.docx (+ a PDF preview when LibreOffice or Word is available). A narrative that names an unknown ID, or leaves an entity, relationship or field unplaced without an omitted: reason, is refused. The document is evidence for a design decision, never for a compile or a release.
+
+```
+kairos-ontology business-doc [OPTIONS] DOMAIN
+```
+
+| Argument | Arity |
+|---|---|
+| `DOMAIN` | required |
+
+| Option | Default | Description |
+|---|---|---|
+| `--facts` | `Sentinel.UNSET` | Write business-doc.facts.json: the domain's facts, read from the hub. |
+| `--render` | `Sentinel.UNSET` | Validate --narrative against the facts and write the Word document. |
+| `--narrative` | `Sentinel.UNSET` | The confirmed business-doc.narrative.yaml (required with --render). |
+| `--version` | `Sentinel.UNSET` | Document version; defaults to the narrative's document.version. |
+| `--entity` | `Sentinel.UNSET` | Core entity (CURIE or IRI); repeat. Default: the classes bound in the domain. |
+| `--output` | `Sentinel.UNSET` | Output directory. Default: ontology-hub-publish/business/<domain>/. |
+| `--no-pdf` |  | Skip the PDF preview. |
+| `--format` | `text` |  |
 
 
 ## catalog-test

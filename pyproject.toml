@@ -55,6 +55,10 @@ documents = [
     "python-pptx>=1.0.0,<2.0.0",
     "openpyxl>=3.1.0,<4.0.0",
 ]
+# Business validation document (DD-254): `business-doc --render` writes Word.
+business-doc = [
+    "python-docx>=1.1.0,<2.0.0",
+]
 parquet = [
     "pyarrow>=14.0.0",
 ]
@@ -119,6 +123,10 @@ documents = [
     "python-docx>=1.1.0,<2.0.0",
     "python-pptx>=1.0.0,<2.0.0",
     "openpyxl>=3.1.0,<4.0.0",
+]
+# Business validation document (DD-254): `business-doc --render` writes Word.
+business-doc = [
+    "python-docx>=1.1.0,<2.0.0",
 ]
 parquet = [
     "pyarrow>=14.0.0",
