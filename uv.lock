@@ -746,6 +746,9 @@ dependencies = [
 azure = [
     { name = "azure-identity" },
 ]
+business-doc = [
+    { name = "python-docx" },
+]
 documents = [
     { name = "openpyxl" },
     { name = "python-docx" },
@@ -776,6 +779,9 @@ parquet = [
 [package.dev-dependencies]
 azure = [
     { name = "azure-identity" },
+]
+business-doc = [
+    { name = "python-docx" },
 ]
 dev = [
     { name = "kairos-ontology-referencemodels" },
@@ -835,16 +841,18 @@ requires-dist = [
     { name = "pyarrow", marker = "extra == 'parquet'", specifier = ">=14.0.0" },
     { name = "pypdf", specifier = ">=6.14.2" },
     { name = "pyshacl", specifier = ">=0.30.1" },
+    { name = "python-docx", marker = "extra == 'business-doc'", specifier = ">=1.1.0,<2.0.0" },
     { name = "python-docx", marker = "extra == 'documents'", specifier = ">=1.1.0,<2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
     { name = "python-pptx", marker = "extra == 'documents'", specifier = ">=1.0.0,<2.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rdflib", specifier = ">=7.4.0" },
 ]
-provides-extras = ["azure", "documents", "flatfile", "foundry", "langfuse", "mcp", "otel", "parquet"]
+provides-extras = ["azure", "business-doc", "documents", "flatfile", "foundry", "langfuse", "mcp", "otel", "parquet"]
 
 [package.metadata.requires-dev]
 azure = [{ name = "azure-identity", specifier = ">=1.15.0,<2.0.0" }]
+business-doc = [{ name = "python-docx", specifier = ">=1.1.0,<2.0.0" }]
 dev = [
     { name = "kairos-ontology-referencemodels", url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.35.2/kairos_ontology_referencemodels-1.35.2-py3-none-any.whl" },
     { name = "pytest", specifier = ">=9.0.3,<10.0.0" },

@@ -40,6 +40,7 @@ keeps all downstream systems consistent with it, automatically.
 | `kairos-design-source` | Import/document source schemas | "Import the schema for our billing Postgres table." |
 | `kairos-design-domain` | Design OWL classes/properties | "Add an Invoice class with an issuedDate property." |
 | `kairos-design-architecture` | Bounded contexts, aggregates, invariants, ubiquitous language, and the "not in Silver yet" ledger — for the context engineer | "Put Invoice and InvoiceLine in a Billing context and record why PostalAddress is architecture-only." |
+| `kairos-design-business-validation` | Per-domain logical model document (Word) for business sign-off; facts generated, narrative confirmed | "Make the sign-off pack for the shipment domain." |
 | `kairos-design-mapping` | Author EntityBinding YAML | "Bind the billing.invoices table to the Invoice entity." |
 | `scaffold-binding` | Auto-scaffold first-draft bindings | "Generate a skeleton binding for the crm.organisations table." |
 | `fit-report` | Inspect property coverage before mapping | "Show me which Invoice properties my data already populates." |
@@ -106,6 +107,7 @@ Use `kairos-design-source`, `kairos-design-domain`, and `kairos-design-mapping` 
 `kairos-design-architecture` for the optional DDD layer (contexts, aggregates, invariants, the
 ubiquitous language and the class ledger — `project --target ddd` writes the context diagrams,
 `ubiquitous-language.ttl` and `concept-guide.md` under `ontology-hub-publish/architecture/ddd/`);
+`kairos-design-business-validation` for the per-domain sign-off document (`business-doc`);
 `kairos-develop-dbt-transformation` for ordinary contracted dbt models; `kairos-design-gold` and
 `kairos-design-mdm` (toolkit repository only, while MDM is not live) for optional consumers; `kairos-execute-validate` for validation; and
 `kairos-toolkit-ops` for managed files, versions, and reference models. Use

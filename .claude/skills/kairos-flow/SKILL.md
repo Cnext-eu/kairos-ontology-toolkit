@@ -65,6 +65,10 @@ map each action `kind` (and its `skill` field) to the owning skill:
 Optional `review-gold`/`review-mdm` actions are non-recommended capabilities; act
 on them only when a Gold or MDM product is explicitly requested.
 
+A business sign-off document for a domain is an optional action outside the
+compile path: when the user asks for one, hand off to
+**kairos-design-business-validation**. It never gates a compile or a release.
+
 When bindings exist, the compiler result inside the proposal is the only build
 signal. A returned `compile-emit` action means only that the current authored
 inputs compile — not a runtime or release guarantee. Report ordered diagnostics

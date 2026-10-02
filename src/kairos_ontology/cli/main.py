@@ -36,6 +36,7 @@ from . import setup as _setup
 from . import shared as _shared
 from . import sources as _sources
 from . import validation as _validation
+from .business_doc import business_doc_cmd
 from .compile import compile_cmd
 from .authored_reports import (
     apply_report_theme_cmd,
@@ -396,6 +397,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(check_authored_reports_cmd)
     group.add_command(stage_authored_reports_cmd)
     group.add_command(apply_report_theme_cmd)
+    group.add_command(business_doc_cmd)
     group.add_command(harvest_gold_cmd)
     group.add_command(package_powerbi_release_cmd)
     group.add_command(decision)
