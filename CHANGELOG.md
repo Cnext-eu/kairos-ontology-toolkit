@@ -5,8 +5,29 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.25.0** is the latest GA release (2026-09-28), superseding
-> **5.24.9** (2026-09-27). A minor release with one addition:
+> **Release status.** **5.26.0** is the latest GA release (2026-10-02), superseding
+> **5.25.0** (2026-09-28). A minor release with two additions and two fixes:
+>
+> - A business validation document per domain (DD-254, #1105): `business-doc --facts`
+>   derives the facts from the model, `business-doc --render` writes the Word document a
+>   business representative signs, and the new `kairos-design-business-validation` skill
+>   drafts and confirms its narrative with you.
+> - Authored Power BI reports live in the dataplatform under `powerbi/reports/` and bind to
+>   their semantic model by name at deploy time (DD-253, #1102).
+> - `update` installs every file a skill ships, not only its `SKILL.md`; emit no longer
+>   fails when its target folder itself is held open.
+>
+> **What to expect on the first run after upgrading from 5.25.0.**
+>
+> | you will see | why |
+> |---|---|
+> | **`update` adds the `kairos-design-business-validation` skill** and its row in the managed block of `AGENTS.md`; `kairos-help` and `kairos-flow` refresh | DD-254. Rendering needs `uv sync --extra business-doc` and a headless Chrome, Chromium or Edge for the diagrams |
+> | **`update` installs skill files a hub never received** (`report-design-inspiration.md`, the design-domain Turtle exemplars, `exemplar-binding.yaml`); `update --check` reports edited ones | #1102 |
+> | **Dataplatforms: `pr-validate` runs `check-authored-reports`** after `update --refresh-workflows` | DD-253. List every existing report folder in `powerbi/reports/reports.yml` first, or it fails |
+>
+> Compiled dbt and Gold output do not change.
+>
+> **Upgrading from 5.24.9?** 5.25.0's first-run notes still apply on top of the above:
 >
 > - The time-intelligence calculation group compares against the prior period: `PM`,
 >   `PY`, `MoM %` and `YoY %` next to `Current`/`YTD`/`QTD`/`MTD` (#1098), so every
@@ -199,6 +220,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.26.0] — 2026-10-02
+
+### Added
+- **Authored Power BI reports get a home, a deploy step and per-environment binding in the
+  dataplatform (DD-253).** The reports your BI engineers build now live in `powerbi/reports/`,
+  one PBIR folder per report. Each is listed in `powerbi/reports/reports.yml` by the display
+  name of the semantic model it reads, optionally with the hub product and the confirmed
+  insights it answers. `init-dataplatform` scaffolds the folder, and `update` adds its
+  `README.md` to existing dataplatforms.
+  - **The deploy workflow publishes them in a second pass after the models are framed.** It
+    looks up each model's ID in the target workspace, writes it into a staged copy of the
+    report's `definition.pbir` (`kairos-ontology stage-authored-reports`) in the long
+    `byConnection` form Fabric's import requires, and never touches the hub archive. There are
+    no model IDs to commit per environment, and a hand-kept `parameter.yml` of them can be
+    deleted. Set `FABRIC_REPORTS_WORKSPACE_ID` to publish the reports to their own workspace.
+  - **`pr-validate` runs `kairos-ontology check-authored-reports`.** It fails when a report is
+    unlisted, is unbound, is named after a semantic model (the hub's stub report would
+    overwrite it) or carries an outdated copy of the shared theme.
+  - **One theme for every report.** Declare it as `theme:` in `reports.yml`, run
+    `kairos-ontology apply-report-theme` and commit the result.
+  - Refresh the two workflows with `kairos-ontology update --refresh-workflows`. If you already
+    have report folders, add a `reports.yml` entry for each one, or `pr-validate` fails.
+- **A business validation document per domain, generated from the model and signed off by the
+  business (DD-254).** `kairos-ontology business-doc <domain> --facts` writes
+  `business-doc.facts.json`: the domain's entities, fields, code lists, relationships with their
+  OWL cardinality, neighbour domains, candidate gaps from the source ledgers and the domain's
+  decisions, read from the ontology closure, the Silver contract, the compile plan and its
+  bindings. The same hub always gives the same bytes. `--render --narrative <file>` joins those
+  facts with a confirmed plain-language narrative and writes `<domain>-validation-v<N>.docx`:
+  terms, the domain and its neighbours, landscape diagrams with crow's-foot line ends, one
+  section per entity, gaps and open decisions, and a sign-off table, with Yes / No / Comment
+  boxes on every row. A PDF preview is written when LibreOffice or Word is available.
+  - **The narrative cannot add or drop a fact.** A narrative that names an ID the facts do not
+    carry, or leaves an entity, relationship or field unplaced without an `omitted:` reason,
+    is refused.
+  - **Silver and OWL disagreements are surfaced.** When Silver joins a relationship
+    many-to-one but the ontology still allows many, the facts carry a warning to fix the
+    ontology rather than the wording.
+  - **New optional extra `business-doc`** (python-docx). Diagrams are rasterised with a
+    headless Chrome, Chromium or Edge (`KAIROS_CHROME` points at one); without one the SVGs are
+    written beside the document and the command warns.
+  - **New hub skill `kairos-design-business-validation`** drafts the narrative with you,
+    confirms it block by block, renders, and routes every "No" back through
+    `kairos-design-domain`. Routed from the hub `AGENTS.md`, `kairos-help` and `kairos-flow`
+    as an optional action outside the compile path. Run `kairos-ontology update` to receive it.
+
+### Changed
+- **The dataplatform `CICD.md` no longer reads as if authored reports were forbidden.** Its
+  "never hand-edit PBIR or report JSON" rule now names the hub archive. A new "Authored reports"
+  section covers the folder, the deploy pass and the theme.
+
+### Fixed
+- **`update` now installs every file a skill ships, not only its `SKILL.md`.** `init` copied a
+  skill's whole folder, but `update` refreshed `SKILL.md` alone. A hub that took a skill through
+  `update` therefore had a link to a file it never received:
+  `kairos-design-gold/report-design-inspiration.md`, the design-domain Turtle exemplars and the
+  design-mapping `exemplar-binding.yaml`. Markdown siblings are now managed like `SKILL.md`. The
+  exemplar `.ttl` and `.yaml` files are compared by content, ignoring line endings, because a
+  managed marker would make them invalid. `update --check` reports any that are missing or edited.
+  `init-dataplatform` also installs each skill's whole folder now.
+- **Emit no longer fails when the target folder itself is held open.** On Windows, a
+  terminal whose current directory is the emission target, or a tool watching exactly that
+  folder, holds the folder but none of its children. The staged swap renames the whole
+  folder, so every emit failed with `could not move emission target to backup` until the
+  holder closed, even after the full retry budget. Emit now retries the folder rename for
+  the short backoff only (about five seconds), then swaps the folder's contents in place:
+  the previous children move to a backup, the staged children move in, and any failure
+  moves both back, so the previous output stays whole.
 
 ## [5.25.0] — 2026-09-28
 
