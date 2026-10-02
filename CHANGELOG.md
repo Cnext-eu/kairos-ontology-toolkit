@@ -5,8 +5,18 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.26.0** is the latest GA release (2026-10-02), superseding
-> **5.25.0** (2026-09-28). A minor release with two additions and two fixes:
+> **Release status.** **5.26.1** is the latest GA release (2026-10-02), superseding
+> **5.26.0** (the same day). A patch release with one fix:
+>
+> - `business-doc --render` can be installed in a hub (#1105): new hubs get a
+>   `business-doc` extra, and a hub scaffolded earlier uses `uv sync --extra documents`,
+>   which already installs python-docx.
+>
+> **What to expect on the first run after upgrading from 5.26.0.** `update` refreshes the
+> `kairos-design-business-validation` skill. Nothing else changes.
+>
+> **Upgrading from 5.25.0?** 5.26.0's first-run notes still apply on top of the above. It
+> was a minor release with two additions and two fixes:
 >
 > - A business validation document per domain (DD-254, #1105): `business-doc --facts`
 >   derives the facts from the model, `business-doc --render` writes the Word document a
@@ -220,6 +230,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.26.1] — 2026-10-02
+
+### Fixed
+- **`business-doc --render` can be installed in a hub.** 5.26.0 told you to run
+  `uv sync --extra business-doc`, but a hub's `pyproject.toml` had no such extra, so the
+  command failed. New hubs now get a `business-doc` extra. In a hub scaffolded earlier, use
+  `uv sync --extra documents`, which already installs python-docx; the missing-extra message
+  and the `kairos-design-business-validation` skill now say so. Run `kairos-ontology update`
+  to refresh the skill.
 
 ## [5.26.0] — 2026-10-02
 

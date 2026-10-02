@@ -36,9 +36,10 @@ def _require_docx():
         import docx  # noqa: F401
     except ImportError as exc:
         raise BusinessDocError(
-            "rendering a business validation document needs the 'business-doc' extra: "
-            "uv sync --extra business-doc (or pip install "
-            "'kairos-ontology-toolkit[business-doc]')."
+            "rendering a business validation document needs python-docx: "
+            "uv sync --extra business-doc (a hub scaffolded before toolkit 5.26.1 has no "
+            "such extra; use uv sync --extra documents, which also installs python-docx), "
+            "or pip install 'kairos-ontology-toolkit[business-doc]'."
         ) from exc
     return docx
 

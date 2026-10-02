@@ -26,7 +26,9 @@ SCAFFOLD_TEMPLATE = (
     / "pyproject.toml.template"
 )
 
-USER_FACING_EXTRAS = ["azure", "foundry", "flatfile", "documents", "parquet", "otel", "langfuse"]
+USER_FACING_EXTRAS = [
+    "azure", "foundry", "flatfile", "documents", "business-doc", "parquet", "otel", "langfuse",
+]
 
 
 def _load_pyproject() -> dict:

@@ -203,8 +203,10 @@ portrait for text; every diagram on its own **landscape** page.
    field unplaced without an `omitted:` reason. Fix the narrative and re-run;
    never weaken it by omitting a fact the business should see. It writes
    `<domain>-validation-v<N>.docx`, the figure SVGs and, when LibreOffice or
-   Word is available, a PDF preview. Rendering needs the `business-doc` extra
-   (`uv sync --extra business-doc`) and a headless Chrome, Chromium or Edge for
+   Word is available, a PDF preview. Rendering needs python-docx:
+   `uv sync --extra business-doc`, or `uv sync --extra documents` in a hub
+   scaffolded before toolkit 5.26.1, whose `pyproject.toml` has no
+   `business-doc` extra. It also needs a headless Chrome, Chromium or Edge for
    the diagrams (`KAIROS_CHROME` points at one); without a browser the figure
    pages hold a placeholder and the command warns.
 6. **Verify.** Open the PDF preview (or the `.docx`) and look at every page:
