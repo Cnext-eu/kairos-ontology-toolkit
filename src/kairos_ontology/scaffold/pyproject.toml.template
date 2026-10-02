@@ -39,6 +39,10 @@ flatfile = [
 documents = [
     "kairos-ontology-toolkit[documents]",
 ]
+# `business-doc --render` writes the business validation document (DD-254).
+business-doc = [
+    "kairos-ontology-toolkit[business-doc]",
+]
 azure = [
     "kairos-ontology-toolkit[azure]",
 ]

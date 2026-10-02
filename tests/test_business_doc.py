@@ -545,8 +545,10 @@ def test_a_missing_extra_names_the_install_command(shipment_hub, monkeypatch):
 
     facts = build_facts(shipment_hub, "shipment")
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    with pytest.raises(BusinessDocError, match="uv sync --extra business-doc"):
+    with pytest.raises(BusinessDocError, match="uv sync --extra business-doc") as raised:
         render_document(facts, _narrative())
+    # A hub scaffolded before the extra existed is told the extra it does have.
+    assert "uv sync --extra documents" in str(raised.value)
 
 
 # --------------------------------------------------------------------------------------

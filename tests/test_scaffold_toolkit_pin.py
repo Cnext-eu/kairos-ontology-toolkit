@@ -40,7 +40,9 @@ TEMPLATE = (
     / "pyproject.toml.template"
 )
 
-USER_FACING_EXTRAS = ("azure", "foundry", "flatfile", "parquet", "otel", "langfuse")
+USER_FACING_EXTRAS = (
+    "azure", "foundry", "flatfile", "business-doc", "parquet", "otel", "langfuse",
+)
 
 # A tag whose PEP 440 form differs from the tag text, so a template that reused
 # {toolkit_ref} where {toolkit_version} belongs cannot pass by accident.
