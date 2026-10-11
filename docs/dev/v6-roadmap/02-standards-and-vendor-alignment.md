@@ -81,7 +81,7 @@ Gaps to handle in a projection:
 | **Unity Catalog Metric Views** are generally available (2026-04-02). They support multi-fact relationships and level-of-detail calculations, with materialisation in preview. Open source in Apache Spark and Unity Catalog OSS, described as "OSI ready". | [Databricks DAIS 2026 blog](https://www.databricks.com/blog/whats-new-unity-catalog-data-ai-summit-2026) |
 | **Unity Catalog Glossary** (terms, concepts, taxonomies; preview "coming soon" as of June 2026). **Genie Ontology** is a "continuously learned" context layer: inferred, not authored, and proprietary. | same |
 | An Ossie ↔ Metric View converter exists (`converters/databricks`, PR #152). | [apache/ossie#152](https://github.com/apache/ossie/pull/152) |
-| Reported: Unity Catalog embeds ODCS and ODPS. *Unverified, from a secondary source.* | [Bitol](https://bitol.io/bitol-graduates/) |
+| *Corrected 2026-10-11:* the reported claim that Unity Catalog embeds ODCS and ODPS has no support. Databricks recommends keeping contracts as YAML outside the platform. ODCS support near Databricks comes from **Databricks Labs Ontos**, an experimental catalog on top of Unity Catalog. See [topic 04](04-ddd-and-data-product-standards.md). | [databrickslabs/ontos](https://github.com/databrickslabs/ontos) |
 
 **Alignment: at the semantic layer and contract level, not at the ontology level.** I found no
 OWL or RDF import. The Databricks route for a Kairos Gold product is **Gold spec → Ossie →
@@ -112,7 +112,7 @@ ontology IRIs in `meta.kairos`.
 | A1 | **Publish the OWL closure to Fabric IQ** as a flattened TTL or item definition, with bindings generated from EntityBindings | W3C OWL/SKOS | Microsoft | Medium | **Yes, top priority.** Microsoft is our primary platform. |
 | A2 | **Gold spec → Ossie** projection (topic 01, option B) | Apache Ossie | Databricks, Snowflake, dbt, Tableau, and Microsoft through its converter | Small | **Yes** |
 | A3 | **Gold spec → dbt semantic models (MetricFlow)**, directly or through A2 | MetricFlow (Ossie reference implementation) | dbt, plus any MetricFlow consumer | Small after A2 | **Yes, after A2.** Decide between direct and via-Ossie output. |
-| A4 | **Silver contract ↔ ODCS v3** export, keeping DD-213 as the authority | Bitol ODCS | Databricks (reported), Egeria, data-contract tooling | Medium | Investigate |
+| A4 | **Silver contract → ODCS v3.2** export, keeping DD-213 as the authority | Bitol ODCS | Data Contract CLI, Egeria, Databricks Labs Ontos, data-contract tooling | Medium | **Yes.** Detailed as B1 in [topic 04](04-ddd-and-data-product-standards.md). |
 | A5 | Ontology IRIs in `meta.kairos` and Ossie `custom_extensions`, so OpenLineage and catalogs can trace a column back to its concept | OpenLineage, Ossie | All | Small | **Yes.** It is a prerequisite for A1 to A3. |
 | A6 | Optional Jena/Fuseki SPARQL endpoint over released closures | W3C SPARQL, Apache Jena | Vendor-neutral agents | Medium | Later. The MCP server covers agents today. |
 | A7 | Align our OTel span attributes with the OpenTelemetry GenAI semantic conventions | CNCF OpenTelemetry | Observability back ends | Small | Housekeeping |
@@ -136,7 +136,8 @@ ontology IRIs in `meta.kairos`.
    commitment to "advance Ossie support for ontologies" suggests Fabric IQ's metamodel may
    become the Ossie ontology proposal. If so, Kairos should engage with Ossie WG3 early
    (topic 01, option E).
-4. Is the claim that Unity Catalog embeds ODCS accurate? Is the Unity Catalog Glossary API
+4. ~~Is the claim that Unity Catalog embeds ODCS accurate?~~ No; see
+   [topic 04](04-ddd-and-data-product-standards.md). Is the Unity Catalog Glossary API
    available yet?
 
 ## Sources
