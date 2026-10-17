@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-109 commands.
+110 commands.
 
 ## Index
 
@@ -26,7 +26,7 @@ not reasoning.
 | [`alignment-report`](#alignment-report) | Report source-column alignment coverage with a reason per unmapped column. |
 | [`analyse-sources`](#analyse-sources) | Analyse source vocabularies against reference model domains (LLM-powered). |
 | [`anchor-tables`](#anchor-tables) | Anchor every source table against the full reference class catalog (DD-185). |
-| [`apply-gold-connection`](#apply-gold-connection) | Point one environment's Direct Lake target at dataplatform-owned infrastructure. |
+| [`apply-gold-connection`](#apply-gold-connection) | Point one environment's Gold connection at dataplatform-owned infrastructure. |
 | [`apply-report-theme`](#apply-report-theme) | Install the shared theme reports.yml declares into every authored report. |
 | [`audit-column-coverage`](#audit-column-coverage) | Advisory gate: source columns with real data that no binding references (issue #353). |
 | [`audit-silver-samples`](#audit-silver-samples) | Offline advisory audit of generated silver dbt mappings using source samples. |
@@ -104,6 +104,7 @@ not reasoning.
 | [`propose-relationships`](#propose-relationships) | Propose relationships: entries for authored bindings (issue #493, DD-160). |
 | [`read-document`](#read-document) | Print the text of a staged business-discovery document (#907). |
 | [`register-concept`](#register-concept) | Register a source-discovered concept the archetype catalog does not contain (#505). |
+| [`resolve-environment`](#resolve-environment) | Resolve one environment's deploy IDs from its dbt target. |
 | [`resolve-ontology`](#resolve-ontology) | Resolve an ontology closure and show its deterministic manifest. |
 | [`scaffold-binding`](#scaffold-binding) | Scaffold a first-draft v5 EntityBinding YAML for one Bronze source table. |
 | [`scaffold-contract`](#scaffold-contract) | Generate a declared Silver contract from the current compile plan. |
@@ -200,7 +201,7 @@ kairos-ontology anchor-tables [OPTIONS]
 
 ## apply-gold-connection
 
-Point one environment's Direct Lake target at dataplatform-owned infrastructure. The hub authors `gold.direct_lake_connection` in its own `kairos.yaml`, so the `parameter.yml` it ships can only rewrite between environments the hub itself declares. That forced every Fabric workspace a hub might ever deploy to have its real GUIDs committed to the hub repo, which otherwise stays infrastructure-agnostic (issue #662). This is the seam from the other side. Only `replace_value[ENVIRONMENT]` is rewritten. `find_value` is left exactly as the hub emitted it: fabric-cicd matches it as a literal substring against the URL baked into the TMDL, so a dataplatform-supplied value would silently fail to match and leave the model pointed at the hub's default workspace. A missing config file, or one that does not declare ENVIRONMENT, leaves the hub's own values standing. Two things fail closed (#993), because each used to deploy the hub's default workspace to every environment without a word: - the package carries no `parameter.yml` (a release packaged before the toolkit shipped it -- re-release the hub); - after any override, `parameter.yml` does not declare ENVIRONMENT, e.g. a typo, which fabric-cicd would silently skip. Environment keys are case-insensitive (#1114): ENVIRONMENT, the override file's keys and the shipped `parameter.yml` keys are all lowercased, so pass fabric-cicd the lowercase key too. An older hub's `DEV`/`PROD` keys are renamed, and the rename logged. The archive and its verified checksum are never touched; only the already-extracted `parameter.yml` is rewritten, after verification.
+Point one environment's Gold connection at dataplatform-owned infrastructure. The hub may author `gold.direct_lake_connection` (or `gold.databricks_connection`) in its own `kairos.yaml`, but the `parameter.yml` it ships can then only rewrite between environments the hub itself declares. That forced every workspace a hub might ever deploy to into a hub repo that otherwise stays infrastructure-agnostic (issue #662). This is the seam from the other side, and with DD-255 the hub need not declare any environment at all. The connection comes from one of two places: - `--from-dbt-target TARGET` (DD-255): resolved from the dataplatform's dbt target, as `resolve-environment` does -- the target's endpoint, `vars.kairos` and the Fabric REST API. ENVIRONMENT defaults to the target name. `--config` is not read. - otherwise the override file (`--config`, default `.github/fabric/gold-connections.yml`). A missing file, or one that does not declare ENVIRONMENT, leaves the hub's own values standing. Only `replace_value[ENVIRONMENT]` is rewritten. `find_value` is left exactly as the hub emitted it: fabric-cicd matches it as a literal substring against the TMDL, so a dataplatform-supplied value would silently fail to match and leave the model pointed at the hub's default workspace. Two things fail closed (#993), because each used to deploy the hub's default workspace to every environment without a word: - the package carries no `parameter.yml` (a release packaged before the toolkit shipped it -- re-release the hub); - after any override, `parameter.yml` does not declare ENVIRONMENT, e.g. a typo, or a hub that declares no environments and was given none. Environment keys are case-insensitive (#1114): ENVIRONMENT, the override file's keys and the shipped `parameter.yml` keys are all lowercased, so pass fabric-cicd the lowercase key too. An older hub's `DEV`/`PROD` keys are renamed, and the rename logged. The archive and its verified checksum are never touched; only the already-extracted `parameter.yml` is rewritten, after verification.
 
 ```
 kairos-ontology apply-gold-connection [OPTIONS]
@@ -209,7 +210,10 @@ kairos-ontology apply-gold-connection [OPTIONS]
 | Option | Default | Description |
 |---|---|---|
 | `--package-dir` | **required** | Directory the verified semantic-model archive was extracted into. |
-| `--environment` | **required** | Target environment key, matching the one passed to fabric-cicd. |
+| `--environment` |  | Target environment key, matching the one passed to fabric-cicd. Defaults to the --from-dbt-target name. |
+| `--from-dbt-target` |  | Resolve the environment's Gold connection from this dbt target (DD-255) instead of .github/fabric/gold-connections.yml. |
+| `--project-dir` | `.` | dbt project directory (holds dbt_project.yml). |
+| `--profiles-dir` |  | Directory holding profiles.yml (default: as dbt -- DBT_PROFILES_DIR, the project directory, then ~/.dbt). |
 | `--config` |  | Override file (default: .github/fabric/gold-connections.yml). |
 
 
@@ -1120,7 +1124,7 @@ kairos-ontology init [OPTIONS]
 
 ## init-dataplatform
 
-Scaffold a dataplatform dbt project linked to this ontology hub. Run this command from within an ontology-hub repository. It creates a sibling directory with a dbt project pre-configured to consume the hub's projections via dbt deps.  NAME is the project name (default: derived from hub name, e.g., "contoso-ontology-hub" → "contoso-dataplatform").  What it creates: - dbt_project.yml with correct package reference - packages.yml pinned to the hub's current version - profiles.yml.example for your platform - macros/extract_source_schema.sql for bronze introspection (fallback; prefer the `extract-schema` CLI command) - macros/generate_schema_name.sql for bare bronze/silver/gold schema names - _sources.yml template with physical binding placeholders - pyproject.toml with uv + toolkit dependency - .github/workflows/pr-validate.yml (dbt deps/parse/compile + binding check) - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd) - .github/fabric/gold-connections.yml.example - fabric/KairosModelBpa.Notebook (advisory post-deploy Best Practice Analyzer run) - README.md with setup instructions - CICD.md with branch, promotion, rollback, and hotfix guidance - CONTRIBUTING.md with branch-naming and PR conventions - <name>.code-workspace opening the hub and this dataplatform together  Examples: kairos-ontology init-dataplatform kairos-ontology init-dataplatform contoso-data --platform databricks
+Scaffold a dataplatform dbt project linked to this ontology hub. Run this command from within an ontology-hub repository. It creates a sibling directory with a dbt project pre-configured to consume the hub's projections via dbt deps.  NAME is the project name (default: derived from hub name, e.g., "contoso-ontology-hub" → "contoso-dataplatform").  What it creates: - dbt_project.yml with correct package reference - packages.yml pinned to the hub's current version - profiles.yml (committed, DD-255): one dbt target per environment (dev/uat/prod) for your platform -- the environment authority - macros/extract_source_schema.sql for bronze introspection (fallback; prefer the `extract-schema` CLI command) - macros/generate_schema_name.sql for bare bronze/silver/gold schema names - _sources.yml template with physical binding placeholders - pyproject.toml with uv + toolkit dependency - .github/workflows/pr-validate.yml (dbt deps/parse/compile + binding check) - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd) - .github/fabric/gold-connections.yml.example - fabric/KairosModelBpa.Notebook (advisory post-deploy Best Practice Analyzer run) - README.md with setup instructions - CICD.md with branch, promotion, rollback, and hotfix guidance - CONTRIBUTING.md with branch-naming and PR conventions - <name>.code-workspace opening the hub and this dataplatform together  Examples: kairos-ontology init-dataplatform kairos-ontology init-dataplatform contoso-data --platform databricks
 
 ```
 kairos-ontology init-dataplatform [OPTIONS] [NAME]
@@ -1497,6 +1501,23 @@ kairos-ontology register-concept [OPTIONS]
 | `--archetype` |  | Archetype to check the URI against (default: the hub artifact's own archetype.id). A URI already in that catalog is rejected — it belongs in core_concepts. |
 | `--refmodels-root` |  | Reference-models checkout (default: $KAIROS_REFMODELS_ROOT or sibling scan). |
 | `--format` | `json` | Machine-output format on stdout (default: json). |
+
+
+## resolve-environment
+
+Resolve one environment's deploy IDs from its dbt target. The dbt target is the environment authority (DD-255): its name is the environment key (lowercased), its endpoint identifies the Gold connection, and `vars.kairos.environments.<env>` in dbt_project.yml names what dbt does not know -- the models and reports workspaces, by name or GUID. For a Fabric target, the Gold Warehouse is the one whose SQL endpoint and name are the target's `server` and `database`, found through the Fabric REST API. A Databricks target's `host` and `http_path` are the connection itself. FABRIC_ITEM_ID, FABRIC_GOLD_WORKSPACE_ID, FABRIC_WORKSPACE_ID and FABRIC_REPORTS_WORKSPACE_ID, when set, take precedence. Each value is printed with its source. Exit 1 when the environment cannot be resolved.
+
+```
+kairos-ontology resolve-environment [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--target` | **required** | dbt target naming the environment. |
+| `--project-dir` | `.` | dbt project directory (holds dbt_project.yml). |
+| `--profiles-dir` |  | Directory holding profiles.yml (default: as dbt -- DBT_PROFILES_DIR, the project directory, then ~/.dbt). |
+| `--offline` |  | Check the target and vars.kairos without calling Fabric; IDs that need the API are left unresolved. |
+| `--format` | `text` | `github-output` prints key=value lines to append to $GITHUB_OUTPUT. |
 
 
 ## resolve-ontology

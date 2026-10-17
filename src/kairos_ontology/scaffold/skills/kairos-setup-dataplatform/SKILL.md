@@ -17,10 +17,15 @@ deployment configuration, and runtime tests.
    the compiler has no Spark SQL profile for it, see DD-215). This also scaffolds the
    managed root `CICD.md` and `CONTRIBUTING.md` — confirm both exist and point users
    to them for the CI target, promotion, rollback, and hotfix workflow.
-3. `.dbt/profiles.yml.example` is already pre-activated for the chosen `--platform` — its block
-   is uncommented under `dev:`, the other platform remains as a commented reference block.
-   Copy it to `.dbt/profiles.yml` and fill in real connection details/credentials only; no
-   manual comment-toggling between platforms is required.
+3. `profiles.yml` (committed, at the repository root) is the environment authority
+   (DD-255): one dbt target per environment, `dev`, `uat` and `prod`, already active for the
+   chosen `--platform`. Fill in each target's endpoint and database — never a credential;
+   those come from environment variables — and commit it. The name of a target is the
+   environment's key everywhere: `dbt build --target uat`, the GitHub Environment, and the
+   Power BI binding. If the semantic models or reports live in a different workspace from the
+   Gold Warehouse, name it under `vars.kairos.environments.<env>` in `dbt_project.yml`.
+   Check each target with `uv run kairos-ontology resolve-environment --target <env>`
+   (`--offline` when no Fabric sign-in is at hand).
    `--platform` picks where **this dbt project's own silver/gold models write** and which
    adapter is templated — bronze source data can live in any same-workspace item (e.g. a
    Fabric Lakehouse) regardless of the chosen platform; bind it via `database:` in

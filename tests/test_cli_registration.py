@@ -31,6 +31,7 @@ RETAINED_COMMANDS = {
     "discovery-status",
     "emit-gold",
     "apply-gold-connection",
+    "resolve-environment",
     "check-authored-reports",
     "stage-authored-reports",
     "apply-report-theme",

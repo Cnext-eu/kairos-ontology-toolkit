@@ -777,17 +777,39 @@ def test_databricks_directquery_partition_is_connectable_and_parameterised(tmp_p
     )
 
 
-def test_databricks_gold_without_connection_config_fails_closed(tmp_path: Path):
-    gold_path = _databricks_gold(tmp_path)
-    with pytest.raises(GoldContractError, match="gold.databricks-connection-missing"):
-        _generate("client", gold_path=gold_path, platform="databricks")
-    with pytest.raises(GoldContractError, match="gold.databricks-connection-missing"):
-        _generate(
-            "client",
-            gold_path=gold_path,
-            platform="databricks",
-            hub_root=_databricks_hub(tmp_path, connection=False),
-        )
+def test_databricks_gold_without_connection_emits_unresolved_placeholders(tmp_path: Path):
+    """DD-255: the hub may declare no environment; the deploy supplies it from dbt."""
+    from kairos_ontology.core.projections.dbt.gold_connection import (
+        UNRESOLVED_DATABRICKS_HOSTNAME,
+        UNRESOLVED_DATABRICKS_HTTP_PATH,
+        hub_declares_no_environments,
+    )
+
+    artifacts = _generate(
+        "client",
+        gold_path=_databricks_gold(tmp_path),
+        platform="databricks",
+        hub_root=_databricks_hub(tmp_path, connection=False),
+    )
+
+    partitions = [
+        text for path, text in artifacts.items() if "/tables/" in path and "partition" in text
+    ]
+    assert partitions
+    for text in partitions:
+        assert (
+            f'Databricks.Catalogs("{UNRESOLVED_DATABRICKS_HOSTNAME}", '
+            f'"{UNRESOLVED_DATABRICKS_HTTP_PATH}")'
+        ) in text
+    parameter_text = artifacts["parameter.yml"]
+    parameter = yaml.safe_load(parameter_text)
+    assert [entry["find_value"] for entry in parameter["find_replace"]] == [
+        UNRESOLVED_DATABRICKS_HOSTNAME,
+        UNRESOLVED_DATABRICKS_HTTP_PATH,
+    ]
+    assert all(entry["replace_value"] == {} for entry in parameter["find_replace"])
+    assert hub_declares_no_environments(parameter_text)
+    assert "declares no environment (DD-255)" in parameter_text
 
 
 def test_malformed_gold_connection_block_never_partially_applies(tmp_path: Path):
@@ -886,9 +908,26 @@ def test_direct_lake_named_expression_is_emitted_and_referenced(client_gold):
     assert "expressionSource: 'DirectLake - Kairos Gold'" in partition
 
 
-def test_direct_lake_without_connection_config_fails_closed(tmp_path: Path):
-    with pytest.raises(GoldContractError, match="direct-lake-connection-missing"):
-        _generate("client", hub_root=tmp_path)
+def test_direct_lake_without_connection_emits_the_unresolved_placeholder(tmp_path: Path):
+    """DD-255: no hub connection -> the OneLake placeholder, and no declared environment."""
+    from kairos_ontology.core.projections.dbt.gold_connection import (
+        UNRESOLVED_ONELAKE_URL,
+        hub_declares_no_environments,
+    )
+
+    artifacts = _generate("client", hub_root=tmp_path)
+
+    expression = artifacts[
+        "client/Client.SemanticModel/definition/expressions/DirectLake - Kairos Gold.tmdl"
+    ]
+    assert f'AzureStorage.DataLake("{UNRESOLVED_ONELAKE_URL}"' in expression
+    parameter = yaml.safe_load(artifacts["parameter.yml"])
+    assert parameter["find_replace"] == [
+        {"find_value": UNRESOLVED_ONELAKE_URL, "replace_value": {}, "item_type": "SemanticModel"}
+    ]
+    assert hub_declares_no_environments(artifacts["parameter.yml"])
+    # A hub that does declare one is not mistaken for the placeholder.
+    assert not hub_declares_no_environments(_generate("client")["parameter.yml"])
 
 
 def test_direct_lake_connection_rejects_non_guid_placeholder(tmp_path: Path):

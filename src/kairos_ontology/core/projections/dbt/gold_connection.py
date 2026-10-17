@@ -716,6 +716,31 @@ def _resolve_env_refs(value: str, environ: Mapping[str, str]) -> str:
 #: The OneLake URL prefix every Direct Lake ``find_value`` carries (``gold_render._onelake_url``).
 _ONELAKE_URL_PREFIX = "https://onelake.dfs.fabric.microsoft.com/"
 
+#: What the TMDL carries when the hub declares no connection (DD-255): the dataplatform
+#: supplies every environment from its dbt target. Each is deliberately unresolvable --
+#: a model deployed without the rewrite cannot frame, and the DD-239 refresh gate fails
+#: the deploy -- and recognisable, so `apply-gold-connection` can say what is missing.
+UNRESOLVED_WORKSPACE_ID = "kairos-unresolved-workspace"
+UNRESOLVED_ITEM_ID = "kairos-unresolved-item"
+UNRESOLVED_ONELAKE_URL = f"{_ONELAKE_URL_PREFIX}{UNRESOLVED_WORKSPACE_ID}/{UNRESOLVED_ITEM_ID}"
+UNRESOLVED_DATABRICKS_HOSTNAME = "kairos-unresolved.invalid"
+UNRESOLVED_DATABRICKS_HTTP_PATH = "/sql/1.0/warehouses/kairos-unresolved"
+_UNRESOLVED_VALUES = frozenset(
+    {UNRESOLVED_ONELAKE_URL, UNRESOLVED_DATABRICKS_HOSTNAME, UNRESOLVED_DATABRICKS_HTTP_PATH}
+)
+
+
+def hub_declares_no_environments(parameter_yaml: str) -> bool:
+    """True when *parameter_yaml* finds only the unresolved placeholders (DD-255)."""
+    document = yaml.safe_load(parameter_yaml)
+    entries = document.get("find_replace") if isinstance(document, dict) else None
+    if not isinstance(entries, list) or not entries:
+        return False
+    return all(
+        isinstance(entry, dict) and entry.get("find_value") in _UNRESOLVED_VALUES
+        for entry in entries
+    )
+
 #: One environment of ``gold-connections.yml``: Direct Lake coordinates, or (#1114) the
 #: Databricks SQL warehouse endpoint a directQuery model connects to.
 GoldConnectionOverride = GoldDirectLakeEnvironmentSpec | GoldConnectionEnvironmentSpec

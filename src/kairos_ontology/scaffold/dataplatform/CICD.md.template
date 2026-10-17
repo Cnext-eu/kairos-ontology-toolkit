@@ -130,6 +130,12 @@ Never merge the old production branch wholesale into current `main`.
 
 Set these up once per target before the first deploy (DD-239):
 
+- **One dbt target per environment in the committed `profiles.yml`** (DD-255). The target is
+  the environment: its name is the key everything else uses, and its endpoint identifies the
+  Gold Warehouse. Workspaces dbt does not know (where the semantic models and reports are
+  published, when not the Gold workspace) go under `vars.kairos.environments.<env>` in
+  `dbt_project.yml`. `uv run kairos-ontology resolve-environment --target uat` prints every ID
+  a deploy to `uat` would use and where each came from.
 - **One GitHub Environment per target**, named like the dbt target: `dev`, `uat`, `prod`.
   Environment keys are case-insensitive and normalised to lowercase everywhere (#1114) -- the
   deploy's `target_environment`, the hub's `parameter.yml` and `gold-connections.yml` -- and

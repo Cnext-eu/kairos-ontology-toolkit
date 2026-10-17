@@ -141,17 +141,21 @@ two values for the environment being deployed to (`FabricWorkspace(environment=.
 `.github/workflows/deploy-powerbi-semantic-model.yml`). `parameter.yml` must stay at the
 root of the directory fabric-cicd is pointed at.
 
-`default_environment` may be omitted only when a single environment is declared. Gold
-projection on `databricks` fails closed with `gold.databricks-connection-missing` when the
-block is absent, and with `gold.databricks-connection-invalid` when it is malformed —
-generating a semantic model that cannot reach a warehouse is not an acceptable outcome.
-Fabric Direct Lake uses the sibling `gold.direct_lake_connection` block instead, declaring a
-`workspace_id` and `item_id` per environment. `item_id` is the Fabric Warehouse dbt writes Gold
-into: the model reads its `gold_*` Delta tables through OneLake (DD-239); `lakehouse_id` is a
-deprecated alias. It is equally required: a Direct Lake model
-binds through a named expression that embeds those GUIDs, so projection fails closed with
-`gold.direct-lake-connection-missing` when the block is absent. Both modes emit a root
-`parameter.yml` so fabric-cicd can rewrite the environment-specific values at deploy time.
+`default_environment` may be omitted only when a single environment is declared. A
+malformed block fails closed with `gold.databricks-connection-invalid`. Fabric Direct Lake
+uses the sibling `gold.direct_lake_connection` block instead, declaring a `workspace_id` and
+`item_id` per environment. `item_id` is the Fabric Warehouse dbt writes Gold into: the model
+reads its `gold_*` Delta tables through OneLake (DD-239); `lakehouse_id` is a deprecated
+alias. A Direct Lake model binds through a named expression that embeds those GUIDs. Both
+modes emit a root `parameter.yml` so fabric-cicd can rewrite the environment-specific values
+at deploy time. Environment keys are case-insensitive and normalised to lowercase.
+
+Both blocks are optional (DD-255). A hub that declares neither holds no environment IDs at
+all: the TMDL carries an unresolved placeholder, `parameter.yml` declares no environment,
+and the dataplatform's deploy fills in the one it deploys to from its committed dbt target
+(`apply-gold-connection --from-dbt-target`), failing closed when nothing does. Declare a
+block only when the hub itself must open the model against a real workspace, for example
+for local development.
 
 ### Gold products span domains
 

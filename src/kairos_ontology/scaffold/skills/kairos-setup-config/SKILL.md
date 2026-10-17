@@ -74,16 +74,20 @@ gold:
 The projected TMDL partitions carry the `default_environment` values, and a generated
 fabric-cicd `parameter.yml` (at the root of the semantic-model package) rewrites them for the
 environment being deployed to. `default_environment` may be omitted only with a single
-environment. Gold projection fails closed with `gold.databricks-connection-missing` until the
-block exists. Environment keys are case-insensitive and normalised to lowercase (`dev`, `uat`,
+environment. Environment keys are case-insensitive and normalised to lowercase (`dev`, `uat`,
 `prod`), the spelling dbt targets and the deploy use.
 
-`adapter: fabric-warehouse` (Direct Lake) needs the same thing under
+`adapter: fabric-warehouse` (Direct Lake) takes the same shape under
 `gold.direct_lake_connection`: per environment, the `workspace_id` and the `item_id` of the
-Warehouse dbt writes Gold into. A Direct Lake partition's OneLake URL embeds both, and Gold
-projection fails closed with `gold.direct-lake-connection-missing` without the block. An
-environment the hub should not know about can instead be supplied by the dataplatform
-(`.github/fabric/gold-connections.yml`, see its `CICD.md`).
+Warehouse dbt writes Gold into, which the Direct Lake partition's OneLake URL embeds.
+
+Both blocks are optional (DD-255). A hub that declares neither holds no environment IDs at
+all: the TMDL carries an unresolved placeholder, `parameter.yml` declares no environment,
+and the dataplatform's deploy fills in the one it deploys to from its committed dbt target
+(`apply-gold-connection --from-dbt-target`), failing closed when nothing does. Declare a
+block only when the hub itself must open the model against a real workspace, for example
+for local development. Do not ask a user for workspace or item GUIDs to put here unless they want that;
+the default is to leave both blocks out and let the dataplatform resolve them.
 
 ## Pin the accelerator (multi-pack hubs)
 

@@ -35,3 +35,20 @@ models:
 seeds:
   +schema: 'bronze_samples'
   +tags: ['source-sample']
+
+# What dbt does not know about an environment, for the Kairos deploy (DD-255). Keys are
+# the profiles.yml target names; each value is a Fabric workspace name or GUID. Both
+# default to the workspace of the Gold Warehouse the target writes to, so a platform
+# with one workspace per environment needs none of this. `gold_workspace` only narrows
+# the search when two workspaces hold a Warehouse with the same endpoint and name.
+# Check with: uv run kairos-ontology resolve-environment --target uat
+# vars:
+#   kairos:
+#     environments:
+#       dev:
+#         models_workspace: my-models-dev     # where the semantic models are published
+#         reports_workspace: my-reports-dev   # where authored reports are published
+#       uat:
+#         models_workspace: my-models-uat
+#       prod:
+#         models_workspace: my-models-prod
