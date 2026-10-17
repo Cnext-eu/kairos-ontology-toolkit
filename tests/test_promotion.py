@@ -299,7 +299,7 @@ class TestPromoteWorkflow:
             "Publish semantic model and report to Fabric workspace",
         ]
         assert [names.index(name) for name in order] == sorted(names.index(n) for n in order)
-        checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v4")
+        checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
         assert checkout["with"]["ref"] == "${{ inputs.ref || github.sha }}"
         build = steps[names.index("dbt build (target environment)")]
         assert build["if"] == "${{ inputs.build_dbt }}"
@@ -326,7 +326,7 @@ class TestHubAccessAndAzureLogin:
         text = (_WORKFLOWS / name).read_text(encoding="utf-8")
         steps = _workflow(name)["jobs"][job]["steps"]
         (app,) = [s for s in steps if s.get("id") == "hub_app"]
-        assert app["uses"] == "actions/create-github-app-token@v3"
+        assert app["uses"].startswith("actions/create-github-app-token@")
         assert app["if"] == "${{ vars.KAIROS_HUB_APP_CLIENT_ID != '' }}"
         assert app["with"]["private-key"] == "${{ secrets.KAIROS_HUB_APP_PRIVATE_KEY }}"
         # Every use of the hub token prefers the App's, and HUB_REPO_TOKEN still works alone.
@@ -339,7 +339,7 @@ class TestHubAccessAndAzureLogin:
 
     def test_azure_ids_are_read_from_variables_first(self):
         steps = _workflow("deploy-powerbi-semantic-model.yml.template")["jobs"]["deploy"]["steps"]
-        (login,) = [s for s in steps if s.get("uses") == "azure/login@v2"]
+        (login,) = [s for s in steps if s.get("uses", "").startswith("azure/login@")]
         assert login["with"]["client-id"] == "${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}"
         assert login["with"]["tenant-id"] == "${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}"
 

@@ -1,0 +1,791 @@
+name: Deploy an environment (dbt build + Power BI)
+
+# DD-206 §8/§12 items 7, 9: this workflow is read-only over item CONTENT -- extract,
+# verify, deploy. TMDL/PBIP normalization happens once, in the hub's Gold emission,
+# before the archive is checksummed; nothing here rewrites the archive, its checksum,
+# or any TMDL/PBIP file. The one exception is deploy-time parameterisation of the
+# extracted `parameter.yml`, which is this side's job by design (issue #662) and is
+# logged before/after. Every input below must verify before extraction (fail closed),
+# and deployment must not run ahead of the target environment's own dbt build. The
+# reports this repository authors (powerbi/reports/, DD-253) are published in a second,
+# separate pass that never touches the archive.
+#
+# DD-256: `promote.yml` calls this workflow once per environment, with `build_dbt: true`,
+# so one job -- one approval of the environment -- builds dbt and then deploys Power BI
+# from the same commit. Dispatching it by hand is the break-glass path. The hub release
+# comes from the committed `hub-release.lock` unless all three release inputs are given.
+on:
+  workflow_call:
+    inputs:
+      target_environment:
+        type: string
+        required: true
+      ref:
+        type: string
+        default: ""
+      build_dbt:
+        type: boolean
+        default: false
+      hub_release_tag:
+        type: string
+        default: ""
+      expected_hub_sha:
+        type: string
+        default: ""
+      expected_archive_sha256:
+        type: string
+        default: ""
+      dbt_build_run_id:
+        type: string
+        default: ""
+      run_bpa_advisory:
+        type: boolean
+        default: true
+      refresh_after_publish:
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: >-
+          Environment key: the dbt target, the GitHub Environment, and the fabric-cicd
+          environment. Case-insensitive; normalised to lowercase (#1114).
+        required: true
+        default: "dev"
+      ref:
+        description: "Dataplatform commit to deploy (default: the branch this run is on)"
+        required: false
+        default: ""
+      build_dbt:
+        description: >-
+          Build dbt for target_environment in this job before deploying Power BI (DD-256).
+          Off: dbt_build_run_id must name a successful build instead.
+        type: boolean
+        default: false
+      hub_release_tag:
+        description: >-
+          Hub release tag. Leave the three release inputs empty to deploy the release in
+          hub-release.lock (DD-256).
+        required: false
+        default: ""
+      expected_hub_sha:
+        description: "Full 40-character hub commit SHA the release tag must resolve to"
+        required: false
+        default: ""
+      expected_archive_sha256:
+        description: "SHA-256 of powerbi-semantic-model.zip recorded in the hub release evidence"
+        required: false
+        default: ""
+      dbt_build_run_id:
+        description: >-
+          Without build_dbt: the run ID of a workflow run that built dbt successfully in
+          target_environment, which this workflow verifies before deploying anything.
+        required: false
+        default: ""
+      run_bpa_advisory:
+        description: >-
+          After publishing, run the advisory Best Practice Analyzer notebook against the
+          deployed model (DD-238). Never blocks the deploy; see CICD.md.
+        type: boolean
+        default: true
+      refresh_after_publish:
+        description: >-
+          Refresh (frame) a Direct Lake model after publishing, and fail the deploy if it
+          cannot read its tables (DD-239). Turn off only while diagnosing credentials.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+env:
+  HUB_ORG: "{ORG}"
+  HUB_REPO: "{HUB_REPO}"
+  KAIROS_SKILL_CONTEXT: "1"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # DD-239: one GitHub Environment per target. Its secrets and variables
+    # (FABRIC_WORKSPACE_ID, FABRIC_ITEM_ID, the Azure IDs) are what this run uses, and its
+    # protection rules (required reviewers) gate the deploy. Repository-level secrets are
+    # still visible inside an Environment, so a repo that has not split them keeps working.
+    # The Azure federated credential subject becomes
+    # `repo:<org>/<repo>:environment:<target_environment>` -- add one per Environment.
+    environment: ${{ inputs.target_environment }}
+    # One deploy per environment at a time; a queued one waits rather than cancelling a
+    # deploy halfway through.
+    concurrency:
+      group: kairos-deploy-${{ inputs.target_environment }}
+      cancel-in-progress: false
+
+    steps:
+      # #1114: one spelling of the environment key for every step below. fabric-cicd
+      # matches `parameter.yml` keys case-sensitively and skips a miss, and the hub and
+      # `apply-gold-connection` lowercase them, so `DEV` must reach fabric-cicd as `dev`.
+      # The GitHub Environment above is matched case-insensitively by GitHub itself.
+      - name: Normalise the environment key
+        env:
+          RAW_ENVIRONMENT: ${{ inputs.target_environment }}
+        run: |
+          KEY=$(printf '%s' "$RAW_ENVIRONMENT" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          if ! printf '%s' "$KEY" | grep -Eq '^[a-z0-9][a-z0-9_-]*$'; then
+            echo "::error::target_environment '$RAW_ENVIRONMENT' is not a usable environment key."
+            exit 1
+          fi
+          echo "TARGET_ENVIRONMENT=$KEY" >> "$GITHUB_ENV"
+          echo "Environment key: $KEY"
+
+      # DD-256: the promote workflow passes the one commit it carries through every
+      # environment, so a later push cannot change what uat or prod receive.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The connection-override step below runs `kairos-ontology` from this repo's
+      # locked environment, exactly as pr-validate.yml does. Without these two steps it
+      # failed with `uv: command not found` before anything was published (#983).
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          # Same pin as pr-validate.yml: an unpinned version queries github.com's
+          # "latest release" API, which 404s from a GitHub Enterprise Server host.
+          version: "0.12.5"
+          enable-cache: true
+
+      - name: Install toolkit
+        run: uv sync --locked
+
+      # DD-256: the release comes from hub-release.lock, which must name the hub commit
+      # packages.yml pins, unless all three release inputs are given. Without a lock there
+      # is nothing to deploy to Power BI and only dbt is built.
+      - name: Resolve the hub release to deploy
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.hub_release_tag }}
+          INPUT_SHA: ${{ inputs.expected_hub_sha }}
+          INPUT_ARCHIVE: ${{ inputs.expected_archive_sha256 }}
+          BUILD_DBT: ${{ inputs.build_dbt }}
+          HAS_AZURE: ${{ (vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID) != '' }}
+        run: |
+          set -euo pipefail
+          echo "azure=$HAS_AZURE" >> "$GITHUB_OUTPUT"
+          if [ -n "$INPUT_TAG$INPUT_SHA$INPUT_ARCHIVE" ]; then
+            if [ -z "$INPUT_TAG" ] || [ -z "$INPUT_SHA" ] || [ -z "$INPUT_ARCHIVE" ]; then
+              echo "::error::Give all three of hub_release_tag, expected_hub_sha and expected_archive_sha256, or none to use hub-release.lock."
+              exit 1
+            fi
+            {
+              echo "deploy=true"
+              echo "hub_release_tag=$INPUT_TAG"
+              echo "expected_hub_sha=$INPUT_SHA"
+              echo "expected_archive_sha256=$INPUT_ARCHIVE"
+            } >> "$GITHUB_OUTPUT"
+            echo "Deploying hub release $INPUT_TAG from the workflow inputs."
+          else
+            uv run --no-sync kairos-ontology hub-release
+            uv run --no-sync kairos-ontology hub-release --format github-output >> "$GITHUB_OUTPUT"
+          fi
+          if ! grep -q '^deploy=true$' "$GITHUB_OUTPUT" && [ "$BUILD_DBT" != "true" ]; then
+            echo "::error::Nothing to deploy: no hub release (hub-release.lock or inputs) and build_dbt is off."
+            exit 1
+          fi
+
+      # §12 item 9: deploy only after the target environment's dbt build succeeded --
+      # in this job (build_dbt, as promote.yml runs it) or in the run the operator names.
+      - name: Verify target environment's dbt build already succeeded
+        if: ${{ !inputs.build_dbt && steps.release.outputs.deploy == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.dbt_build_run_id }}
+        run: |
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::Set build_dbt, or give dbt_build_run_id: the run that built dbt in $TARGET_ENVIRONMENT."
+            exit 1
+          fi
+          CONCLUSION=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion -q .conclusion)
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::dbt_build_run_id $RUN_ID did not succeed (conclusion: ${CONCLUSION:-unknown})."
+            echo "::error::Deploy the target environment's dbt build first, then re-run with its run ID."
+            exit 1
+          fi
+          echo "Verified dbt build run $RUN_ID succeeded for $TARGET_ENVIRONMENT."
+
+      # Before dbt and the environment resolution, which both use the session. Skipped only
+      # for a dbt-only run on an Environment without Azure credentials (e.g. Databricks).
+      - name: Azure login (service principal)
+        if: ${{ steps.release.outputs.deploy == 'true' || steps.release.outputs.azure == 'true' }}
+        uses: azure/login@v2
+        with:
+          # Variables first, then secrets: a client ID is not a credential, and a
+          # federated user-assigned managed identity logs in exactly like an app
+          # registration -- put its client ID in AZURE_CLIENT_ID.
+          client-id: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
+          # A service principal used only for Fabric usually has no Azure subscription.
+          allow-no-subscriptions: true
+
+      # DD-255: the dbt target is the environment. Its endpoint identifies the Gold
+      # Warehouse and vars.kairos names the models/reports workspaces; explicit FABRIC_*
+      # variables still win. Skipped for a dataplatform without a committed profiles.yml,
+      # which keeps deploying from the Environment variables alone.
+      - name: Resolve the environment from its dbt target
+        id: resolve
+        if: ${{ steps.release.outputs.deploy == 'true' && hashFiles('profiles.yml') != '' }}
+        env:
+          FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
+          FABRIC_ITEM_ID: ${{ vars.FABRIC_ITEM_ID || secrets.FABRIC_ITEM_ID }}
+          FABRIC_GOLD_WORKSPACE_ID: >-
+            ${{ vars.FABRIC_GOLD_WORKSPACE_ID || secrets.FABRIC_GOLD_WORKSPACE_ID }}
+          FABRIC_REPORTS_WORKSPACE_ID: >-
+            ${{ vars.FABRIC_REPORTS_WORKSPACE_ID || secrets.FABRIC_REPORTS_WORKSPACE_ID }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync kairos-ontology resolve-environment --target "$TARGET_ENVIRONMENT" \
+            --format github-output | tee -a "$GITHUB_OUTPUT"
+
+      # Hub access through a GitHub App instead of a personal access token: set the
+      # KAIROS_HUB_APP_CLIENT_ID variable and the KAIROS_HUB_APP_PRIVATE_KEY secret, and
+      # install the App on the hub repository with Contents:read. The minted token is
+      # scoped to the hub alone and expires with the run. Without them, HUB_REPO_TOKEN is
+      # used as before (DD-256).
+      - name: Mint a hub repository token from the GitHub App
+        id: hub_app
+        if: ${{ vars.KAIROS_HUB_APP_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.KAIROS_HUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.KAIROS_HUB_APP_PRIVATE_KEY }}
+          owner: ${{ env.HUB_ORG }}
+          repositories: ${{ env.HUB_REPO }}
+
+      # `dbt deps` clones the hub package named in packages.yml, which for a private hub
+      # needs a token (#705), exactly as in pr-validate.yml.
+      - name: Authenticate to the hub package repository
+        if: ${{ inputs.build_dbt }}
+        env:
+          HUB_REPO_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HUB_REPO_TOKEN:-}" ]; then
+            echo "HUB_REPO_TOKEN is not set - assuming a public hub package."
+            exit 0
+          fi
+          host="$(uv run --no-sync python -c 'import pathlib;from kairos_ontology.cli.shared import _parse_hub_package_pin;print(_parse_hub_package_pin(pathlib.Path("packages.yml").read_text(encoding="utf-8")).host)')"
+          git config --global url."https://x-access-token:${HUB_REPO_TOKEN}@${host}/".insteadOf "https://${host}/"
+
+      # DD-256: the environment's own dbt build, in the job that then deploys Power BI, so
+      # one approval covers both and the models never run ahead of their tables. dbt-fabric
+      # authenticates with the client secret when the Environment has one, otherwise with
+      # the Azure CLI session of the login above (`DBT_FABRIC_AUTHENTICATION`, read by the
+      # scaffolded profiles.yml).
+      - name: dbt build (target environment)
+        if: ${{ inputs.build_dbt }}
+        env:
+          DBT_FABRIC_AUTHENTICATION: >-
+            ${{ secrets.AZURE_CLIENT_SECRET != '' && 'environment' || 'cli' }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          DBT_DATABRICKS_TOKEN: ${{ secrets.DBT_DATABRICKS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f profiles.yml ]; then
+            echo "::error::build_dbt needs a committed profiles.yml with a '$TARGET_ENVIRONMENT' target (DD-255)."
+            exit 1
+          fi
+          uv run --no-sync dbt deps
+          uv run --no-sync dbt build --profiles-dir . --target "$TARGET_ENVIRONMENT"
+
+      # Every `gh` call against the hub below is cross-repository. The default
+      # GITHUB_TOKEN is scoped to *this* repository and cannot read a private sibling,
+      # so falling back to it only moves the failure to a confusing "release not found"
+      # later (#760). Fail here, by name, instead.
+      - name: Verify a hub repository token is configured
+        if: ${{ steps.release.outputs.deploy == 'true' }}
+        env:
+          HUB_REPO_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
+        run: |
+          if [ -z "${HUB_REPO_TOKEN:-}" ]; then
+            echo "::error::No hub repository token; GITHUB_TOKEN cannot read a private sibling repository -- set KAIROS_HUB_APP_CLIENT_ID + KAIROS_HUB_APP_PRIVATE_KEY (a GitHub App on the hub), or a HUB_REPO_TOKEN secret with Contents:read on the hub repo"
+            exit 1
+          fi
+          echo "A hub repository token is set."
+
+      # §8 dataplatform responsibility items 1-2: verify the tag resolves to the
+      # expected hub SHA before anything is downloaded.
+      - name: Verify hub release tag resolves to the expected hub SHA
+        if: ${{ steps.release.outputs.deploy == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
+          EXPECTED_HUB_SHA: ${{ steps.release.outputs.expected_hub_sha }}
+        run: |
+          RESOLVED_SHA=$(gh api "repos/${HUB_ORG}/${HUB_REPO}/commits/${{ steps.release.outputs.hub_release_tag }}" -q .sha)
+          if [ "$RESOLVED_SHA" != "$EXPECTED_HUB_SHA" ]; then
+            echo "::error::${{ steps.release.outputs.hub_release_tag }} resolves to $RESOLVED_SHA, expected $EXPECTED_HUB_SHA."
+            exit 1
+          fi
+          echo "Verified ${{ steps.release.outputs.hub_release_tag }} resolves to $EXPECTED_HUB_SHA."
+
+      - name: Download semantic model package from ontology-hub release
+        if: ${{ steps.release.outputs.deploy == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
+        run: |
+          gh release download "${{ steps.release.outputs.hub_release_tag }}" \
+            --repo "${HUB_ORG}/${HUB_REPO}" \
+            --pattern "powerbi-semantic-model.zip" \
+            --output powerbi-semantic-model.zip
+
+      # §8 dataplatform responsibility item 3: verify the archive's SHA-256 before
+      # extraction. Fails closed -- a checksum mismatch must never reach fabric-cicd.
+      - name: Verify archive SHA-256
+        if: ${{ steps.release.outputs.deploy == 'true' }}
+        env:
+          EXPECTED_ARCHIVE_SHA256: ${{ steps.release.outputs.expected_archive_sha256 }}
+        run: |
+          ACTUAL_SHA256=$(sha256sum powerbi-semantic-model.zip | cut -d' ' -f1)
+          if [ "$ACTUAL_SHA256" != "$EXPECTED_ARCHIVE_SHA256" ]; then
+            echo "::error::powerbi-semantic-model.zip SHA-256 is $ACTUAL_SHA256, expected $EXPECTED_ARCHIVE_SHA256."
+            exit 1
+          fi
+          echo "Verified powerbi-semantic-model.zip SHA-256: $ACTUAL_SHA256"
+
+      - name: Unpack semantic model package
+        if: ${{ steps.release.outputs.deploy == 'true' }}
+        run: |
+          mkdir -p semantic-model
+          unzip -q powerbi-semantic-model.zip -d semantic-model
+
+      # DD-206 #12 item 10: TMDL/PBIP normalization happens once, in the hub's Gold
+      # emission, before the archive is checksummed. This workflow never normalizes,
+      # never rewrites item content (TMDL/PBIP), and never touches the .zip or its
+      # verified checksum.
+      #
+      # Deploy-time parameterisation is a separate concern and IS this side's job:
+      # `parameter.yml` exists precisely so one checksummed artifact can be promoted
+      # between environments. The hub can only enumerate environments it declares
+      # itself, which forced real Fabric GUIDs into a repo that is otherwise
+      # infrastructure-agnostic (issue #662). The step below lets this repo supply its
+      # own target instead. It rewrites only `replace_value[<target_environment>]` in
+      # the already-extracted, already-verified `parameter.yml`, leaves `find_value`
+      # exactly as the hub emitted it, and logs before/after so the change is auditable
+      # in the run log. No config file, or no matching environment => the hub's values
+      # stand. It fails closed when the archive carries no `parameter.yml`, or when
+      # `parameter.yml` does not declare target_environment: fabric-cicd would otherwise
+      # skip the rewrite and deploy the hub's default workspace (#993).
+      #
+      # `${FABRIC_WORKSPACE_ID}` / `${FABRIC_ITEM_ID}` in gold-connections.yml resolve
+      # from these two, which is the only way a `${VAR}` there can resolve at all: a step
+      # sees only the environment it is given (#993).
+      #
+      # DD-255: with a committed profiles.yml the connection is resolved from the dbt
+      # target (the step above), and gold-connections.yml is not read.
+      - name: Apply the environment's Gold connection
+        if: ${{ steps.release.outputs.deploy == 'true' }}
+        env:
+          RESOLVED: ${{ steps.resolve.outcome }}
+          FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
+          FABRIC_ITEM_ID: >-
+            ${{ steps.resolve.outputs.gold_item_id || vars.FABRIC_ITEM_ID
+            || secrets.FABRIC_ITEM_ID }}
+          FABRIC_GOLD_WORKSPACE_ID: >-
+            ${{ steps.resolve.outputs.gold_workspace_id || vars.FABRIC_GOLD_WORKSPACE_ID
+            || secrets.FABRIC_GOLD_WORKSPACE_ID }}
+        run: |
+          if [ "$RESOLVED" = "success" ]; then
+            uv run --no-sync kairos-ontology apply-gold-connection \
+              --package-dir semantic-model \
+              --from-dbt-target "$TARGET_ENVIRONMENT"
+          else
+            uv run --no-sync kairos-ontology apply-gold-connection \
+              --package-dir semantic-model \
+              --environment "$TARGET_ENVIRONMENT"
+          fi
+
+      # Pinned by the toolkit (DD-239) and bumped only with a toolkit release, like the
+      # semantic-link-labs pin: an unpinned install let a fabric-cicd release change how
+      # every deploy behaves overnight.
+      - name: Install fabric-cicd
+        if: ${{ steps.release.outputs.deploy == 'true' }}
+        run: |
+          pip install --upgrade pip
+          pip install "fabric-cicd==1.4.0" azure-identity
+
+      # `environment` selects one value per `find_replace` entry of the `parameter.yml`
+      # that fabric-cicd reads from the root of `repository_directory`. The hub ships that
+      # file at the root of the release package (#993), generated from
+      # `gold.direct_lake_connection` or `gold.databricks_connection` in `kairos.yaml`;
+      # `target_environment` must be one of the environment keys declared there -- or
+      # supplied by the override step above via `.github/fabric/gold-connections.yml` --
+      # and the override step refuses to continue when it is not.
+      #
+      # §8 dataplatform responsibility item 6: both Fabric item types the hub ships
+      # (SemanticModel and its stub Report) are deployed together. The reports this
+      # repository authors are published after framing, below.
+      - name: Publish semantic model and report to Fabric workspace
+        if: ${{ steps.release.outputs.deploy == 'true' }}
+        env:
+          FABRIC_WORKSPACE_ID: >-
+            ${{ steps.resolve.outputs.models_workspace_id || vars.FABRIC_WORKSPACE_ID
+            || secrets.FABRIC_WORKSPACE_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from azure.identity import AzureCliCredential
+          from fabric_cicd import FabricWorkspace, publish_all_items
+
+          workspace_id = os.environ["FABRIC_WORKSPACE_ID"]
+          target_env = os.environ["TARGET_ENVIRONMENT"]
+          model_dir = Path("semantic-model").resolve()
+
+          target_workspace = FabricWorkspace(
+              workspace_id=workspace_id,
+              environment=target_env,
+              repository_directory=str(model_dir),
+              item_type_in_scope=["SemanticModel", "Report"],
+              token_credential=AzureCliCredential(),
+          )
+
+          publish_all_items(target_workspace)
+          print(f"Published SemanticModel and Report items from: {model_dir}")
+          PY
+
+      # DD-239: frame every Direct Lake model just published, and fail the deploy if it
+      # cannot. A freshly published Direct Lake model has not read its Delta tables yet, so
+      # a wrong FABRIC_ITEM_ID, a missing Gold table or a missing permission would
+      # otherwise surface only when a report user opens it. This is the step that turns
+      # all three into a red deploy. A DirectQuery (Databricks) model holds no data and is
+      # skipped. Framing reads the tables as the model owner -- the deploying service
+      # principal -- so it needs read access on the Warehouse (see CICD.md).
+      - name: Refresh the semantic model (Direct Lake)
+        if: ${{ steps.release.outputs.deploy == 'true' && inputs.refresh_after_publish }}
+        env:
+          FABRIC_WORKSPACE_ID: >-
+            ${{ steps.resolve.outputs.models_workspace_id || vars.FABRIC_WORKSPACE_ID
+            || secrets.FABRIC_WORKSPACE_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.request
+          from pathlib import Path
+
+          from azure.identity import AzureCliCredential
+
+          models = []
+          for platform in sorted(Path("semantic-model").rglob("*.SemanticModel/.platform")):
+              definition = platform.parent / "definition"
+              if any(
+                  "mode: directLake" in path.read_text(encoding="utf-8")
+                  for path in definition.rglob("*.tmdl")
+              ):
+                  metadata = json.loads(platform.read_text(encoding="utf-8"))["metadata"]
+                  models.append(metadata["displayName"])
+          if not models:
+              print("No Direct Lake semantic model in this release; nothing to frame.")
+              sys.exit(0)
+
+          workspace_id = os.environ["FABRIC_WORKSPACE_ID"]
+          credential = AzureCliCredential()
+
+
+          def call(method, url, scope, body=None):
+              token = credential.get_token(scope).token
+              request = urllib.request.Request(
+                  url,
+                  method=method,
+                  data=None if body is None else json.dumps(body).encode("utf-8"),
+                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+              )
+              with urllib.request.urlopen(request) as response:
+                  payload = response.read()
+                  return json.loads(payload) if payload else None
+
+
+          FABRIC = "https://api.fabric.microsoft.com/.default"
+          POWERBI = "https://analysis.windows.net/powerbi/api/.default"
+          items = call(
+              "GET",
+              "https://api.fabric.microsoft.com/v1/workspaces/" + workspace_id
+              + "/items?type=SemanticModel",
+              FABRIC,
+          )["value"]
+          failed = []
+          for name in models:
+              model_id = next(
+                  (item["id"] for item in items if item["displayName"] == name), None
+              )
+              if model_id is None:
+                  failed.append(name)
+                  print("::error::" + name + " was published but is not in the workspace's"
+                        " semantic models.")
+                  continue
+              base = (
+                  "https://api.powerbi.com/v1.0/myorg/groups/" + workspace_id
+                  + "/datasets/" + model_id + "/refreshes"
+              )
+              call("POST", base, POWERBI, {"type": "full", "notifyOption": "NoNotification"})
+              status, detail = "Unknown", ""
+              for _ in range(90):
+                  time.sleep(20)
+                  latest = call("GET", base + "?$top=1", POWERBI)["value"][0]
+                  status = latest.get("status", "Unknown")
+                  detail = latest.get("serviceExceptionJson", "")
+                  if status in ("Completed", "Failed", "Disabled", "Cancelled"):
+                      break
+              print("Refresh of", name, "finished with status:", status)
+              if status != "Completed":
+                  failed.append(name)
+                  print("::error::" + name + " could not be framed (" + status + "): " + detail)
+          if failed:
+              print("::error::The model is published but cannot read its tables. Check "
+                    "FABRIC_ITEM_ID (the Warehouse dbt writes Gold into), that the target "
+                    "environment's dbt build created the gold_* tables, and that the "
+                    "service principal can read the Warehouse. See CICD.md.")
+              sys.exit(1)
+          PY
+
+      # DD-253 / #1102: the Power BI reports this repository authors itself, under
+      # powerbi/reports/. They go second because they bind to the models just published.
+      # A report binds to a model by ID and every workspace's copy of the model has its own,
+      # so the models are looked up by display name here, and the ID lands in a *staged*
+      # copy of each definition.pbir -- the committed reports are never rewritten, and
+      # nothing in this pass reads or writes the hub archive. Fails closed when reports.yml
+      # names a model this workspace does not have.
+      - name: Bind authored reports to this workspace's semantic models
+        if: >-
+          ${{ steps.release.outputs.deploy == 'true'
+          && hashFiles('powerbi/reports/**/definition.pbir') != '' }}
+        env:
+          FABRIC_WORKSPACE_ID: >-
+            ${{ steps.resolve.outputs.models_workspace_id || vars.FABRIC_WORKSPACE_ID
+            || secrets.FABRIC_WORKSPACE_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          from azure.identity import AzureCliCredential
+
+          token = AzureCliCredential().get_token("https://api.fabric.microsoft.com/.default").token
+          base = (
+              "https://api.fabric.microsoft.com/v1/workspaces/" + os.environ["FABRIC_WORKSPACE_ID"]
+              + "/items?type=SemanticModel"
+          )
+          models, url = {}, base
+          while url:
+              request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+              with urllib.request.urlopen(request) as response:
+                  page = json.loads(response.read())
+              models.update({item["displayName"]: item["id"] for item in page["value"]})
+              continuation = page.get("continuationToken")
+              url = (
+                  base + "&continuationToken=" + urllib.parse.quote(continuation)
+                  if continuation else None
+              )
+          with open("authored-report-models.json", "w", encoding="utf-8") as handle:
+              json.dump(models, handle)
+          print("Semantic models in the workspace:", ", ".join(sorted(models)) or "none")
+          PY
+          uv run --no-sync kairos-ontology stage-authored-reports \
+            --reports-dir powerbi/reports \
+            --model-ids authored-report-models.json \
+            --out authored-reports
+
+      # FABRIC_REPORTS_WORKSPACE_ID publishes the reports to their own workspace; unset, they
+      # go beside the models. A parameter.yml in powerbi/reports/ is applied as usual. No
+      # orphan cleanup here either (DD-239).
+      - name: Publish authored reports to Fabric workspace
+        if: >-
+          ${{ steps.release.outputs.deploy == 'true'
+          && hashFiles('powerbi/reports/**/definition.pbir') != '' }}
+        env:
+          FABRIC_WORKSPACE_ID: >-
+            ${{ steps.resolve.outputs.models_workspace_id || vars.FABRIC_WORKSPACE_ID
+            || secrets.FABRIC_WORKSPACE_ID }}
+          FABRIC_REPORTS_WORKSPACE_ID: >-
+            ${{ steps.resolve.outputs.reports_workspace_id || vars.FABRIC_REPORTS_WORKSPACE_ID
+            || secrets.FABRIC_REPORTS_WORKSPACE_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from azure.identity import AzureCliCredential
+          from fabric_cicd import FabricWorkspace, publish_all_items
+
+          workspace_id = (
+              os.environ.get("FABRIC_REPORTS_WORKSPACE_ID") or os.environ["FABRIC_WORKSPACE_ID"]
+          )
+          reports_dir = Path("authored-reports").resolve()
+          target_workspace = FabricWorkspace(
+              workspace_id=workspace_id,
+              environment=os.environ["TARGET_ENVIRONMENT"],
+              repository_directory=str(reports_dir),
+              item_type_in_scope=["Report"],
+              token_credential=AzureCliCredential(),
+          )
+          publish_all_items(target_workspace)
+          print(f"Published authored Report items from: {reports_dir}")
+          PY
+
+      # DD-238 / #982: advisory Best Practice Analyzer run against the model just
+      # published. Some BPA rules need a deployed model with data -- cardinality,
+      # referential-integrity violations, Direct Lake guardrails and fallback -- so the hub
+      # cannot check them. This publishes fabric/KairosModelBpa.Notebook and runs it.
+      #
+      # Read-only over the model (DD-206), and never blocking: a finding, or a check that
+      # cannot run, must not fail a deploy that succeeded, hence continue-on-error and an
+      # exit 0 on every path. Findings are authored back in the hub, never fixed in the
+      # deployed model. It skips cleanly without the notebook, or in a workspace with no
+      # Fabric, Premium or PPU capacity -- Semantic Link Labs needs XMLA read access,
+      # which a Pro workspace (typical for a Databricks DirectQuery model) does not give;
+      # CICD.md describes the manual check for that case. Set the FABRIC_BPA_LAKEHOUSE_ID
+      # and FABRIC_BPA_LAKEHOUSE_NAME Environment (or repository) variables to persist
+      # findings to the kairos_bpa_findings table of that lakehouse; without them they are
+      # only printed. Every semantic model in the release is analysed, each with its own
+      # storage mode, and one model's failure does not skip the others.
+      - name: Advisory Best Practice Analyzer run (non-blocking)
+        if: ${{ steps.release.outputs.deploy == 'true' && inputs.run_bpa_advisory }}
+        continue-on-error: true
+        env:
+          FABRIC_WORKSPACE_ID: >-
+            ${{ steps.resolve.outputs.models_workspace_id || vars.FABRIC_WORKSPACE_ID
+            || secrets.FABRIC_WORKSPACE_ID }}
+          REFRESH_AFTER_PUBLISH: ${{ inputs.refresh_after_publish }}
+          FABRIC_BPA_LAKEHOUSE_ID: ${{ vars.FABRIC_BPA_LAKEHOUSE_ID }}
+          FABRIC_BPA_LAKEHOUSE_NAME: ${{ vars.FABRIC_BPA_LAKEHOUSE_NAME }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.request
+          from pathlib import Path
+
+          from azure.identity import AzureCliCredential
+          from fabric_cicd import FabricWorkspace, publish_all_items
+
+          NOTEBOOK = "Kairos Model BPA"
+          API = "https://api.fabric.microsoft.com/v1"
+          repository = Path("fabric")
+          if not (repository / "KairosModelBpa.Notebook").is_dir():
+              print("::notice::fabric/KairosModelBpa.Notebook is absent; skipping the advisory"
+                    " BPA run. Install it with `kairos-ontology update --refresh-workflows`.")
+              sys.exit(0)
+
+          workspace_id = os.environ["FABRIC_WORKSPACE_ID"]
+          credential = AzureCliCredential()
+          token = credential.get_token("https://api.fabric.microsoft.com/.default").token
+
+
+          def call(method, path, body=None):
+              request = urllib.request.Request(
+                  path if path.startswith("https://") else API + path,
+                  method=method,
+                  data=None if body is None else json.dumps(body).encode("utf-8"),
+                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+              )
+              with urllib.request.urlopen(request) as response:
+                  payload = response.read()
+                  return response.headers, json.loads(payload) if payload else None
+
+
+          try:
+              _, workspace = call("GET", "/workspaces/" + workspace_id)
+              if not workspace.get("capacityId"):
+                  print("::notice::The workspace has no Fabric, Premium or PPU capacity, so"
+                        " Semantic Link Labs cannot read the model; skipping. See CICD.md.")
+                  sys.exit(0)
+
+              publish_all_items(
+                  FabricWorkspace(
+                      workspace_id=workspace_id,
+                      environment=os.environ["TARGET_ENVIRONMENT"],
+                      repository_directory=str(repository.resolve()),
+                      item_type_in_scope=["Notebook"],
+                      token_credential=credential,
+                  )
+              )
+              _, items = call("GET", "/workspaces/" + workspace_id + "/items?type=Notebook")
+              notebook_id = next(
+                  item["id"] for item in items["value"] if item["displayName"] == NOTEBOOK
+              )
+
+          except Exception as exc:
+              print("::warning::The advisory BPA run could not run:", exc)
+              sys.exit(0)
+
+          lakehouse_id = os.environ.get("FABRIC_BPA_LAKEHOUSE_ID", "")
+          framed = os.environ.get("REFRESH_AFTER_PUBLISH", "true").lower() == "true"
+          for platform in sorted(Path("semantic-model").rglob("*.SemanticModel/.platform")):
+              dataset = "?"
+              try:
+                  metadata = json.loads(platform.read_text(encoding="utf-8"))["metadata"]
+                  dataset = metadata["displayName"]
+                  direct_lake = any(
+                      "mode: directLake" in path.read_text(encoding="utf-8")
+                      for path in (platform.parent / "definition").rglob("*.tmdl")
+                  )
+                  if direct_lake and not framed:
+                      print("::notice::" + dataset + " was not refreshed after publish"
+                            " (refresh_after_publish is false), so the Direct Lake model has"
+                            " read no data and the cardinality and VertiPaq rules have"
+                            " nothing to report.")
+                  execution = {
+                      "parameters": {
+                          "dataset": {"value": dataset, "type": "string"},
+                          "workspace": {"value": workspace_id, "type": "string"},
+                          "semantic_mode": {
+                              "value": "directLake" if direct_lake else "directQuery",
+                              "type": "string",
+                          },
+                      }
+                  }
+                  if lakehouse_id:
+                      execution["configuration"] = {
+                          "defaultLakehouse": {
+                              "id": lakehouse_id,
+                              "name": os.environ.get("FABRIC_BPA_LAKEHOUSE_NAME", ""),
+                              "workspaceId": workspace_id,
+                          }
+                      }
+                  headers, _ = call(
+                      "POST",
+                      "/workspaces/" + workspace_id + "/items/" + notebook_id
+                      + "/jobs/instances?jobType=RunNotebook",
+                      {"executionData": execution},
+                  )
+                  status = "NotStarted"
+                  for _ in range(60):
+                      time.sleep(20)
+                      _, job = call("GET", headers["Location"])
+                      status = job.get("status", "")
+                      if status in ("Completed", "Failed", "Cancelled", "Deduped"):
+                          break
+                  print("Advisory BPA run for", dataset, "finished with status:", status)
+                  if status != "Completed":
+                      print("::warning::The advisory BPA run for " + dataset + " did not"
+                            " complete (" + status + "); the deploy itself succeeded. Open"
+                            " the notebook run in Fabric.")
+              except Exception as exc:
+                  print("::warning::The advisory BPA run for " + dataset + " could not run:",
+                        exc)
+          sys.exit(0)
+          PY

@@ -56,6 +56,13 @@ and compiler diagnostics before accepting changed semantics.
 
    A changed notebook template is a changed dataplatform file. Record its outgoing bytes as a
    superseded generation before updating its digest in `tests/test_workflow_refresh.py`.
+
+   Scaffolded workflows pin every action to a commit SHA with its release as a comment
+   (`uses: owner/action@<sha> # vX.Y.Z`, #1124); `tests/test_action_pins.py` enforces it.
+   To bump an action, resolve the new tag's commit
+   (`gh api repos/<owner>/<action>/git/ref/tags/<tag>`, dereferencing an annotated tag),
+   change the SHA and the comment together in every template, and record each outgoing
+   template as a superseded generation.
 4. Commit with DCO sign-off, open the PR, merge to `main`.
 5. Tagging is automatic: `release.yml` detects the `__version__` change on the push
    to `main`, tags the merged commit itself, and builds + publishes — no manual

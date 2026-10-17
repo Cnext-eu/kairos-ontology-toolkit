@@ -176,23 +176,23 @@ def test_superseded_templates_ship_in_the_package():
 #: *dataplatform* template, which they can never equal.
 _LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
     "github-workflows/managed-check.yml":
-        "fcf849a71384c23250814333b970dbc49efe54441ab0dff128596e66274ade6c",
+        "664f3c795c777926b85e4105e871e302ed5ee5fc5d3e848eda3076ec244c7ee3",
     "github-workflows/pr-validate.yml":
-        "c7cb61d6719310c18708306adccee2c5221e6772e263d34b5b6671e0f62a80a2",
+        "623e0305cf55222942fa3ff0bf1a68768aa49942069261de4da1f8492772633e",
     "github-workflows/full-validate.yml":
-        "af4e07e1b15646181f3ccf36e3d9548635435ff5db44648eec1e30a033b92825",
+        "64fa0918bd8d7b779d564ebe6931d2e4f9dca5c1610da38904f589c5b673b688",
     "github-workflows/release-projections.yml":
-        "6562b12c0d2022d935f7e09676cec674bd63320aefef9a1afa04ceabd916b0dc",
+        "ebc4fc14155ef567a6c18ea1d72d9a15de3ef70da0107efd97d25de58b8a3263",
     "github-workflows/assign-copilot.yml":
         "06e75b76b56fe7d8444c2e0d1555b3e23c752791f3f42338c41b36b23ed63938",
     "github-workflows/copilot-setup-steps.yml":
-        "63b90be2aec5ddb4b26b51b3844ba64128491f78660af599ce09e9b19ddaa9e6",
+        "ae22f6ee6d9946c17ac2daf2ad7af35100e0341ea4de82aece117db72fec9c48",
     "dataplatform/.github/workflows/pr-validate.yml.template":
-        "d2aa9aaed704d958ed27f617910d148ea7dc19339cfdf7acbf2db86fc649483e",
+        "a9fdc19b294f4c3709b1c36de0e2b899356cfa9c2b86b434b6a0845f0406709e",
     "dataplatform/.github/workflows/promote.yml.template":
         "708d7dd2cb855bb6fafebd5d4f487b9b0408de2ab48ac107c3c1ab546eb59673",
     "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template":
-        "eb79d2773db31ba7726f4860b50dff2e8768c23f2440989b8d85643a5daf6b9d",
+        "bf9f901d98265b4f169360a0a8287e0df4eb0fb21a67ab1e6c6cfd15bdb7f3e0",
     "dataplatform/fabric/KairosModelBpa.Notebook/notebook-content.py.template":
         "3f4397ed56eafa311ec5c6f9f887e5a02dd9cbec078013e13c6bed3344b3849d",
     "dataplatform/fabric/KairosModelBpa.Notebook/.platform.template":
@@ -250,7 +250,7 @@ def test_recorded_hub_generations_are_refreshable(tmp_path):
         for name, text in zip(_SUPERSEDED_WORKFLOW_TEMPLATES[destination], superseded)
         if name.startswith("hub-pr-validate/")
     ]
-    assert len(hub_generations) == 7, "expected seven recorded hub generations"
+    assert len(hub_generations) == 8, "expected eight recorded hub generations"
 
     for generation in hub_generations[1:]:
         scaffolded = tmp_path / "pr-validate.yml"
@@ -275,6 +275,7 @@ def test_every_changed_workflow_records_its_outgoing_generation(tmp_path):
         ".github/workflows/full-validate.yml",
         ".github/workflows/managed-check.yml",
         ".github/workflows/release-projections.yml",
+        ".github/workflows/copilot-setup-steps.yml",
     ):
         current = (
             _SCAFFOLD_DIR / _HUB_WORKFLOW_SOURCES[destination]
@@ -287,3 +288,38 @@ def test_every_changed_workflow_records_its_outgoing_generation(tmp_path):
         status = classify(scaffolded, current, superseded)
         assert status.state == "outdated", f"{destination}: {status.state}"
         assert status.refreshable, destination
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [".github/workflows/pr-validate.yml", ".github/workflows/deploy-powerbi-semantic-model.yml"],
+)
+def test_a_dataplatform_on_the_tag_ref_generation_is_refreshed_to_sha_pins(tmp_path, destination):
+    """#1124: a dataplatform holding the rendered pre-pinning workflow gets the pinned one.
+
+    Rendered with this repo's own substitutions, the refresh must keep them and replace
+    every tag ref -- otherwise the scanner finding the pinning fixes would stay in every
+    dataplatform scaffolded before it.
+    """
+    import re
+
+    current = (_SCAFFOLD_DIR / _DATAPLATFORM_WORKFLOW_SOURCES[destination]).read_text(
+        encoding="utf-8"
+    )
+    superseded = _superseded_workflow_templates(destination)
+    previous = next(t for t in reversed(superseded) if "astral-sh/setup-uv@v10.0.1" in t)
+    names = set(re.findall(r"(?<!\$)\{([A-Z_][A-Z0-9_]*)\}", previous))
+    subs = {name: f"acme-{name.lower().replace('_', '-')}" for name in names}
+
+    scaffolded = tmp_path / "workflow.yml"
+    scaffolded.write_text(render(previous, subs), encoding="utf-8")
+    status = classify(scaffolded, current, superseded)
+    assert status.state == "outdated", status.state
+    assert status.refreshable
+
+    refreshed = render(current, status.substitutions or {})
+    assert "setup-uv@v10.0.1" not in refreshed
+    assert "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1" in refreshed
+    for value in subs.values():
+        if value in scaffolded.read_text(encoding="utf-8"):
+            assert value in refreshed, value

@@ -1536,7 +1536,7 @@ def test_new_repo_includes_workflow(tmp_path):
     assert "kairos-ontology update --check" in content
     # #589: an unpinned setup-uv version queries github.com's "latest release" API,
     # which 404s on GitHub Enterprise Server (astral-sh/uv doesn't exist there).
-    assert "astral-sh/setup-uv@v10.0.1" in content
+    assert "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1" in content
     assert 'version: "0.12.5"' in content
     assert "uv sync --locked" in content
 
@@ -1553,7 +1553,7 @@ def test_init_includes_workflow(tmp_path):
             assert wf.is_file()
             content = wf.read_text(encoding="utf-8")
             assert "kairos-ontology update --check" in content
-            assert "astral-sh/setup-uv@v10.0.1" in content
+            assert "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1" in content
             assert 'version: "0.12.5"' in content
             assert "uv sync --locked" in content
 
@@ -1574,7 +1574,7 @@ def test_new_repo_includes_pr_validate_workflow(tmp_path):
     assert "pull_request" in content
     assert "branches: [main]" in content
     assert "uv sync --locked" in content
-    assert "astral-sh/setup-uv@v10.0.1" in content
+    assert "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1" in content
     assert 'version: "0.12.5"' in content
 
 
@@ -1742,7 +1742,7 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             assert "validate-dbt --structural-only" not in content  # full gate (#686)
             assert "read-only, no regeneration" in content
             # #589: same GHES setup-uv/lockfile fixes as managed-check.yml.
-            assert "astral-sh/setup-uv@v10.0.1" in content
+            assert "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1" in content
             assert 'version: "0.12.5"' in content
             assert "uv sync --locked" in content
 
@@ -1764,7 +1764,7 @@ def test_init_copilot_setup_steps_workflow_avoids_ghes_and_lockfile_failures(tmp
             wf = Path(".github/workflows/copilot-setup-steps.yml")
             assert wf.is_file()
             content = wf.read_text(encoding="utf-8")
-            assert "astral-sh/setup-uv@v10.0.1" in content
+            assert "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1" in content
             assert 'version: "0.12.5"' in content
             assert "uv sync --locked" in content
             assert 'node-version: "22"' in content

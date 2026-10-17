@@ -1,0 +1,212 @@
+# Managed by kairos-ontology-toolkit. `update --refresh-workflows` replaces this file
+# while it matches a shipped generation, so an undeclared edit is silently reverted.
+# To keep one: declare it under [tool.kairos] customized-workflows in pyproject.toml,
+# and `update --check` will report it without failing or overwriting it. If the edit is
+# worth having everywhere, send it upstream instead (#772).
+# Pull-request workflow (DD-206 §4 "Dataplatform pull request", schema-level
+# default): restores pinned dependencies, runs `dbt deps`, `dbt parse`, and
+# `dbt compile` against a placeholder `ci` target, then validates physical
+# source bindings -- all on a GitHub-hosted runner, with no warehouse
+# credentials required. This is intentionally NOT a full `dbt build`: a fresh
+# scaffold has no warehouse CI credentials configured, so a literal "full
+# build by default" would fail out of the box for every new hub. See
+# CICD.md's "Pull-request checks" section for the additional opt-in
+# `dbt build --empty --target ci` step (see below -- it is the only gate that
+# catches SQL-dialect errors), which does need a real, credential-isolated
+# `ci` target configured as a GitHub Environment secret.
+
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# CI is a sanctioned caller. Every skill-managed command would otherwise print "prefer the
+# <skill> skill in your AI coding session" into a log where there is no session to redirect
+# to and no skill to prefer -- and the advisory claims the run skipped validation gates that
+# adjacent steps here perform explicitly. Set at workflow level, not per step: it was on one
+# of five steps, and a step added later must inherit it rather than silently regress (#721).
+env:
+  KAIROS_SKILL_CONTEXT: "1"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The hub package must always be pinned via `git:` + a full commit SHA
+      # `revision:`, updated only through `kairos-ontology bump-hub <ref>` (see
+      # CICD.md's "Hub package updates" section). A `local:` filesystem path is
+      # a tempting shortcut for testing pre-release hub output, but it silently
+      # breaks on every other clone/CI runner and bypasses the staleness-
+      # tracking mechanism entirely -- fail closed here instead of letting it
+      # reach main.
+      - name: "Guard against local: package pins"
+        run: |
+          if grep -qE '^\s*-?\s*local:' packages.yml; then
+            echo "::error file=packages.yml::packages.yml pins a package via 'local:'." \
+              "Use 'kairos-ontology bump-hub <ref>' to pin an immutable git revision instead."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          # An unpinned version queries github.com's "latest release" API, which
+          # 404s from a GitHub Enterprise Server host (astral-sh/uv doesn't exist
+          # there). Pinning a known-good version skips that lookup entirely.
+          version: "0.12.5"
+          enable-cache: true
+
+      - name: Install toolkit and dbt adapter
+        run: uv sync --locked
+
+      # `dbt deps` clones the hub package named in packages.yml. That needs no
+      # credentials only for a public github.com hub; against a private or
+      # Enterprise-hosted one it fails with "could not read Username" (#705).
+      # actions/checkout authenticates only *this* repository, and the default
+      # GITHUB_TOKEN is repo-scoped -- adding it changes the error to "Repository not
+      # found", not success -- so a cross-repository PAT or App token is required.
+      # HUB_REPO_TOKEN follows the convention deploy-powerbi-semantic-model.yml already
+      # uses for its cross-repo `gh release download`. A public hub needs no secret, and
+      # this step is then a no-op.
+      # The hub's owner and repository, read from the packages.yml pin, for the App token.
+      - name: Locate the hub repository
+        id: hub
+        if: ${{ vars.KAIROS_HUB_APP_CLIENT_ID != '' }}
+        run: |
+          uv run --no-sync python -c 'import pathlib;from kairos_ontology.cli.shared import _parse_hub_package_pin;o,r=_parse_hub_package_pin(pathlib.Path("packages.yml").read_text(encoding="utf-8")).org_repo.split("/");print(f"owner={o}");print(f"repo={r}")' >> "$GITHUB_OUTPUT"
+
+      # Hub access through a GitHub App instead of a personal access token: set the
+      # KAIROS_HUB_APP_CLIENT_ID variable and the KAIROS_HUB_APP_PRIVATE_KEY secret, and
+      # install the App on the hub repository with Contents:read. The minted token is
+      # scoped to the hub alone and expires with the run. Without them, HUB_REPO_TOKEN is
+      # used as before (DD-256).
+      - name: Mint a hub repository token from the GitHub App
+        id: hub_app
+        if: ${{ vars.KAIROS_HUB_APP_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.KAIROS_HUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.KAIROS_HUB_APP_PRIVATE_KEY }}
+          owner: ${{ steps.hub.outputs.owner }}
+          repositories: ${{ steps.hub.outputs.repo }}
+
+      - name: Authenticate to the hub package repository
+        env:
+          HUB_REPO_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HUB_REPO_TOKEN:-}" ]; then
+            echo "HUB_REPO_TOKEN is not set - assuming a public hub package."
+            echo "If the hub repository is private, dbt deps will fail with 'Repository not found'; install a GitHub App on the hub (KAIROS_HUB_APP_CLIENT_ID + KAIROS_HUB_APP_PRIVATE_KEY) or add HUB_REPO_TOKEN (Contents:read on the hub) as a repository secret."
+            exit 0
+          fi
+          host="$(uv run --no-sync python -c 'import pathlib;from kairos_ontology.cli.shared import _parse_hub_package_pin;print(_parse_hub_package_pin(pathlib.Path("packages.yml").read_text(encoding="utf-8")).host)')"
+          git config --global url."https://x-access-token:${HUB_REPO_TOKEN}@${host}/".insteadOf "https://${host}/"
+
+      - name: dbt deps
+        run: uv run --no-sync dbt deps
+
+      # dbt refuses to run against a --target with no matching profiles.yml
+      # output at all, even though neither `dbt parse` nor `dbt compile` opens
+      # a real warehouse connection for ordinary models. This writes the same
+      # kind of synthetic, unreachable "offline.invalid" placeholder the hub's
+      # own `validate-dbt` tier-2 gate already uses -- no real credential is
+      # possible to leak here, and none is required for parse/compile to
+      # succeed. This step must be removed (or made conditional) before
+      # enabling the opt-in full `dbt build` step below, which needs a real,
+      # credential-isolated `ci` target instead.
+      - name: Write placeholder CI profile (no real credentials)
+        run: |
+          mkdir -p .dbt
+          cat > .dbt/profiles.yml <<'PROFILE_EOF'
+{DBT_CI_PROFILE_YAML}
+          PROFILE_EOF
+
+      - name: dbt parse
+        run: uv run --no-sync dbt parse --profiles-dir .dbt --target ci
+
+      # `dbt compile` is deliberately NOT run here (#705). The premise stated above --
+      # that neither parse nor compile opens a real connection -- does not hold for
+      # dbt-fabric, which resolves an Azure credential eagerly during compile. Measured
+      # against the placeholder profile: `ServicePrincipal` fails with "Unsupported
+      # authentication method", the correct `ActiveDirectoryServicePrincipal` fails with
+      # "Connection string parsing failed", and `cli` works only where `az login` has
+      # already run -- which a GitHub runner has not. `dbt parse` passes in every case.
+      #
+      # Re-enable it alongside the opt-in `dbt build` steps below, which need a real,
+      # credential-isolated `ci` target anyway.
+      # - name: dbt compile
+      #   run: uv run --no-sync dbt compile --profiles-dir .dbt --target ci
+
+      # DD-206 §5: physical source-binding validation must fail before any
+      # warehouse execution when a logical source used by the package lacks a
+      # real physical binding, or the binding is unknown, duplicate, or stale.
+      #
+      # Requires `kairos-ontology validate-source-bindings`
+      # (feature/cicd-group-b-source-binding at the time this workflow was
+      # authored, not yet merged into feature/cicd) -- until that command
+      # ships, this step fails with "no such command". Once merged, it needs
+      # no warehouse credentials either: it compares package source usage
+      # against models/_sources.yml, not a live connection.
+      #
+      # Scoped with --models-dir (#705). Unscoped, this walks every `sources:` catalog
+      # under models/, so a dataplatform that also declares its own Bronze/raw catalogs
+      # for its own models gets one `unknown` finding per non-package entry, at severity
+      # error -- 150 findings on one real repo, every one of them DD-206 §5 behaving
+      # correctly but applied to the wrong scope. Point it at the hub binding catalog;
+      # change the path if yours lives elsewhere.
+      - name: Validate physical source bindings
+        run: |
+          uv run --no-sync kairos-ontology validate-source-bindings \
+            --project-dir . \
+            --models-dir models/hub \
+            --format json
+
+      # DD-253 / #1102: the Power BI reports this repository authors itself. Offline, like the
+      # step above: every report folder is listed in reports.yml with the semantic model it
+      # reads, binds to a model, is not named after one (the hub's stub would overwrite it),
+      # and carries the current shared theme. The deploy resolves the model per workspace, so
+      # a report missing from reports.yml would otherwise fail only there.
+      - name: Check authored Power BI reports
+        if: hashFiles('powerbi/reports/**/definition.pbir') != ''
+        run: uv run --no-sync kairos-ontology check-authored-reports
+
+      # DD-256: the promote workflow deploys the hub release in hub-release.lock, which must
+      # name the hub commit packages.yml pins -- a dbt package and a semantic model from
+      # different hub commits would disagree on the Gold tables. `bump-hub <release tag>`
+      # moves both together. Without a lock this passes: promotions then build dbt only.
+      - name: Check hub-release.lock against the packages.yml pin
+        run: uv run --no-sync kairos-ontology hub-release
+
+      # Opt-in, and the single highest-value gate available here (DD-215).
+      #
+      # `--empty` runs every model with `limit 0`: the warehouse still parses,
+      # binds, and plans the SQL, but reads no rows and writes no data. That
+      # makes it the only check that catches *dialect* errors, which nothing
+      # upstream can. dbt does not abstract SQL dialects -- a model body is sent
+      # to the engine verbatim -- so `dbt parse` and `dbt compile` above never
+      # look at it, and neither does any offline gate in the hub. A hand-authored
+      # `where is_debtor` against a T-SQL bit column reaches production without
+      # this step; it did, once.
+      #
+      # Cost is close to zero, so prefer it over a full `dbt build` for PR CI.
+      # Both need a real, credential-isolated `ci` target (a GitHub Environment
+      # secret, never committed) and the placeholder-profile step above removed
+      # or skipped. See CICD.md.
+      # - name: dbt build --empty (opt-in, needs real ci credentials)
+      #   run: uv run --no-sync dbt build --empty --profiles-dir .dbt --target ci
+      #
+      # - name: dbt build (opt-in, full run with data)
+      #   run: uv run --no-sync dbt build --profiles-dir .dbt --target ci
