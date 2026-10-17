@@ -131,12 +131,15 @@ business semantics.
 - Generate RLS/OLS only from complete fail-closed security policy and emitted-column bindings.
   Runtime identity provisioning and enforcement remain downstream responsibilities.
 - Keep platform-specific behavior inside supported Fabric/Databricks capability contracts.
-- On `databricks` the semantic model is `directQuery`, so declare `gold.databricks_connection`
-  (`server_hostname`, `http_path` per environment) in `kairos.yaml`. Projection fails closed
-  without it; the emitted fabric-cicd `parameter.yml` rewrites those two values per deployment
-  environment. Fabric Direct Lake needs `gold.direct_lake_connection` instead
-  (`workspace_id` + `item_id` per environment, where `item_id` is the Fabric Warehouse dbt
-  writes Gold into); it is required, not optional.
+- Environment IDs belong to the dataplatform, not the hub (DD-255). Leave
+  `gold.databricks_connection` (`directQuery` on `databricks`) and
+  `gold.direct_lake_connection` (Fabric Direct Lake) out of `kairos.yaml` by default: the
+  emitted model then carries an unresolved placeholder, and the dataplatform's deploy binds it
+  to each environment from its dbt target, failing closed when it cannot. Declare a block —
+  `server_hostname` + `http_path`, or `workspace_id` + `item_id` (the Warehouse dbt writes
+  Gold into) per environment — only when the hub itself must open the model against a real
+  workspace; the emitted fabric-cicd `parameter.yml` then rewrites those values per
+  environment.
 
 ## Best practice by design (DD-238, DD-240)
 

@@ -146,7 +146,8 @@ def test_domain_without_gold_profile_fails_clearly(tmp_path, monkeypatch):
     assert "no authored Gold profile" in result.output
 
 
-def test_missing_direct_lake_connection_surfaces_as_click_error(tmp_path, monkeypatch):
+def test_a_hub_without_direct_lake_connection_emits_the_placeholder(tmp_path, monkeypatch):
+    """DD-255: the hub holds no environment IDs; the deploy resolves them from dbt."""
     hub = _copy_hub(tmp_path)
     config = hub / "kairos.yaml"
     config.write_text(
@@ -161,10 +162,13 @@ def test_missing_direct_lake_connection_surfaces_as_click_error(tmp_path, monkey
     )
     monkeypatch.chdir(hub)
 
-    result = CliRunner().invoke(cli, ["emit-gold", "party"])
+    result = CliRunner().invoke(cli, ["emit-gold", "party", "--confirm-emit"])
 
-    assert result.exit_code != 0
-    assert "direct-lake-connection-missing" in result.output
+    assert result.exit_code == 0, result.output
+    from kairos_ontology.core.projections.dbt.gold_connection import UNRESOLVED_ONELAKE_URL
+
+    parameter = publish_root(hub) / "powerbi" / "parameter.yml"
+    assert UNRESOLVED_ONELAKE_URL in parameter.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(not _HAS_DOTNET, reason="dotnet SDK not installed; TOM SDK validation is best-effort")

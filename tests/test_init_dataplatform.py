@@ -857,7 +857,7 @@ class TestCodeWorkspaceGeneration:
 
 
 class TestProfilesExamplePlatformSelection:
-    """The generated .dbt/profiles.yml.example is pre-activated for --platform."""
+    """The committed profiles.yml is pre-activated for --platform (DD-255)."""
 
     def _profiles_example(self, mock_hub, name, platform=None):
         runner = CliRunner()
@@ -866,7 +866,7 @@ class TestProfilesExamplePlatformSelection:
             args += ["--platform", platform]
         result = _run_in_hub(runner, mock_hub, args)
         assert result.exit_code == 0, result.output
-        return (mock_hub / name / ".dbt" / "profiles.yml.example").read_text(encoding="utf-8")
+        return (mock_hub / name / "profiles.yml").read_text(encoding="utf-8")
 
     @staticmethod
     def _active_types(content):
@@ -900,7 +900,7 @@ class TestProfilesExamplePlatformSelection:
             for line in content.splitlines()
             if line.strip().startswith("authentication:")
         ]
-        assert active_auth == ["authentication: environment"], active_auth
+        assert active_auth == ["authentication: environment"] * 3, active_auth
         assert "authentication: ServicePrincipal" not in content
         assert "DBT_FABRIC_TENANT_ID" not in content
         assert "AZURE_TENANT_ID" in content
@@ -910,30 +910,52 @@ class TestProfilesExamplePlatformSelection:
         assert self._active_types(content) == {"databricks"}
         assert '"{your-catalog}"' in content
 
-    def test_generated_example_is_valid_yaml_with_one_active_target(self, mock_hub):
+    def test_generated_profile_is_valid_yaml_with_one_target_per_environment(self, mock_hub):
         import yaml
 
         content = self._profiles_example(mock_hub, "dp-yaml-check", platform="databricks")
         parsed = yaml.safe_load(content)
-        [outputs] = [v["outputs"] for v in parsed.values()]
-        assert list(outputs.keys()) == ["dev"]
-        assert outputs["dev"]["type"] == "databricks"
+        [profile] = parsed.values()
+        assert profile["target"] == "dev"
+        assert list(profile["outputs"]) == ["dev", "uat", "prod"]
+        assert {item["type"] for item in profile["outputs"].values()} == {"databricks"}
 
     def test_no_leftover_marker_lines(self, mock_hub):
         content = self._profiles_example(mock_hub, "dp-markers", platform="fabric-warehouse")
         assert "@config" not in content
         assert "PLATFORM:" not in content
 
-    def test_example_includes_cross_platform_profiles_dir_guidance(self, mock_hub):
+    def test_profile_is_committed_and_names_the_environment_authority(self, mock_hub):
         content = self._profiles_example(mock_hub, "dp-guidance", platform="fabric-warehouse")
-        assert 'PowerShell: $env:DBT_PROFILES_DIR = ".dbt"' in content
-        assert "bash/zsh:   export DBT_PROFILES_DIR=.dbt" in content
+        assert "COMMIT THIS FILE" in content
+        assert "resolve-environment --target uat" in content
+        gitignore = (mock_hub / "dp-guidance" / ".gitignore").read_text(encoding="utf-8")
+        assert "profiles.yml" not in gitignore.replace(".dbt/profiles.yml", "")
+        assert ".dbt/profiles.yml" in gitignore
+        assert not (mock_hub / "dp-guidance" / ".dbt" / "profiles.yml.example").exists()
 
-    def test_includes_uat_prod_target_stubs(self, mock_hub):
-        content = self._profiles_example(mock_hub, "dp-promotion", platform="fabric-warehouse")
-        assert "# uat:" in content
-        assert "# prod:" in content
-        assert "dbt run --target uat" in content
+    def test_the_generated_profile_resolves_once_filled_in(self, mock_hub):
+        """The scaffold and the resolver agree: fill the placeholders and it resolves."""
+        from kairos_ontology.core.dbt_environment import (
+            EnvironmentResolutionError,
+            resolve_environment,
+        )
+
+        self._profiles_example(mock_hub, "dp-resolve", platform="fabric-warehouse")
+        project = mock_hub / "dp-resolve"
+        with pytest.raises(EnvironmentResolutionError, match="scaffold placeholder"):
+            resolve_environment(project, "uat", environ={}, offline=True)
+
+        profile = project / "profiles.yml"
+        profile.write_text(
+            profile.read_text(encoding="utf-8")
+            .replace("{your-uat-workspace}", "abc")
+            .replace("{your-warehouse-name}", "gold_wh"),
+            encoding="utf-8",
+        )
+        resolved = resolve_environment(project, "UAT", environ={}, offline=True)
+        assert resolved.environment == "uat"
+        assert resolved.target_type == "fabric"
 
     def test_secret_fields_use_env_var_placeholders(self, mock_hub):
         content = self._profiles_example(mock_hub, "dp-secrets", platform="fabric-warehouse")

@@ -1727,7 +1727,8 @@ def init_dataplatform(name, dest, platform, org_override):
     What it creates:
       - dbt_project.yml with correct package reference
       - packages.yml pinned to the hub's current version
-      - profiles.yml.example for your platform
+      - profiles.yml (committed, DD-255): one dbt target per environment
+        (dev/uat/prod) for your platform -- the environment authority
       - macros/extract_source_schema.sql for bronze introspection (fallback; prefer
         the `extract-schema` CLI command)
       - macros/generate_schema_name.sql for bare bronze/silver/gold schema names
@@ -1834,7 +1835,7 @@ def init_dataplatform(name, dest, platform, org_override):
     template_files = {
         "dbt_project.yml.template": "dbt_project.yml",
         "packages.yml.template": "packages.yml",
-        "profiles.yml.example": ".dbt/profiles.yml.example",
+        "profiles.yml.template": "profiles.yml",
         "pyproject.toml.template": "pyproject.toml",
         "README.md.template": "README.md",
     }
@@ -1843,7 +1844,7 @@ def init_dataplatform(name, dest, platform, org_override):
         src = _DATAPLATFORM_SCAFFOLD / src_name
         if src.exists():
             content = src.read_text(encoding="utf-8")
-            if src_name == "profiles.yml.example":
+            if src_name == "profiles.yml.template":
                 content = _activate_profile_platform(content, platform)
             for placeholder, value in subs.items():
                 content = content.replace(placeholder, value)
@@ -1942,7 +1943,7 @@ def init_dataplatform(name, dest, platform, org_override):
     # Create .gitignore
     gitignore = (
         "target/\ndbt_packages/\nlogs/\n.venv/\n__pycache__/\n*.pyc\n"
-        ".env\nprofiles.yml\n.dbt/profiles.yml\n.kairos/\n"
+        ".env\n.dbt/profiles.yml\n.kairos/\n"
     )
     (repo_dir / ".gitignore").write_text(gitignore, encoding="utf-8")
     click.echo("  ✓ .gitignore")
@@ -2088,10 +2089,10 @@ def init_dataplatform(name, dest, platform, org_override):
     click.echo("\n📋 Next steps:")
     click.echo(f"   cd {name}")
     click.echo("   uv sync")
-    click.echo("   # Edit profiles.yml.example → ~/.dbt/profiles.yml")
+    click.echo("   # Fill in the dev/uat/prod targets in profiles.yml (committed; no secrets)")
     click.echo("   # Edit models/_sources.yml with actual database/schema")
     click.echo("   dbt deps")
-    click.echo("   dbt build")
+    click.echo("   dbt build --target dev")
     click.echo(
         "   # Configure Fabric secrets and run .github/workflows/deploy-powerbi-semantic-model.yml"
     )

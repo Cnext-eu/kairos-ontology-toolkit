@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import click
 
+from .environment import PROFILES_DIR_OPTION, PROJECT_DIR_OPTION
 from .gates import escape_option
 
 from ..core.compiler import build_compile_plan
@@ -789,9 +790,19 @@ def _regenerate_master_gold_erd(diagrams_target: Path, *, hub_name: str) -> None
 )
 @click.option(
     "--environment",
-    required=True,
-    help="Target environment key, matching the one passed to fabric-cicd.",
+    default=None,
+    help="Target environment key, matching the one passed to fabric-cicd. Defaults to the "
+    "--from-dbt-target name.",
 )
+@click.option(
+    "--from-dbt-target",
+    "dbt_target",
+    default=None,
+    help="Resolve the environment's Gold connection from this dbt target (DD-255) instead "
+    f"of {GOLD_CONNECTION_OVERRIDE_PATH}.",
+)
+@PROJECT_DIR_OPTION
+@PROFILES_DIR_OPTION
 @click.option(
     "--config",
     "config_path",
@@ -799,28 +810,44 @@ def _regenerate_master_gold_erd(diagrams_target: Path, *, hub_name: str) -> None
     type=click.Path(path_type=Path),
     help=f"Override file (default: {GOLD_CONNECTION_OVERRIDE_PATH}).",
 )
-def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: Path | None):
-    """Point one environment's Direct Lake target at dataplatform-owned infrastructure.
+def apply_gold_connection_cmd(
+    package_dir: Path,
+    environment: str | None,
+    dbt_target: str | None,
+    project_dir: Path,
+    profiles_dir: Path | None,
+    config_path: Path | None,
+):
+    """Point one environment's Gold connection at dataplatform-owned infrastructure.
 
-    The hub authors `gold.direct_lake_connection` in its own `kairos.yaml`, so the
-    `parameter.yml` it ships can only rewrite between environments the hub itself
-    declares. That forced every Fabric workspace a hub might ever deploy to have its real
-    GUIDs committed to the hub repo, which otherwise stays infrastructure-agnostic
-    (issue #662). This is the seam from the other side.
+    The hub may author `gold.direct_lake_connection` (or `gold.databricks_connection`) in
+    its own `kairos.yaml`, but the `parameter.yml` it ships can then only rewrite between
+    environments the hub itself declares. That forced every workspace a hub might ever
+    deploy to into a hub repo that otherwise stays infrastructure-agnostic (issue #662).
+    This is the seam from the other side, and with DD-255 the hub need not declare any
+    environment at all.
+
+    The connection comes from one of two places:
+
+    - `--from-dbt-target TARGET` (DD-255): resolved from the dataplatform's dbt target, as
+      `resolve-environment` does -- the target's endpoint, `vars.kairos` and the Fabric
+      REST API. ENVIRONMENT defaults to the target name. `--config` is not read.
+    - otherwise the override file (`--config`, default
+      `.github/fabric/gold-connections.yml`). A missing file, or one that does not
+      declare ENVIRONMENT, leaves the hub's own values standing.
 
     Only `replace_value[ENVIRONMENT]` is rewritten. `find_value` is left exactly as the
-    hub emitted it: fabric-cicd matches it as a literal substring against the URL baked
-    into the TMDL, so a dataplatform-supplied value would silently fail to match and
-    leave the model pointed at the hub's default workspace.
+    hub emitted it: fabric-cicd matches it as a literal substring against the TMDL, so a
+    dataplatform-supplied value would silently fail to match and leave the model pointed
+    at the hub's default workspace.
 
-    A missing config file, or one that does not declare ENVIRONMENT, leaves the hub's own
-    values standing. Two things fail closed (#993), because each used to deploy the hub's
-    default workspace to every environment without a word:
+    Two things fail closed (#993), because each used to deploy the hub's default
+    workspace to every environment without a word:
 
     - the package carries no `parameter.yml` (a release packaged before the toolkit
       shipped it -- re-release the hub);
-    - after any override, `parameter.yml` does not declare ENVIRONMENT, e.g. a typo,
-      which fabric-cicd would silently skip.
+    - after any override, `parameter.yml` does not declare ENVIRONMENT, e.g. a typo, or
+      a hub that declares no environments and was given none.
 
     Environment keys are case-insensitive (#1114): ENVIRONMENT, the override file's keys
     and the shipped `parameter.yml` keys are all lowercased, so pass fabric-cicd the
@@ -831,14 +858,19 @@ def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: 
     """
     import yaml
 
+    from ..core.dbt_environment import EnvironmentResolutionError, resolve_environment
     from ..core.projections.dbt.gold_connection import (
         GoldConnectionOverrideError,
         apply_gold_connection_override,
         declared_parameter_environments,
+        hub_declares_no_environments,
         normalize_environment_key,
         normalize_parameter_environments,
         parse_gold_connection_overrides,
     )
+
+    if environment is None and dbt_target is None:
+        raise click.UsageError("Pass --environment, --from-dbt-target, or both.")
 
     parameter_path = package_dir / PARAMETER_ARTIFACT_PATH
     if not parameter_path.is_file():
@@ -848,6 +880,20 @@ def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: 
             "before the toolkit shipped it in the archive (#993): re-release the hub."
         )
 
+    resolved = None
+    if dbt_target is not None:
+        try:
+            resolved = resolve_environment(project_dir, dbt_target, profiles_dir=profiles_dir)
+        except EnvironmentResolutionError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if environment is not None and normalize_environment_key(environment) != (
+            resolved.environment
+        ):
+            raise click.ClickException(
+                f"--environment {environment!r} and --from-dbt-target {dbt_target!r} name "
+                "different environments; the dbt target is the environment (DD-255)"
+            )
+        environment = resolved.environment
     environment = normalize_environment_key(environment)
     try:
         normalised, renamed = normalize_parameter_environments(
@@ -862,8 +908,28 @@ def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: 
             "environment keys are case-insensitive (#1114)."
         )
 
+    def _apply(override, label: str) -> None:
+        try:
+            rewritten, previous, new = apply_gold_connection_override(
+                parameter_path.read_text(encoding="utf-8"), environment, override
+            )
+        except GoldConnectionOverrideError as exc:
+            raise click.ClickException(str(exc)) from exc
+        parameter_path.write_text(rewritten, encoding="utf-8")
+        click.echo(f"Applied {label} for {environment!r}:")
+        click.echo(f"  before: {previous or '(not declared by the hub)'}")
+        click.echo(f"  after:  {new}")
+
     resolved_config = config_path or Path(GOLD_CONNECTION_OVERRIDE_PATH)
-    if not resolved_config.is_file():
+    if resolved is not None:
+        try:
+            override = resolved.connection_override()
+        except EnvironmentResolutionError as exc:
+            raise click.ClickException(str(exc)) from exc
+        for key, source in resolved.sources.items():
+            click.echo(f"  {key} <- {source}")
+        _apply(override, f"the connection resolved from dbt target {resolved.target!r}")
+    elif not resolved_config.is_file():
         click.echo(f"No {resolved_config} -- using the hub's own connection.")
     else:
         document = yaml.safe_load(resolved_config.read_text(encoding="utf-8"))
@@ -880,28 +946,24 @@ def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: 
                 f"(declared: {sorted(names or ())}) -- using the hub's own connection."
             )
         else:
-            try:
-                rewritten, previous, new_url = apply_gold_connection_override(
-                    parameter_path.read_text(encoding="utf-8"),
-                    environment,
-                    override,
-                )
-            except GoldConnectionOverrideError as exc:
-                raise click.ClickException(str(exc)) from exc
-            parameter_path.write_text(rewritten, encoding="utf-8")
-            click.echo(f"Applied {resolved_config} override for {environment!r}:")
-            click.echo(f"  before: {previous or '(not declared by the hub)'}")
-            click.echo(f"  after:  {new_url}")
+            _apply(override, f"{resolved_config} override")
 
+    parameter_yaml = parameter_path.read_text(encoding="utf-8")
     try:
-        declared = declared_parameter_environments(parameter_path.read_text(encoding="utf-8"))
+        declared = declared_parameter_environments(parameter_yaml)
     except GoldConnectionOverrideError as exc:
         raise click.ClickException(str(exc)) from exc
     if environment not in declared:
+        if hub_declares_no_environments(parameter_yaml):
+            raise click.ClickException(
+                f"The hub declares no environments (DD-255), so {PARAMETER_ARTIFACT_PATH} "
+                f"has no {environment!r} connection and the model would deploy unbound. "
+                f"Pass --from-dbt-target, or declare {environment!r} in {resolved_config}."
+            )
         raise click.ClickException(
             f"{PARAMETER_ARTIFACT_PATH} does not declare the {environment!r} environment "
             f"(declared: {sorted(declared)}), so fabric-cicd would skip the rewrite and "
             "deploy the hub's default workspace. Use one of the declared keys, declare it "
-            "in the hub's kairos.yaml, or add it to "
+            "in the hub's kairos.yaml, pass --from-dbt-target, or add it to "
             f"{resolved_config}."
         )

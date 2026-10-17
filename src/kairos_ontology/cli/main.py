@@ -44,6 +44,7 @@ from .authored_reports import (
     stage_authored_reports_cmd,
 )
 from .emit_gold import apply_gold_connection_cmd, emit_gold_cmd, harvest_gold_cmd
+from .environment import resolve_environment_cmd
 from .package_powerbi_release import package_powerbi_release_cmd
 from .decisions import decision
 from .feedback import feedback
@@ -394,6 +395,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(compile_cmd)
     group.add_command(emit_gold_cmd)
     group.add_command(apply_gold_connection_cmd)
+    group.add_command(resolve_environment_cmd)
     group.add_command(check_authored_reports_cmd)
     group.add_command(stage_authored_reports_cmd)
     group.add_command(apply_report_theme_cmd)

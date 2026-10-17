@@ -16,8 +16,9 @@ from .calendar_columns import CALENDAR_COLUMNS
 from .capabilities import physical_canonical_type
 from .gold_assert import assert_gold_semantics
 from .gold_connection import (
-    GOLD_CONNECTION_RULE_ID,
-    GOLD_DIRECT_LAKE_RULE_ID,
+    UNRESOLVED_DATABRICKS_HOSTNAME,
+    UNRESOLVED_DATABRICKS_HTTP_PATH,
+    UNRESOLVED_ONELAKE_URL,
     GoldDatabricksConnectionSpec,
     GoldDirectLakeConnectionSpec,
     GoldDirectLakeEnvironmentSpec,
@@ -25,7 +26,6 @@ from .gold_connection import (
 from .gold_specs import (
     DimensionalGoldSpec,
     GoldCalendarSpec,
-    GoldContractError,
     GoldMeasureSpec,
     GoldPhysicalPlan,
     GoldPhysicalTablePlan,
@@ -815,14 +815,15 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
     )
 
 
-def _direct_lake_expression_tmdl(connection: GoldDirectLakeConnectionSpec) -> str:
+def _direct_lake_expression_tmdl(connection: GoldDirectLakeConnectionSpec | None) -> str:
     """Render the shared OneLake named expression every Direct Lake partition needs.
 
     Direct Lake mode has no per-table connection string -- every partition resolves
     its data through this one M expression's `AzureStorage.DataLake` call, pointed
-    at the released environment's workspace/lakehouse (#619 Bug 4).
+    at the released environment's workspace/lakehouse (#619 Bug 4). A hub that declares
+    no connection gets the unresolved placeholder, which the deploy rewrites (DD-255).
     """
-    onelake_url = _onelake_url(connection.default)
+    onelake_url = _onelake_url(connection.default) if connection else UNRESOLVED_ONELAKE_URL
     return "\n".join(
         [
             f"expression '{_DIRECT_LAKE_EXPRESSION_NAME}' =",
@@ -853,21 +854,21 @@ def _partition(
             f"\t\t\texpressionSource: '{_DIRECT_LAKE_EXPRESSION_NAME}'",
             "",
         ]
-    # A Power Query partition must name a resolved host and HTTP path: nothing
-    # substitutes a placeholder between here and Fabric (issue #283). The default
-    # environment's values are emitted and ``parameter.yml`` rewrites them for any
-    # other environment the released artifact is promoted into.
-    assert connection is not None  # guaranteed by render_powerbi_artifacts
-    environment = connection.default
+    # A Power Query partition must name a host and HTTP path that ``parameter.yml``
+    # rewrites per environment (issue #283). The hub's default environment's values are
+    # emitted, or -- when the hub declares none (DD-255) -- the unresolved placeholders,
+    # which the deploy must replace from the dataplatform's dbt target.
+    if connection is None:
+        hostname, http_path = UNRESOLVED_DATABRICKS_HOSTNAME, UNRESOLVED_DATABRICKS_HTTP_PATH
+    else:
+        hostname = connection.default.server_hostname
+        http_path = connection.default.http_path
     return [
         f"\tpartition {table_name} = m",
         "\t\tmode: directQuery",
         "\t\tsource =",
         "\t\t\tlet",
-        (
-            "\t\t\t\tSource = Databricks.Catalogs("
-            f'"{environment.server_hostname}", "{environment.http_path}")'
-        ),
+        f'\t\t\t\tSource = Databricks.Catalogs("{hostname}", "{http_path}")',
         f'\t\t\tin Source{{[Name="{schema_name}.{table_name}"]}}[Data]',
         "",
     ]
@@ -886,7 +887,7 @@ def _onelake_url(environment: GoldDirectLakeEnvironmentSpec) -> str:
     )
 
 
-def _direct_lake_parameter_yaml(connection: GoldDirectLakeConnectionSpec) -> str:
+def _direct_lake_parameter_yaml(connection: GoldDirectLakeConnectionSpec | None) -> str:
     """Render the deploy-time parameterisation for a Direct Lake semantic model.
 
     Direct Lake resolves every partition through one named expression whose OneLake
@@ -900,17 +901,25 @@ def _direct_lake_parameter_yaml(connection: GoldDirectLakeConnectionSpec) -> str
     performs a literal substring replacement over every file of an in-scope item, and
     a bare GUID can also appear in a lineageTag or annotation, where rewriting it
     would be wrong.
+
+    Without a connection (DD-255) the entry finds the unresolved placeholder and declares
+    no environment: `apply-gold-connection --from-dbt-target` adds the one being deployed.
     """
+    if connection is None:
+        find_value, replace_value = UNRESOLVED_ONELAKE_URL, {}
+    else:
+        find_value = _onelake_url(connection.default)
+        replace_value = {item.name: _onelake_url(item) for item in connection.environments}
     entries = [
         {
-            "find_value": _onelake_url(connection.default),
-            "replace_value": {item.name: _onelake_url(item) for item in connection.environments},
+            "find_value": find_value,
+            "replace_value": replace_value,
             "item_type": "SemanticModel",
         }
     ]
     header = _parameter_header(
         "the OneLake binding of this Direct Lake semantic model",
-        connection.default_environment,
+        connection.default_environment if connection else None,
     )
     return header + yaml.safe_dump(
         {"find_replace": entries},
@@ -920,21 +929,32 @@ def _direct_lake_parameter_yaml(connection: GoldDirectLakeConnectionSpec) -> str
     )
 
 
-def _parameter_header(subject: str, default_environment: str) -> str:
+def _parameter_header(subject: str, default_environment: str | None) -> str:
     """Shared preamble for both parameterisation files."""
-    return "\n".join(
-        [
-            "# Generated by the Kairos Gold projector - do not edit.",
+    if default_environment is None:
+        origin = [
+            f"# fabric-cicd deploy-time parameterisation for {subject}.",
+            "# The hub declares no environment (DD-255): the TMDL carries an unresolved",
+            "# placeholder, and the dataplatform's deploy adds each environment from its",
+            "# dbt target (`apply-gold-connection --from-dbt-target`).",
+        ]
+    else:
+        origin = [
             f"# fabric-cicd deploy-time parameterisation for {subject},",
             "# authored in kairos.yaml. The emitted TMDL carries the "
             f"{default_environment} values.",
+        ]
+    return "\n".join(
+        [
+            "# Generated by the Kairos Gold projector - do not edit.",
+            *origin,
             "# Keep this file at the root of the fabric-cicd repository_directory.",
             "",
         ]
     )
 
 
-def _parameter_yaml(connection: GoldDatabricksConnectionSpec) -> str:
+def _parameter_yaml(connection: GoldDatabricksConnectionSpec | None) -> str:
     """Render the fabric-cicd deploy-time parameterisation for the connection.
 
     ``fabric_cicd.FabricWorkspace(environment=...)`` selects one key from each
@@ -945,6 +965,20 @@ def _parameter_yaml(connection: GoldDatabricksConnectionSpec) -> str:
     environment absent from the mapping is skipped, which is why the default
     environment's values must be deployable as emitted.
     """
+    if connection is None:
+        # DD-255: the hub declares no environment; the deploy adds the target's.
+        entries = [
+            {"find_value": value, "replace_value": {}, "item_type": "SemanticModel"}
+            for value in (UNRESOLVED_DATABRICKS_HOSTNAME, UNRESOLVED_DATABRICKS_HTTP_PATH)
+        ]
+        return _parameter_header(
+            "the Databricks directQuery partitions of this semantic model", None
+        ) + yaml.safe_dump(
+            {"find_replace": entries},
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
+        )
     entries = [
         {
             "find_value": getattr(connection.default, field),
@@ -1703,38 +1737,18 @@ def render_powerbi_artifacts(
 ) -> dict[str, str]:
     """Render DDL, dbt, TMDL, DAX, ERD, and report artifacts.
 
-    ``connection`` is the hub's authored ``gold.databricks_connection`` block and is
-    required for every non-Direct-Lake (``directQuery``) product: without it the
-    Power Query partitions cannot name a warehouse, and emitting the model anyway
-    would ship a semantic model that silently cannot connect (issue #283).
+    ``connection`` is the hub's authored ``gold.databricks_connection`` block, used by
+    every non-Direct-Lake (``directQuery``) product, and ``direct_lake_connection`` the
+    ``gold.direct_lake_connection`` block every Direct Lake product uses. Each names, per
+    environment, what the model binds to: a Databricks SQL warehouse (issue #283), or the
+    OneLake workspace and item behind the named expression (#619 Bugs 4/6).
 
-    ``direct_lake_connection`` is the hub's authored ``gold.direct_lake_connection``
-    block and is required for every Direct Lake product, for the same reason: without
-    a resolved workspace/lakehouse ID, the OneLake named expression has nothing to
-    point at and the model cannot resolve its data source (#619 Bugs 4/6).
+    Both are optional (DD-255). Without one, the TMDL carries the unresolved placeholders
+    of ``gold_connection`` and ``parameter.yml`` declares no environment, so the model
+    deploys only through ``apply-gold-connection``, which fills the target environment
+    from the dataplatform's dbt target and fails closed when nothing does. The hub then
+    holds no environment IDs at all.
     """
-    if physical.semantic_mode != "directLake" and connection is None:
-        raise GoldContractError(
-            "gold.databricks-connection-missing",
-            (
-                f"{physical.semantic_mode} Gold semantic models on adapter "
-                f"{physical.adapter!r} bind Power BI to a Databricks SQL warehouse, so "
-                "kairos.yaml must declare gold.databricks_connection with a "
-                "server_hostname and http_path per environment"
-            ),
-            rule_id=GOLD_CONNECTION_RULE_ID,
-        )
-    if physical.semantic_mode == "directLake" and direct_lake_connection is None:
-        raise GoldContractError(
-            "gold.direct-lake-connection-missing",
-            (
-                "Direct Lake Gold semantic models bind Power BI to a OneLake "
-                "workspace item via a named expression, so kairos.yaml must "
-                "declare gold.direct_lake_connection with a workspace_id and "
-                "item_id (the Warehouse dbt writes Gold into) per environment"
-            ),
-            rule_id=GOLD_DIRECT_LAKE_RULE_ID,
-        )
     # `ontology_name` carries the *product* name (#744). A Gold-configured domain that no
     # declared product claims is its own product under its own name, so a hub that declares
     # nothing keeps exactly the paths and manifest names it had.
@@ -1776,7 +1790,6 @@ def render_powerbi_artifacts(
         (f"{definition}/relationships.tmdl"): _relationships_tmdl(spec),
     }
     if physical.semantic_mode == "directLake":
-        assert direct_lake_connection is not None  # guaranteed above
         artifacts[f"{definition}/expressions/{_DIRECT_LAKE_EXPRESSION_NAME}.tmdl"] = (
             _direct_lake_expression_tmdl(direct_lake_connection)
         )
@@ -1823,9 +1836,8 @@ def render_powerbi_artifacts(
     # deploy-time rewrite path -- one artifact could not move between Fabric
     # workspaces at all, which is the whole point of validating in a dev workspace.
     if physical.semantic_mode == "directLake":
-        assert direct_lake_connection is not None  # guaranteed by the gate above
         artifacts[PARAMETER_ARTIFACT_PATH] = _direct_lake_parameter_yaml(direct_lake_connection)
-    elif connection is not None:
+    else:
         artifacts[PARAMETER_ARTIFACT_PATH] = _parameter_yaml(connection)
     # The third gate (#790/#791). `pbip_validate` never reads TMDL and `tmdl_validate`
     # only proves it deserializes, so this is the only check that looks at what the

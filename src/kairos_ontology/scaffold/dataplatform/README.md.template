@@ -16,11 +16,11 @@ compiler-owned output or reinterprets binding semantics.
 
 ```bash
 uv sync
-# Configure .dbt/profiles.yml from the example without committing credentials.
+# profiles.yml (committed) holds one target per environment, no credentials (DD-255).
 dbt deps
-dbt parse --profiles-dir .dbt
-dbt build --profiles-dir .dbt
-dbt test --profiles-dir .dbt
+dbt parse --target dev
+dbt build --target dev
+dbt test --target dev
 ```
 
 Use package-qualified `ref()` for hub models. Keep downstream-only logic in ordinary dbt
