@@ -173,7 +173,7 @@ jobs:
           INPUT_SHA: ${{ inputs.expected_hub_sha }}
           INPUT_ARCHIVE: ${{ inputs.expected_archive_sha256 }}
           BUILD_DBT: ${{ inputs.build_dbt }}
-          HAS_AZURE: ${{ secrets.AZURE_CLIENT_ID != '' }}
+          HAS_AZURE: ${{ (vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID) != '' }}
         run: |
           set -euo pipefail
           echo "azure=$HAS_AZURE" >> "$GITHUB_OUTPUT"
@@ -224,9 +224,12 @@ jobs:
         if: ${{ steps.release.outputs.deploy == 'true' || steps.release.outputs.azure == 'true' }}
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # Variables first, then secrets: a client ID is not a credential, and a
+          # federated user-assigned managed identity logs in exactly like an app
+          # registration -- put its client ID in AZURE_CLIENT_ID.
+          client-id: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
           # A service principal used only for Fabric usually has no Azure subscription.
           allow-no-subscriptions: true
 
@@ -249,12 +252,27 @@ jobs:
           uv run --no-sync kairos-ontology resolve-environment --target "$TARGET_ENVIRONMENT" \
             --format github-output | tee -a "$GITHUB_OUTPUT"
 
+      # Hub access through a GitHub App instead of a personal access token: set the
+      # KAIROS_HUB_APP_CLIENT_ID variable and the KAIROS_HUB_APP_PRIVATE_KEY secret, and
+      # install the App on the hub repository with Contents:read. The minted token is
+      # scoped to the hub alone and expires with the run. Without them, HUB_REPO_TOKEN is
+      # used as before (DD-256).
+      - name: Mint a hub repository token from the GitHub App
+        id: hub_app
+        if: ${{ vars.KAIROS_HUB_APP_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.KAIROS_HUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.KAIROS_HUB_APP_PRIVATE_KEY }}
+          owner: ${{ env.HUB_ORG }}
+          repositories: ${{ env.HUB_REPO }}
+
       # `dbt deps` clones the hub package named in packages.yml, which for a private hub
-      # needs HUB_REPO_TOKEN (#705), exactly as in pr-validate.yml.
+      # needs a token (#705), exactly as in pr-validate.yml.
       - name: Authenticate to the hub package repository
         if: ${{ inputs.build_dbt }}
         env:
-          HUB_REPO_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}
+          HUB_REPO_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${HUB_REPO_TOKEN:-}" ]; then
@@ -274,8 +292,8 @@ jobs:
         env:
           DBT_FABRIC_AUTHENTICATION: >-
             ${{ secrets.AZURE_CLIENT_SECRET != '' && 'environment' || 'cli' }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           DBT_DATABRICKS_TOKEN: ${{ secrets.DBT_DATABRICKS_TOKEN }}
         run: |
@@ -291,23 +309,23 @@ jobs:
       # GITHUB_TOKEN is scoped to *this* repository and cannot read a private sibling,
       # so falling back to it only moves the failure to a confusing "release not found"
       # later (#760). Fail here, by name, instead.
-      - name: Verify HUB_REPO_TOKEN is configured
+      - name: Verify a hub repository token is configured
         if: ${{ steps.release.outputs.deploy == 'true' }}
         env:
-          HUB_REPO_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}
+          HUB_REPO_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
         run: |
           if [ -z "${HUB_REPO_TOKEN:-}" ]; then
-            echo "::error::HUB_REPO_TOKEN is not set; GITHUB_TOKEN cannot read a private sibling repository -- add a token with Contents:read on the hub repo as the HUB_REPO_TOKEN secret"
+            echo "::error::No hub repository token; GITHUB_TOKEN cannot read a private sibling repository -- set KAIROS_HUB_APP_CLIENT_ID + KAIROS_HUB_APP_PRIVATE_KEY (a GitHub App on the hub), or a HUB_REPO_TOKEN secret with Contents:read on the hub repo"
             exit 1
           fi
-          echo "HUB_REPO_TOKEN is set."
+          echo "A hub repository token is set."
 
       # §8 dataplatform responsibility items 1-2: verify the tag resolves to the
       # expected hub SHA before anything is downloaded.
       - name: Verify hub release tag resolves to the expected hub SHA
         if: ${{ steps.release.outputs.deploy == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
           EXPECTED_HUB_SHA: ${{ steps.release.outputs.expected_hub_sha }}
         run: |
           RESOLVED_SHA=$(gh api "repos/${HUB_ORG}/${HUB_REPO}/commits/${{ steps.release.outputs.hub_release_tag }}" -q .sha)
@@ -320,7 +338,7 @@ jobs:
       - name: Download semantic model package from ontology-hub release
         if: ${{ steps.release.outputs.deploy == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
         run: |
           gh release download "${{ steps.release.outputs.hub_release_tag }}" \
             --repo "${HUB_ORG}/${HUB_REPO}" \

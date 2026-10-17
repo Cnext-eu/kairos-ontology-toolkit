@@ -80,14 +80,36 @@ jobs:
       # HUB_REPO_TOKEN follows the convention deploy-powerbi-semantic-model.yml already
       # uses for its cross-repo `gh release download`. A public hub needs no secret, and
       # this step is then a no-op.
+      # The hub's owner and repository, read from the packages.yml pin, for the App token.
+      - name: Locate the hub repository
+        id: hub
+        if: ${{ vars.KAIROS_HUB_APP_CLIENT_ID != '' }}
+        run: |
+          uv run --no-sync python -c 'import pathlib;from kairos_ontology.cli.shared import _parse_hub_package_pin;o,r=_parse_hub_package_pin(pathlib.Path("packages.yml").read_text(encoding="utf-8")).org_repo.split("/");print(f"owner={o}");print(f"repo={r}")' >> "$GITHUB_OUTPUT"
+
+      # Hub access through a GitHub App instead of a personal access token: set the
+      # KAIROS_HUB_APP_CLIENT_ID variable and the KAIROS_HUB_APP_PRIVATE_KEY secret, and
+      # install the App on the hub repository with Contents:read. The minted token is
+      # scoped to the hub alone and expires with the run. Without them, HUB_REPO_TOKEN is
+      # used as before (DD-256).
+      - name: Mint a hub repository token from the GitHub App
+        id: hub_app
+        if: ${{ vars.KAIROS_HUB_APP_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.KAIROS_HUB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.KAIROS_HUB_APP_PRIVATE_KEY }}
+          owner: ${{ steps.hub.outputs.owner }}
+          repositories: ${{ steps.hub.outputs.repo }}
+
       - name: Authenticate to the hub package repository
         env:
-          HUB_REPO_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}
+          HUB_REPO_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${HUB_REPO_TOKEN:-}" ]; then
             echo "HUB_REPO_TOKEN is not set - assuming a public hub package."
-            echo "If the hub repository is private, dbt deps will fail with 'Repository not found'; add HUB_REPO_TOKEN (Contents:read on the hub) as a repository secret."
+            echo "If the hub repository is private, dbt deps will fail with 'Repository not found'; install a GitHub App on the hub (KAIROS_HUB_APP_CLIENT_ID + KAIROS_HUB_APP_PRIVATE_KEY) or add HUB_REPO_TOKEN (Contents:read on the hub) as a repository secret."
             exit 0
           fi
           host="$(uv run --no-sync python -c 'import pathlib;from kairos_ontology.cli.shared import _parse_hub_package_pin;print(_parse_hub_package_pin(pathlib.Path("packages.yml").read_text(encoding="utf-8")).host)')"

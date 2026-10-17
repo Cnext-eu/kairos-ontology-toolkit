@@ -306,3 +306,32 @@ class TestPromoteWorkflow:
         steps = _workflow("pr-validate.yml.template")["jobs"]["validate"]["steps"]
         (step,) = [s for s in steps if s.get("name", "").startswith("Check hub-release.lock")]
         assert step["run"] == "uv run --no-sync kairos-ontology hub-release"
+
+
+class TestHubAccessAndAzureLogin:
+    """Fracht's frozen deploy did these two things the managed template could not (DD-256)."""
+
+    @pytest.mark.parametrize(
+        ("name", "job"),
+        [("deploy-powerbi-semantic-model.yml.template", "deploy"), ("pr-validate.yml.template", "validate")],
+    )
+    def test_a_github_app_can_replace_the_hub_token(self, name, job):
+        text = (_WORKFLOWS / name).read_text(encoding="utf-8")
+        steps = _workflow(name)["jobs"][job]["steps"]
+        (app,) = [s for s in steps if s.get("id") == "hub_app"]
+        assert app["uses"] == "actions/create-github-app-token@v3"
+        assert app["if"] == "${{ vars.KAIROS_HUB_APP_CLIENT_ID != '' }}"
+        assert app["with"]["private-key"] == "${{ secrets.KAIROS_HUB_APP_PRIVATE_KEY }}"
+        # Every use of the hub token prefers the App's, and HUB_REPO_TOKEN still works alone.
+        assert "secrets.HUB_REPO_TOKEN }}" in text
+        assert text.count("${{ secrets.HUB_REPO_TOKEN }}") == 0
+        names = [s.get("name", "") for s in steps]
+        assert names.index("Mint a hub repository token from the GitHub App") < names.index(
+            "Authenticate to the hub package repository"
+        )
+
+    def test_azure_ids_are_read_from_variables_first(self):
+        steps = _workflow("deploy-powerbi-semantic-model.yml.template")["jobs"]["deploy"]["steps"]
+        (login,) = [s for s in steps if s.get("uses") == "azure/login@v2"]
+        assert login["with"]["client-id"] == "${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}"
+        assert login["with"]["tenant-id"] == "${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}"

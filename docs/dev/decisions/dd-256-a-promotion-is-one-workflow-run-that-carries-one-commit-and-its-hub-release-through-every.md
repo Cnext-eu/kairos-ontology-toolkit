@@ -85,6 +85,10 @@ hub release it deploys is pinned in a reviewed file beside the dbt package pin.*
 - The reusable workflow is resolved at the run's ref, not at the promoted commit. A rollback
   therefore runs today's deploy logic against yesterday's content, which is the intended
   direction.
+- The workflows reach the hub through a GitHub App token (`KAIROS_HUB_APP_CLIENT_ID` +
+  `KAIROS_HUB_APP_PRIVATE_KEY`) when one is set up, else `HUB_REPO_TOKEN`. They read the Azure
+  IDs from variables before secrets, so a federated user-assigned managed identity needs no
+  secret. A client dataplatform had frozen its deploy workflow to get both.
 - Concurrency is per environment and never cancels a running deploy. A newer push queues behind
   an older one at the same environment.
 - Rejected: a dbt job and a deploy job per environment. Each would need its own approval.
