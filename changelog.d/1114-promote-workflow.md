@@ -47,6 +47,14 @@
   - it fails when the repository's deploy workflow has no `workflow_call`, which is the case
     for an older or customized copy that `promote.yml` cannot call.
 
+- **Managed workflows: hub access through a GitHub App, and Azure IDs from variables.**
+  `deploy-powerbi-semantic-model.yml` and `pr-validate.yml` mint a token scoped to the hub repository
+  with `actions/create-github-app-token` when `KAIROS_HUB_APP_CLIENT_ID` (variable) and
+  `KAIROS_HUB_APP_PRIVATE_KEY` (secret) are set, and otherwise use `HUB_REPO_TOKEN` as before.
+  `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` are read from variables first,
+  then secrets, so a federated user-assigned managed identity works without a secret. Both
+  replace customizations a client dataplatform had frozen its deploy workflow for.
+
 ### Documentation
 - The dataplatform `CICD.md` has new "Promotion" and "Rollback and PROD hotfix" sections and an
   "Add an environment" runbook. `kairos-package-dataplatform`, `kairos-setup-dataplatform` and
