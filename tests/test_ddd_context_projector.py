@@ -361,6 +361,23 @@ class TestProjectorWiring:
         assert (ddd / _PROJECTION_MANIFEST_NAME).is_file()
         assert not (ddd / "client-context-map.mmd").exists()
 
+    def test_no_artifact_carries_the_toolkit_version(self, hub, tmp_path):
+        """The lane is drift-gated, so a version would rewrite every file on each upgrade
+        (#1121): the diagrams, the report, the notes, the guide and the language."""
+        from kairos_ontology import __version__
+
+        output = tmp_path / "publish"
+        _project_ddd(hub, output)
+        ddd = output / "architecture" / "ddd"
+        written = [p for p in ddd.rglob("*") if p.is_file() and p.name != _PROJECTION_MANIFEST_NAME]
+        names = {p.name for p in written}
+        assert {"concept-guide.md", "ubiquitous-language.ttl", DESIGN_NOTES_NAME} <= names
+        assert any(name.endswith("-ddd-report.md") for name in names)
+        for path in written:
+            text = path.read_text(encoding="utf-8")
+            assert __version__ not in text, path.name
+            assert "Toolkit version" not in text, path.name
+
     def test_the_retired_per_domain_context_map_is_removed_once(self, hub, tmp_path):
         """An earlier toolkit wrote it and no manifest owns it, so it is named explicitly."""
         output = tmp_path / "publish"

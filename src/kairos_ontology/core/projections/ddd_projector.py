@@ -204,7 +204,8 @@ def _aggregate_overview_mmd(graph: Graph, data: dict, domain: str) -> str:
 
 
 def _report_md(graph: Graph, data: dict, domain: str, meta: dict) -> str:
-    version = meta.get("toolkit_version", "")
+    # No toolkit version: this report is tracked and drift-gated, so a version would
+    # rewrite it on every upgrade (#1121).
     lines = [
         f"# DDD Architecture Overview — {domain}",
         "",
@@ -212,8 +213,6 @@ def _report_md(graph: Graph, data: dict, domain: str, meta: dict) -> str:
         "Documentation only — not a governance or projection-control source.",
         "",
     ]
-    if version:
-        lines += [f"**Toolkit version:** {version}", ""]
 
     # Bounded contexts this domain participates in (DD-229)
     lines += ["## Bounded Contexts", ""]
