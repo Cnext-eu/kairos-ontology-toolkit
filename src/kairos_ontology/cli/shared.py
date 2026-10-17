@@ -2825,6 +2825,9 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "dataplatform-pr-validate/5.template",
         # Pre-DD-256 generation, before the hub-release.lock consistency check.
         "dataplatform-pr-validate/6.template",
+        # Pre-#1124 generations, before every action was pinned to a commit SHA.
+        "hub-pr-validate/8.template",
+        "dataplatform-pr-validate/7.template",
     ),
     # Pre-#771 generation, before every `uv run` gained `--no-sync`. Also carries the
     # pre-#721 skill-context placement for full-validate.
@@ -2835,10 +2838,14 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "hub-full-validate/3.template",
         # Pre-#998, before `project` ran both architecture targets in one process.
         "hub-full-validate/4.template",
+        # Pre-#1124, before every action was pinned to a commit SHA.
+        "hub-full-validate/5.template",
     ),
     ".github/workflows/managed-check.yml": (
         "hub-managed-check/1.template",
         "hub-managed-check/2.template",
+        # Pre-#1124, before every action was pinned to a commit SHA.
+        "hub-managed-check/3.template",
     ),
     # Pre-#771/#773 generation, before `--no-sync`, the missing `--locked`, and the
     # GH_HOST / --prerelease fixes that make a GHES release possible at all. Generation 3
@@ -2847,6 +2854,12 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "hub-release-projections/1.template",
         "hub-release-projections/2.template",
         "hub-release-projections/3.template",
+        # Pre-#1124, before every action was pinned to a commit SHA.
+        "hub-release-projections/4.template",
+    ),
+    # Pre-#1124 generation, before every action was pinned to a commit SHA.
+    ".github/workflows/copilot-setup-steps.yml": (
+        "hub-copilot-setup-steps/1.template",
     ),
     # Pre-#983 generation, whose connection-override step called `uv run` without ever
     # installing uv or syncing the locked environment.
@@ -2866,6 +2879,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "dataplatform-deploy-powerbi-semantic-model/7.template",
         # Pre-DD-256 generation: dispatch only, hand-typed release inputs, no dbt build.
         "dataplatform-deploy-powerbi-semantic-model/8.template",
+        # Pre-#1124 generation, before every action was pinned to a commit SHA.
+        "dataplatform-deploy-powerbi-semantic-model/9.template",
     ),
     # DD-240: the notebook embeds the BPA profile, which moved to version 2.
     "fabric/KairosModelBpa.Notebook/notebook-content.py": (

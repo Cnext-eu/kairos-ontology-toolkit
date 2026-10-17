@@ -1,0 +1,41 @@
+# Managed by kairos-ontology-toolkit. `update --refresh-workflows` replaces this file
+# while it matches a shipped generation, so an undeclared edit is silently reverted.
+# To keep one: declare it under [tool.kairos] customized-workflows in pyproject.toml,
+# and `update --check` will report it without failing or overwriting it. If the edit is
+# worth having everywhere, send it upstream instead (#772).
+# This workflow ensures toolkit-managed files (.claude/skills, copilot-instructions)
+# have not been modified locally. Run `kairos-ontology update` to refresh them.
+
+name: Managed files check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-managed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          # An unpinned version queries github.com's "latest release" API, which
+          # 404s from a GitHub Enterprise Server host (astral-sh/uv doesn't exist
+          # there). Pinning a known-good version skips that lookup entirely.
+          version: "0.12.5"
+          enable-cache: true
+
+      - name: Install toolkit
+        run: uv sync --locked
+
+      - name: Verify managed files
+        run: uv run --no-sync kairos-ontology update --check
