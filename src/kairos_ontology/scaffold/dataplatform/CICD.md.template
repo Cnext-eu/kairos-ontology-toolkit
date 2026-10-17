@@ -185,17 +185,23 @@ Set these up once per target before the first deploy (DD-239):
   Environment keys are case-insensitive and normalised to lowercase everywhere (#1114) -- the
   deploy's `target_environment`, the hub's `parameter.yml` and `gold-connections.yml` -- and
   GitHub matches Environment names case-insensitively, so existing `DEV`/`UAT`/`PROD`
-  Environments keep working. Each holds `FABRIC_WORKSPACE_ID`, `FABRIC_ITEM_ID` (the
-  Warehouse dbt writes Gold into) and the Azure IDs `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`
-  (`AZURE_SUBSCRIPTION_ID` is optional). The two Fabric IDs may be Environment variables or
-  secrets; every step reads the variable first and falls back to the secret. The Azure IDs
-  are secrets. A value set on the repository instead is visible in every Environment. Add
-  required reviewers on `uat` and `prod` to gate promotion.
-- **An Entra ID app (service principal) with a federated credential per Environment.** The
-  subject is `repo:<org>/<repo>:environment:<ENV>`. *Upgrading from a workflow without
+  Environments keep working. Each holds the Azure IDs `AZURE_CLIENT_ID` and
+  `AZURE_TENANT_ID` (`AZURE_SUBSCRIPTION_ID` is optional), and -- only when `profiles.yml`
+  does not identify the Gold Warehouse (DD-255) -- `FABRIC_WORKSPACE_ID` and `FABRIC_ITEM_ID`.
+  Each may be an Environment variable or a secret; every step reads the variable first and
+  falls back to the secret. A value set on the repository instead is visible in every
+  Environment. Add required reviewers on `uat` and `prod` to gate promotion.
+- **An Entra ID identity with a federated credential per Environment:** an app registration
+  (service principal) or a user-assigned managed identity, whose client ID goes in
+  `AZURE_CLIENT_ID`. The subject is `repo:<org>/<repo>:environment:<ENV>`. *Upgrading from a workflow without
   Environments:* the subject used to be `repo:<org>/<repo>:ref:refs/heads/<branch>`, so
   add the per-Environment credentials before the first deploy, or `azure/login` fails. No
   Azure subscription is needed; the login step sets `allow-no-subscriptions`.
+- **Access to the hub repository**, which is private: the deploy downloads its release and
+  `dbt deps` clones its package. Either install a GitHub App on the hub with Contents:read and
+  set the `KAIROS_HUB_APP_CLIENT_ID` variable and `KAIROS_HUB_APP_PRIVATE_KEY` secret (preferred:
+  each run mints a token scoped to the hub that expires with it), or add a `HUB_REPO_TOKEN`
+  secret with Contents:read on the hub. Repository-level settings serve every Environment.
 - **Tenant settings:** "Service principals can use Fabric APIs" for that app's security group,
   and XMLA read access for the advisory BPA run.
 - **Workspace role:** the service principal is a *Contributor* (or higher) on each target

@@ -44,9 +44,11 @@ deployment configuration, and runtime tests.
 7. Validate generated Power BI assets in the selected Fabric/Power BI deployment toolchain when
    Gold output is consumed. Before the first promotion, walk the user through
    `CICD.md` "Fabric deploy prerequisites" and "Add an environment": one GitHub Environment
-   per dbt target (`dev`, `uat`, `prod`) holding the Azure IDs, required reviewers on `uat` and
-   `prod`, a federated credential per Environment, the service-principal tenant setting and
-   workspace role (DD-239). `FABRIC_WORKSPACE_ID`/`FABRIC_ITEM_ID` are optional once
+   per dbt target (`dev`, `uat`, `prod`) holding the Azure IDs (an app registration or a
+   user-assigned managed identity), required reviewers on `uat` and `prod`, a federated
+   credential per Environment, hub repository access (a GitHub App via
+   `KAIROS_HUB_APP_CLIENT_ID` + `KAIROS_HUB_APP_PRIVATE_KEY`, or a `HUB_REPO_TOKEN`), the
+   service-principal tenant setting and workspace role (DD-239). `FABRIC_WORKSPACE_ID`/`FABRIC_ITEM_ID` are optional once
    `profiles.yml` identifies the Gold Warehouse (DD-255). Finish with
    `kairos-ontology check-environments --github-repo <org>/<repo> --online`, which names each
    missing piece. The scaffold includes `fabric/KairosModelBpa.Notebook`, which the

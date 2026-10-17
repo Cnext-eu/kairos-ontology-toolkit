@@ -391,13 +391,19 @@ class TestInitDataplatform:
         content = wf.read_text(encoding="utf-8")
 
         assert "|| github.token" not in content
-        assert "::error::HUB_REPO_TOKEN is not set" in content
-        assert "Contents:read" in content
-        preflight = content.index("Verify HUB_REPO_TOKEN is configured")
+        assert "::error::No hub repository token" in content
+        assert "HUB_REPO_TOKEN secret with Contents:read" in content
+        preflight = content.index("Verify a hub repository token is configured")
         first_hub_call = content.index("Verify hub release tag resolves")
         assert preflight < first_hub_call
-        # Only the hub-facing steps use the secret; the same-repo run check keeps github.token.
-        assert content.count("GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}") == 2
+        # Only the hub-facing steps use the hub token -- a GitHub App's when one is set up
+        # (DD-256), else the secret; the same-repo run check keeps github.token.
+        assert (
+            content.count(
+                "GH_TOKEN: ${{ steps.hub_app.outputs.token || secrets.HUB_REPO_TOKEN }}"
+            )
+            == 2
+        )
         assert "GH_TOKEN: ${{ github.token }}" in content
 
     @pytest.mark.parametrize(
@@ -661,7 +667,10 @@ class TestInitDataplatform:
         for token in ("DBT_FABRIC_", "DBT_DATABRICKS_"):
             assert token not in content, f"unexpected credential reference: {token}"
         secret_refs = set(re.findall(r"secrets\.([A-Z_]+)", content))
-        assert secret_refs <= {"HUB_REPO_TOKEN"}, f"unexpected secrets: {secret_refs}"
+        # The GitHub App key (DD-256) is the same kind of exemption: hub package access.
+        assert secret_refs <= {"HUB_REPO_TOKEN", "KAIROS_HUB_APP_PRIVATE_KEY"}, (
+            f"unexpected secrets: {secret_refs}"
+        )
 
     def test_pr_validate_workflow_does_not_run_dbt_compile(self, dataplatform_output):
         """#705: dbt-fabric resolves an Azure credential eagerly during compile.
