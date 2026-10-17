@@ -418,7 +418,7 @@ jobs:
         if: ${{ steps.release.outputs.deploy == 'true' }}
         run: |
           pip install --upgrade pip
-          pip install "fabric-cicd==1.3.0" azure-identity
+          pip install "fabric-cicd==1.4.0" azure-identity
 
       # `environment` selects one value per `find_replace` entry of the `parameter.yml`
       # that fabric-cicd reads from the root of `repository_directory`. The hub ships that

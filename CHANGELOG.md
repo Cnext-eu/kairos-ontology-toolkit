@@ -5,8 +5,35 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.26.1** is the latest GA release (2026-10-02), superseding
-> **5.26.0** (the same day). A patch release with one fix:
+> **Release status.** **5.27.0** is the latest GA release (2026-10-17). A minor release:
+> DEV → UAT → PROD promotion is one managed workflow, and the dbt target is the environment
+> authority (#1114):
+>
+> - **`promote.yml`** (DD-256) carries one commit through `dev`, `uat` and `prod`. Merging
+>   to `main` deploys `dev`; approving each GitHub Environment promotes the same commit, with
+>   `dbt build --target <env>` and the Power BI deploy in one job. Rolling back is running it
+>   at an older commit.
+> - **The dbt target is the environment** (DD-255). `resolve-environment` finds the Gold
+>   Warehouse from a target's endpoint through the Fabric API, so a hub no longer has to
+>   declare `gold.direct_lake_connection`. `check-environments` names whatever stops an
+>   environment from being promoted to.
+> - **`hub-release.lock`**, written by `bump-hub <tag>` with the `packages.yml` pin,
+>   replaces the hand-typed hub release inputs.
+> - Environment keys are case-insensitive (`DEV` = `dev`), and `apply-gold-connection` no
+>   longer writes a OneLake URL into a Databricks model.
+>
+> **What to expect on the first run after upgrading from 5.26.1.**
+>
+> | you will see | why |
+> |---|---|
+> | **Hubs: `parameter.yml` keys come out lowercase** (`DEV` → `dev`) on the next emit | #1114. A hub already using lowercase keys emits byte-identical Gold |
+> | **Dataplatforms: `update --refresh-workflows` adds `promote.yml`** and refreshes `deploy-powerbi-semantic-model.yml` (now reusable, fabric-cicd 1.4.0) and `pr-validate.yml` (checks `hub-release.lock`) | DD-256. A deploy workflow declared under `customized-workflows` is left alone, and `check-environments` reports that `promote.yml` cannot call it |
+> | **Dataplatforms: `promote.yml` needs a committed `profiles.yml`** with one target per environment, and `hub-release.lock` to deploy Power BI | DD-255/256. Run `kairos-ontology bump-hub <tag>`, then `check-environments`; CICD.md "Add an environment" has the steps |
+>
+> Compiled dbt output does not change.
+>
+> **Upgrading from 5.26.0?** 5.26.1's first-run notes still apply on top of the above. It
+> was a patch release with one fix:
 >
 > - `business-doc --render` can be installed in a hub (#1105): new hubs get a
 >   `business-doc` extra, and a hub scaffolded earlier uses `uv sync --extra documents`,
@@ -230,6 +257,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.27.0] — 2026-10-17
+
+### Added
+- **`resolve-environment --target <t>`: the dbt target is the environment authority
+  (DD-255).** The dataplatform's dbt target now names an environment and identifies its Gold
+  connection:
+  - A Fabric target's `server` and `database` find its Gold Warehouse through the Fabric REST
+    API.
+  - A Databricks target's `host` and `http_path` are the connection itself.
+  - `vars.kairos.environments.<env>` in `dbt_project.yml` names the models and reports
+    workspaces. Both default to the Gold workspace.
+  - The explicit `FABRIC_*` variables still take precedence.
+
+  Each value is printed with its source. `--offline` checks the target without calling Fabric,
+  and `--format github-output` feeds a workflow. `apply-gold-connection --from-dbt-target <t>`
+  applies the resolved connection instead of `gold-connections.yml`.
+- **Managed `promote.yml`: one commit goes through dev → uat → prod (DD-256).** Merging to
+  `main` starts it:
+  - it pins the commit to its full SHA;
+  - it builds and deploys `dev`;
+  - `uat` and then `prod` each wait for their GitHub Environment's reviewers, and approving
+    promotes the same commit.
+
+  Each environment is one job: `dbt build --target <env>` with the committed `profiles.yml`,
+  then the Power BI deploy. To roll back, run it by hand with `ref` set to an older commit. The
+  repository variable `KAIROS_PROMOTION_PATH` shortens the path.
+- **`hub-release.lock` pins the hub release a dataplatform deploys.** It holds the tag, the hub
+  SHA and the archive SHA-256. `bump-hub <tag>` now writes it with the `packages.yml` pin when
+  the tag is a release carrying the Power BI archive. `hub-release` prints it and fails when it
+  names another hub commit than `packages.yml`, and `pr-validate` runs that check. Without a
+  lock, a promotion builds dbt only.
+- **`check-environments`** checks that every environment can be promoted to and names the fix
+  for each problem. It covers:
+  - dbt targets;
+  - `vars.kairos`;
+  - the promote path;
+  - the lock;
+  - with `--github-repo`, the GitHub Environments, including the federated-credential subject.
+
+  `--online` also resolves the Fabric IDs.
+
+### Changed
+- **A hub no longer has to declare `gold.direct_lake_connection` or
+  `gold.databricks_connection`.** Without one, the emitted model carries an unresolvable
+  placeholder and `parameter.yml` declares no environment. The dataplatform's deploy then
+  binds the model to the environment it deploys to, and `apply-gold-connection` fails closed
+  when nothing supplies one. Hubs that keep their block are unchanged. The
+  `gold.*-connection-missing` errors are gone.
+- **`init-dataplatform` writes a committed `profiles.yml`** at the repository root, with `dev`,
+  `uat` and `prod` targets and no credentials. It replaces the gitignored
+  `.dbt/profiles.yml.example`. `dbt_project.yml` gains a commented `vars.kairos` example.
+  Existing dataplatforms are not changed.
+- **Managed workflow:** `deploy-powerbi-semantic-model.yml` now defaults `target_environment`
+  to `dev` and normalises it once for every step. Existing dataplatforms pick this up through
+  `update`.
+- **Managed workflow:** `deploy-powerbi-semantic-model.yml` ("Deploy an environment (dbt build +
+  Power BI)") is now also a reusable workflow:
+  - **New inputs:** `ref` and `build_dbt`.
+  - **Release inputs:** the hub release comes from `hub-release.lock` unless all three release
+    inputs are given.
+  - **Connection:** the environment's Gold connection and workspaces are resolved from its dbt
+    target when `profiles.yml` is committed (DD-255).
+  - **Concurrency:** deploys run one at a time per environment.
+
+  Dispatching it by hand still works, as the break-glass path.
+- **Managed workflow:** `pr-validate.yml` checks `hub-release.lock` against `packages.yml`.
+- The scaffolded `profiles.yml` reads `DBT_FABRIC_AUTHENTICATION` (default `environment`). The
+  deploy sets it to `cli`, using the federated `azure/login` session, when the Environment has
+  no `AZURE_CLIENT_SECRET`.
+
+- `check-environments` was tested on a real client dataplatform. Three changes came out of it:
+  - an endpoint the deploy's GitHub Environment supplies (`env_var('FABRIC_SERVER')`) is
+    deferred offline instead of failing;
+  - `--github-repo` reaches GitHub Enterprise (`HOST/OWNER/REPO`, or the host of `origin`);
+  - it fails when the repository's deploy workflow has no `workflow_call`, which is the case
+    for an older or customized copy that `promote.yml` cannot call.
+
+- **Managed workflows: hub access through a GitHub App, and Azure IDs from variables.**
+  `deploy-powerbi-semantic-model.yml` and `pr-validate.yml` mint a token scoped to the hub repository
+  with `actions/create-github-app-token` when `KAIROS_HUB_APP_CLIENT_ID` (variable) and
+  `KAIROS_HUB_APP_PRIVATE_KEY` (secret) are set, and otherwise use `HUB_REPO_TOKEN` as before.
+  `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` are read from variables first,
+  then secrets, so a federated user-assigned managed identity works without a secret. Both
+  replace customizations a client dataplatform had frozen its deploy workflow for.
+- **fabric-cicd is pinned to 1.4.0** (was 1.3.0, DD-239). The deploy workflow's
+  `FabricWorkspace` and `publish_all_items` signatures are unchanged. 1.4.0 also fixes
+  intermittent paginated-report publishing and `$ENV:` token replacement. Dataplatforms pick
+  up the new pin through `update --refresh-workflows`.
+
+### Fixed
+- **Environment keys are case-insensitive: `DEV` and `dev` are one environment.** A hub that
+  followed its own `kairos.yaml` template declared `dev`, the deploy workflow defaulted to
+  `DEV`, and fabric-cicd matches `parameter.yml` keys case-sensitively, so the deploy failed
+  (or, before #993, silently deployed the default workspace). The hub's
+  `direct_lake_connection` and `databricks_connection`, `gold-connections.yml`,
+  `apply-gold-connection --environment` and the deploy workflow's `target_environment` now
+  all normalise to lowercase. An older hub's `DEV`/`PROD` keys in a shipped `parameter.yml`
+  are renamed at deploy time and the rename is logged. The same rename happens when an
+  authored reports `parameter.yml` is staged. Two keys that differ only in case fail closed.
+  Existing `DEV`/`UAT`/`PROD` GitHub Environments keep working, because GitHub matches
+  Environment names case-insensitively.
+- **`apply-gold-connection` no longer writes a OneLake URL into a Databricks model.** It
+  rewrote every `replace_value` in `parameter.yml`, including a directQuery model's
+  `server_hostname` and `http_path`. An override now rewrites only the entries of its own
+  kind, and a mismatched override (Direct Lake keys for a Databricks model, or the reverse)
+  fails closed. `gold-connections.yml` also accepts `server_hostname`/`http_path` per
+  environment, so a dataplatform can point a Databricks model at its own warehouse.
+
+### Documentation
+- `kairos-setup-config` no longer claims a Fabric Direct Lake hub needs no connection block.
+  The `kairos.yaml`, user-guide, README, `CICD.md` and `gold-connections.yml` examples use
+  lowercase `dev`/`uat`/`prod`. `CICD.md` names the optional `AZURE_SUBSCRIPTION_ID` and
+  says the `${VAR}` values come from the deploy's GitHub Environment.
+- The dataplatform `CICD.md` has new "Promotion" and "Rollback and PROD hotfix" sections and an
+  "Add an environment" runbook. `kairos-package-dataplatform`, `kairos-setup-dataplatform` and
+  `kairos-help` now guide through approving promotions and adding environments, instead of
+  dispatching deploys by hand.
 
 ## [5.26.1] — 2026-10-02
 
