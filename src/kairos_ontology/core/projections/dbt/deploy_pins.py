@@ -10,7 +10,8 @@ when the two disagree.
 
 from __future__ import annotations
 
-#: Verified against 1.3.0: ``FabricWorkspace(repository_directory=, token_credential=,
-#: item_type_in_scope=, environment=, workspace_id=)``, ``publish_all_items``, and
-#: ``parameter.yml`` read from the root of ``repository_directory``.
-FABRIC_CICD_PIN = "1.3.0"
+#: Verified against 1.4.0, whose signatures are unchanged from 1.3.0:
+#: ``FabricWorkspace(repository_directory=, token_credential=, item_type_in_scope=,
+#: environment=, workspace_id=)``, ``publish_all_items``, and ``parameter.yml`` read from the
+#: root of ``repository_directory``.
+FABRIC_CICD_PIN = "1.4.0"

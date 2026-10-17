@@ -192,7 +192,7 @@ _LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
     "dataplatform/.github/workflows/promote.yml.template":
         "708d7dd2cb855bb6fafebd5d4f487b9b0408de2ab48ac107c3c1ab546eb59673",
     "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template":
-        "74eea65696e2e8c383779ab55303ec3b3e67373f5a901007f5e020ed832c67e8",
+        "eb79d2773db31ba7726f4860b50dff2e8768c23f2440989b8d85643a5daf6b9d",
     "dataplatform/fabric/KairosModelBpa.Notebook/notebook-content.py.template":
         "3f4397ed56eafa311ec5c6f9f887e5a02dd9cbec078013e13c6bed3344b3849d",
     "dataplatform/fabric/KairosModelBpa.Notebook/.platform.template":
