@@ -766,8 +766,8 @@ def test_databricks_directquery_partition_is_connectable_and_parameterised(tmp_p
         _DEV_HTTP_PATH,
     ]
     assert [entry["replace_value"] for entry in parameter["find_replace"]] == [
-        {"DEV": _DEV_HOSTNAME, "PROD": _PROD_HOSTNAME},
-        {"DEV": _DEV_HTTP_PATH, "PROD": _PROD_HTTP_PATH},
+        {"dev": _DEV_HOSTNAME, "prod": _PROD_HOSTNAME},
+        {"dev": _DEV_HTTP_PATH, "prod": _PROD_HTTP_PATH},
     ]
     assert {entry["item_type"] for entry in parameter["find_replace"]} == {"SemanticModel"}
     # find_replace accepts exactly these keys (fabric-cicd Parameter.PARAMETER_KEYS).

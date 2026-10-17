@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
@@ -264,6 +265,33 @@ def test_staging_keeps_a_hand_authored_parameter_file(reports, tmp_path):
     stage_authored_reports(reports, tmp_path / "staged", {MODEL: PRD_ID})
 
     assert (tmp_path / "staged" / "parameter.yml").read_text("utf-8") == "find_replace: []\n"
+
+
+def test_staging_lowercases_the_parameter_files_environment_keys(reports, tmp_path):
+    """#1114: the deploy passes fabric-cicd `dev`; a committed `DEV:` would stop applying."""
+    (reports / "parameter.yml").write_text(
+        "key_value_replace:\n"
+        "- find_key: $.x\n"
+        "  replace_value:\n"
+        "    DEV: a\n"
+        "    Prod: b\n",
+        encoding="utf-8",
+    )
+
+    stage_authored_reports(reports, tmp_path / "staged", {MODEL: PRD_ID})
+
+    staged = yaml.safe_load((tmp_path / "staged" / "parameter.yml").read_text("utf-8"))
+    assert staged["key_value_replace"][0]["replace_value"] == {"dev": "a", "prod": "b"}
+    assert "DEV:" in (reports / "parameter.yml").read_text("utf-8")  # committed tree untouched
+
+
+def test_staging_rejects_parameter_keys_that_differ_only_in_case(reports, tmp_path):
+    (reports / "parameter.yml").write_text(
+        "find_replace:\n- find_value: x\n  replace_value:\n    DEV: a\n    dev: b\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AuthoredReportsError, match="different casing"):
+        stage_authored_reports(reports, tmp_path / "staged", {MODEL: PRD_ID})
 
 
 def test_staging_replaces_a_previous_staging_directory(reports, tmp_path):

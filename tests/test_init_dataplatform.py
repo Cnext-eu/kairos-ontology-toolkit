@@ -514,7 +514,22 @@ class TestInitDataplatform:
             for item in workflow["jobs"]["deploy"]["steps"]
             if item.get("name") == "Apply dataplatform Direct Lake connection override"
         )
-        assert set(step["env"]) >= {"TARGET_ENVIRONMENT", "FABRIC_WORKSPACE_ID", "FABRIC_ITEM_ID"}
+        assert set(step["env"]) >= {"FABRIC_WORKSPACE_ID", "FABRIC_ITEM_ID"}
+
+    def test_the_environment_key_is_normalised_once_for_every_step(self, dataplatform_output):
+        """#1114: fabric-cicd matches keys case-sensitively; the hub emits them lowercase.
+
+        A step-level `TARGET_ENVIRONMENT` would shadow the normalised `$GITHUB_ENV` value
+        with the raw input, so no step may set it.
+        """
+        _, workflow = self._deploy(dataplatform_output)
+        steps = workflow["jobs"]["deploy"]["steps"]
+        assert steps[0]["name"] == "Normalise the environment key"
+        assert "tr '[:upper:]' '[:lower:]'" in steps[0]["run"]
+        assert 'echo "TARGET_ENVIRONMENT=$KEY" >> "$GITHUB_ENV"' in steps[0]["run"]
+        assert all("TARGET_ENVIRONMENT" not in (step.get("env") or {}) for step in steps)
+        default = workflow[True]["workflow_dispatch"]["inputs"]["target_environment"]["default"]
+        assert default == "dev"
 
     def test_a_direct_lake_model_is_framed_after_publish_and_blocks(self, dataplatform_output):
         text, workflow = self._deploy(dataplatform_output)

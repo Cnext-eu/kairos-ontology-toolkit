@@ -23,9 +23,11 @@ on:
         description: "SHA-256 of powerbi-semantic-model.zip recorded in the hub release evidence"
         required: true
       target_environment:
-        description: "Fabric environment key (used by fabric-cicd parameterization)"
+        description: >-
+          Environment key: the dbt target, the GitHub Environment, and the fabric-cicd
+          environment. Case-insensitive; normalised to lowercase (#1114).
         required: true
-        default: "DEV"
+        default: "dev"
       dbt_build_run_id:
         description: >-
           Run ID of the workflow run that built dbt successfully in target_environment.
@@ -70,6 +72,22 @@ jobs:
     environment: ${{ inputs.target_environment }}
 
     steps:
+      # #1114: one spelling of the environment key for every step below. fabric-cicd
+      # matches `parameter.yml` keys case-sensitively and skips a miss, and the hub and
+      # `apply-gold-connection` lowercase them, so `DEV` must reach fabric-cicd as `dev`.
+      # The GitHub Environment above is matched case-insensitively by GitHub itself.
+      - name: Normalise the environment key
+        env:
+          RAW_ENVIRONMENT: ${{ inputs.target_environment }}
+        run: |
+          KEY=$(printf '%s' "$RAW_ENVIRONMENT" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          if ! printf '%s' "$KEY" | grep -Eq '^[a-z0-9][a-z0-9_-]*$'; then
+            echo "::error::target_environment '$RAW_ENVIRONMENT' is not a usable environment key."
+            exit 1
+          fi
+          echo "TARGET_ENVIRONMENT=$KEY" >> "$GITHUB_ENV"
+          echo "Environment key: $KEY"
+
       - uses: actions/checkout@v4
 
       - name: Set up Python
@@ -98,7 +116,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.dbt_build_run_id }}
-          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
         run: |
           CONCLUSION=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion -q .conclusion)
           if [ "$CONCLUSION" != "success" ]; then
@@ -186,7 +203,6 @@ jobs:
       # sees only the environment it is given (#993).
       - name: Apply dataplatform Direct Lake connection override
         env:
-          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
           FABRIC_ITEM_ID: ${{ vars.FABRIC_ITEM_ID || secrets.FABRIC_ITEM_ID }}
         run: |
@@ -225,7 +241,6 @@ jobs:
       - name: Publish semantic model and report to Fabric workspace
         env:
           FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
-          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
         run: |
           python - <<'PY'
           import os
@@ -399,7 +414,6 @@ jobs:
           FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
           FABRIC_REPORTS_WORKSPACE_ID: >-
             ${{ vars.FABRIC_REPORTS_WORKSPACE_ID || secrets.FABRIC_REPORTS_WORKSPACE_ID }}
-          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
         run: |
           python - <<'PY'
           import os
@@ -444,7 +458,6 @@ jobs:
         continue-on-error: true
         env:
           FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}
-          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           REFRESH_AFTER_PUBLISH: ${{ inputs.refresh_after_publish }}
           FABRIC_BPA_LAKEHOUSE_ID: ${{ vars.FABRIC_BPA_LAKEHOUSE_ID }}
           FABRIC_BPA_LAKEHOUSE_NAME: ${{ vars.FABRIC_BPA_LAKEHOUSE_NAME }}

@@ -324,6 +324,27 @@ def live_connection(model_id: str) -> dict[str, object]:
     }
 
 
+def _normalise_staged_parameters(path: Path) -> None:
+    """Lowercase the environment keys of a staged, hand-authored ``parameter.yml`` (#1114).
+
+    The deploy passes fabric-cicd the lowercase environment key, which it matches
+    case-sensitively, so a committed ``DEV:`` would silently stop applying.
+    """
+    if not path.is_file():
+        return
+    from .projections.dbt.gold_connection import (
+        GoldConnectionOverrideError,
+        normalize_parameter_environments,
+    )
+
+    try:
+        normalised, renamed = normalize_parameter_environments(path.read_text(encoding="utf-8"))
+    except (GoldConnectionOverrideError, yaml.YAMLError) as exc:
+        raise AuthoredReportsError(f"{path.name}: {exc}") from exc
+    if renamed:
+        write_text_lf(path, normalised)
+
+
 def stage_authored_reports(
     reports_dir: Path, out_dir: Path, model_ids: dict[str, str]
 ) -> list[tuple[str, str, str]]:
@@ -331,7 +352,8 @@ def stage_authored_reports(
 
     Returns ``(folder, model, model_id)`` per staged report. The committed tree is never
     written; anything else in *reports_dir* (a hand-authored ``parameter.yml``) is copied
-    unchanged, so fabric-cicd still applies it.
+    unchanged, so fabric-cicd still applies it -- except that ``parameter.yml``'s
+    environment keys are lowercased, as the deploy's key is (#1114).
     """
     problems = check_authored_reports(reports_dir)
     blocking = [p for p in problems if p.code != "reports.theme-drift"]
@@ -352,6 +374,7 @@ def stage_authored_reports(
     if out_dir.exists():
         shutil.rmtree(out_dir)
     shutil.copytree(reports_dir, out_dir)
+    _normalise_staged_parameters(out_dir / "parameter.yml")
     staged: list[tuple[str, str, str]] = []
     for report in manifest.reports:
         pbir = out_dir / report.folder / "definition.pbir"

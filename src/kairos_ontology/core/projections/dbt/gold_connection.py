@@ -19,12 +19,12 @@ semantic model is promoted across environments:
 
     gold:
       databricks_connection:
-        default_environment: DEV
+        default_environment: dev
         environments:
-          DEV:
+          dev:
             server_hostname: adb-1111111111111111.11.azuredatabricks.net
             http_path: /sql/1.0/warehouses/dev0000000000000
-          PROD:
+          prod:
             server_hostname: adb-2222222222222222.22.azuredatabricks.net
             http_path: /sql/1.0/warehouses/prod000000000000
 
@@ -62,6 +62,32 @@ _ENVIRONMENT_FIELDS = ("server_hostname", "http_path")
 _REJECTED_CHARACTERS = ('"', "\\", "{", "}", "\r", "\n", "\t")
 
 _CONFIG_PATH = f"{_GOLD_KEY}.{_CONNECTION_KEY}"
+
+
+def normalize_environment_key(name: str) -> str:
+    """Return the one spelling of an environment key every Kairos surface uses (#1114).
+
+    The same environment is named by a dbt target, a GitHub Environment, a fabric-cicd
+    ``environment`` and a ``parameter.yml`` ``replace_value`` key. fabric-cicd matches the
+    last case-sensitively and silently skips a miss, while the scaffolds wrote ``dev``,
+    ``DEV`` and ``PROD`` in different files, so a hub that followed its own template could
+    not deploy with the workflow's default. dbt targets are conventionally lowercase and
+    GitHub matches Environment names case-insensitively, so lowercase is the spelling.
+    """
+    return name.strip().lower()
+
+
+def _unique_environments(names: list[str], invalid) -> None:
+    """Reject two keys that differ only in case: after normalisation they are one."""
+    seen: dict[str, str] = {}
+    for name in names:
+        key = normalize_environment_key(name)
+        if key in seen:
+            raise invalid(
+                f"environment keys {seen[key]!r} and {name!r} are the same environment "
+                f"({key!r}); environment keys are case-insensitive, keep one"
+            )
+        seen[key] = name
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +136,7 @@ def _value(environment: str, field: str, raw: object) -> str:
 def _environment(name: object, raw: object) -> GoldConnectionEnvironmentSpec:
     if not isinstance(name, str) or not name.strip():
         raise _invalid(f"environment key {name!r} is not a non-empty string")
-    environment = name.strip()
+    environment = normalize_environment_key(name)
     if not isinstance(raw, dict):
         raise _invalid(f"environment {environment!r} must be a mapping")
     unknown = sorted(set(map(str, raw)) - set(_ENVIRONMENT_FIELDS))
@@ -135,11 +161,11 @@ def _default_environment(
                 f"is declared (declared: {names})"
             )
         return names[0]
-    if not isinstance(raw, str) or raw.strip() not in names:
+    if not isinstance(raw, str) or normalize_environment_key(raw) not in names:
         raise _invalid(
             f"{_DEFAULT_ENVIRONMENT_KEY!r} {raw!r} is not one of the declared environments {names}"
         )
-    return raw.strip()
+    return normalize_environment_key(raw)
 
 
 def parse_gold_databricks_connection(config: object) -> GoldDatabricksConnectionSpec | None:
@@ -162,6 +188,7 @@ def parse_gold_databricks_connection(config: object) -> GoldDatabricksConnection
     declared = block.get(_ENVIRONMENTS_KEY)
     if not isinstance(declared, dict) or not declared:
         raise _invalid(f"{_ENVIRONMENTS_KEY!r} must be a non-empty mapping of environment keys")
+    _unique_environments([str(name) for name in declared], _invalid)
     environments = tuple(
         sorted(
             (_environment(name, raw) for name, raw in declared.items()),
@@ -297,7 +324,7 @@ def _direct_lake_guid(environment: str, field: str, raw: object) -> str:
 def _direct_lake_environment(name: object, raw: object) -> GoldDirectLakeEnvironmentSpec:
     if not isinstance(name, str) or not name.strip():
         raise _direct_lake_invalid(f"environment key {name!r} is not a non-empty string")
-    environment = name.strip()
+    environment = normalize_environment_key(name)
     if not isinstance(raw, dict):
         raise _direct_lake_invalid(f"environment {environment!r} must be a mapping")
     accepted = {*_DIRECT_LAKE_ENVIRONMENT_FIELDS, _DIRECT_LAKE_ITEM_ALIAS}
@@ -337,11 +364,11 @@ def _direct_lake_default_environment(
                 f"is declared (declared: {names})"
             )
         return names[0]
-    if not isinstance(raw, str) or raw.strip() not in names:
+    if not isinstance(raw, str) or normalize_environment_key(raw) not in names:
         raise _direct_lake_invalid(
             f"{_DEFAULT_ENVIRONMENT_KEY!r} {raw!r} is not one of the declared environments {names}"
         )
-    return raw.strip()
+    return normalize_environment_key(raw)
 
 
 def parse_gold_direct_lake_connection(config: object) -> GoldDirectLakeConnectionSpec | None:
@@ -366,6 +393,7 @@ def parse_gold_direct_lake_connection(config: object) -> GoldDirectLakeConnectio
         raise _direct_lake_invalid(
             f"{_ENVIRONMENTS_KEY!r} must be a non-empty mapping of environment keys"
         )
+    _unique_environments([str(name) for name in declared], _direct_lake_invalid)
     environments = tuple(
         sorted(
             (_direct_lake_environment(name, raw) for name, raw in declared.items()),
@@ -685,22 +713,51 @@ def _resolve_env_refs(value: str, environ: Mapping[str, str]) -> str:
     return resolved.strip()
 
 
+#: The OneLake URL prefix every Direct Lake ``find_value`` carries (``gold_render._onelake_url``).
+_ONELAKE_URL_PREFIX = "https://onelake.dfs.fabric.microsoft.com/"
+
+#: One environment of ``gold-connections.yml``: Direct Lake coordinates, or (#1114) the
+#: Databricks SQL warehouse endpoint a directQuery model connects to.
+GoldConnectionOverride = GoldDirectLakeEnvironmentSpec | GoldConnectionEnvironmentSpec
+
+
+def _override_environment(name: str, expanded: dict[str, str]) -> GoldConnectionOverride:
+    direct_lake = {*_DIRECT_LAKE_ENVIRONMENT_FIELDS, _DIRECT_LAKE_ITEM_ALIAS} & set(expanded)
+    databricks = set(_ENVIRONMENT_FIELDS) & set(expanded)
+    if direct_lake and databricks:
+        raise GoldConnectionOverrideError(
+            f"{GOLD_CONNECTION_OVERRIDE_PATH}: environment {name!r} mixes Direct Lake keys "
+            f"{sorted(direct_lake)} with Databricks keys {sorted(databricks)}; a semantic "
+            "model connects one way, so declare one set"
+        )
+    try:
+        if databricks:
+            return _environment(name, expanded)
+        return _direct_lake_environment(name, expanded)
+    except GoldContractError as exc:
+        raise GoldConnectionOverrideError(f"{GOLD_CONNECTION_OVERRIDE_PATH}: {exc}") from exc
+
+
 def parse_gold_connection_overrides(
     document: object,
     environ: Mapping[str, str],
     *,
     only: str | None = None,
-) -> dict[str, GoldDirectLakeEnvironmentSpec]:
+) -> dict[str, GoldConnectionOverride]:
     """Read the dataplatform-owned ``gold-connections.yml`` into typed environments.
 
     *only* resolves and validates just that environment (#993). A deploy runs against one
     target and is given only that target's variables, so resolving every environment made
     a DEV deploy fail on PROD's unset ``${VAR}``. The others are still shape-checked.
 
-    Deliberately validated with the same GUID rules the hub applies to its own
-    ``kairos.yaml``, including the all-zero placeholder rejection: an override that ships
-    a placeholder would repoint a deployment at a OneLake path resolving to nothing,
-    which is the exact failure the hub-side check exists to prevent.
+    Keys are normalised with :func:`normalize_environment_key` (#1114), and so is *only*.
+
+    An environment carries either Direct Lake ``workspace_id``/``item_id`` or (#1114) the
+    Databricks ``server_hostname``/``http_path``. Both are validated with the same rules
+    the hub applies to its own ``kairos.yaml``, including the all-zero placeholder
+    rejection: an override that ships a placeholder would repoint a deployment at a
+    OneLake path resolving to nothing, which is the exact failure the hub-side check
+    exists to prevent.
     """
     if document is None:
         return {}
@@ -716,24 +773,40 @@ def parse_gold_connection_overrides(
             f"{GOLD_CONNECTION_OVERRIDE_PATH}: {_ENVIRONMENTS_KEY!r} must be a mapping "
             "keyed by environment name, not a list"
         )
-    resolved: dict[str, GoldDirectLakeEnvironmentSpec] = {}
+
+    def _invalid_override(detail: str) -> GoldConnectionOverrideError:
+        return GoldConnectionOverrideError(f"{GOLD_CONNECTION_OVERRIDE_PATH}: {detail}")
+
+    _unique_environments([str(name) for name in declared], _invalid_override)
+    target = normalize_environment_key(only) if only is not None else None
+    fields = (*_DIRECT_LAKE_ENVIRONMENT_FIELDS, _DIRECT_LAKE_ITEM_ALIAS, *_ENVIRONMENT_FIELDS)
+    resolved: dict[str, GoldConnectionOverride] = {}
     for name, raw in declared.items():
         if not isinstance(raw, dict):
             raise GoldConnectionOverrideError(
                 f"{GOLD_CONNECTION_OVERRIDE_PATH}: environment {name!r} must be a mapping"
             )
-        if only is not None and str(name) != only:
+        key = normalize_environment_key(str(name))
+        if target is not None and key != target:
             continue
+        unknown = sorted(set(map(str, raw)) - set(fields))
+        if unknown:
+            raise GoldConnectionOverrideError(
+                f"{GOLD_CONNECTION_OVERRIDE_PATH}: environment {name!r} has unknown key(s) "
+                f"{unknown}"
+            )
         expanded = {
-            field: _resolve_env_refs(str(raw[field]), environ)
-            for field in (*_DIRECT_LAKE_ENVIRONMENT_FIELDS, _DIRECT_LAKE_ITEM_ALIAS)
-            if field in raw
+            field: _resolve_env_refs(str(raw[field]), environ) for field in fields if field in raw
         }
-        try:
-            resolved[str(name)] = _direct_lake_environment(str(name), expanded)
-        except GoldContractError as exc:
-            raise GoldConnectionOverrideError(f"{GOLD_CONNECTION_OVERRIDE_PATH}: {exc}") from exc
+        resolved[key] = _override_environment(key, expanded)
     return resolved
+
+
+def _parameter_entries(document: object) -> list:
+    entries = document.get("find_replace") if isinstance(document, dict) else None
+    if not isinstance(entries, list) or not entries:
+        raise GoldConnectionOverrideError("parameter.yml has no 'find_replace' entries")
+    return entries
 
 
 def declared_parameter_environments(parameter_yaml: str) -> frozenset[str]:
@@ -743,12 +816,8 @@ def declared_parameter_environments(parameter_yaml: str) -> frozenset[str]:
     entry that does not declare the environment, so an environment is only fully
     parameterised when *every* entry names it -- hence the intersection (#993).
     """
-    document = yaml.safe_load(parameter_yaml)
-    entries = document.get("find_replace") if isinstance(document, dict) else None
-    if not isinstance(entries, list) or not entries:
-        raise GoldConnectionOverrideError("parameter.yml has no 'find_replace' entries")
     declared: frozenset[str] | None = None
-    for entry in entries:
+    for entry in _parameter_entries(yaml.safe_load(parameter_yaml)):
         replace_value = entry.get("replace_value") if isinstance(entry, dict) else None
         keys = frozenset(str(key) for key in replace_value) if isinstance(
             replace_value, dict
@@ -757,48 +826,129 @@ def declared_parameter_environments(parameter_yaml: str) -> frozenset[str]:
     return declared or frozenset()
 
 
+def normalize_parameter_environments(parameter_yaml: str) -> tuple[str, tuple[str, ...]]:
+    """Lowercase every ``replace_value`` key of a shipped ``parameter.yml`` (#1114).
+
+    A hub released before keys were normalised may ship ``DEV``/``PROD``; the deploy now
+    passes the normalised key to fabric-cicd, which matches case-sensitively. Returns the
+    rewritten YAML (the input unchanged when nothing needed renaming) and the original
+    spellings that were renamed, so the caller can log them. Two keys that differ only in
+    case are ambiguous and fail closed.
+
+    Every fabric-cicd section is covered (``find_replace``, ``key_value_replace``, ...),
+    because a dataplatform's hand-authored reports ``parameter.yml`` may use any of them.
+    """
+    document = yaml.safe_load(parameter_yaml)
+    sections = document.values() if isinstance(document, dict) else ()
+    entries = [
+        entry for section in sections if isinstance(section, list) for entry in section
+    ]
+    renamed: set[str] = set()
+    for entry in entries:
+        replace_value = entry.get("replace_value") if isinstance(entry, dict) else None
+        if not isinstance(replace_value, dict):
+            continue
+        normalised: dict[str, object] = {}
+        for key, value in replace_value.items():
+            target = normalize_environment_key(str(key))
+            if target in normalised:
+                raise GoldConnectionOverrideError(
+                    f"parameter.yml declares {target!r} twice under different casing; "
+                    "re-release the hub with one spelling"
+                )
+            if target != key:
+                renamed.add(str(key))
+            normalised[target] = value
+        entry["replace_value"] = normalised
+    if not renamed:
+        return parameter_yaml, ()
+    return (
+        yaml.safe_dump(document, sort_keys=False, default_flow_style=False, allow_unicode=True),
+        tuple(sorted(renamed)),
+    )
+
+
+def _parameter_field(find_value: object) -> str:
+    """Name what a ``find_replace`` entry parameterises, from the value it finds.
+
+    The hub emits one entry per connection field (``gold_render._direct_lake_parameter_yaml``
+    and ``_parameter_yaml``) and fabric-cicd allows no extra keys to label them, so the
+    value tells: a OneLake URL, a Databricks HTTP path (always a path), or a hostname
+    (which never contains ``/``).
+    """
+    value = str(find_value or "")
+    if value.startswith(_ONELAKE_URL_PREFIX):
+        return "onelake_url"
+    if "/" in value:
+        return "http_path"
+    return "server_hostname"
+
+
 def apply_gold_connection_override(
     parameter_yaml: str,
     environment: str,
-    override: GoldDirectLakeEnvironmentSpec,
+    override: GoldConnectionOverride,
 ) -> tuple[str, str, str]:
     """Repoint one environment of a shipped ``parameter.yml`` at *override*.
 
-    Returns ``(rewritten_yaml, previous_url, new_url)``.
+    Returns ``(rewritten_yaml, previous, new)``: the previous and new values for the
+    log, one per rewritten entry, joined with ``, ``.
 
-    ``find_value`` is never touched. It is the OneLake URL the hub baked verbatim into
-    the TMDL, and fabric-cicd matches it by literal substring -- only the hub knows it
-    byte for byte, so letting the dataplatform supply it would make the rewrite silently
-    miss and leave the model pointed at the hub's default workspace.
+    Only the entries of *override*'s kind are rewritten (#1114). A Direct Lake override
+    rewrites the OneLake URL entry; a Databricks override rewrites ``server_hostname`` and
+    ``http_path`` each with its own value. The previous implementation wrote a OneLake
+    URL into every entry, so a Databricks model got a URL as its hostname and HTTP path.
+
+    ``find_value`` is never touched. It is the value the hub baked verbatim into the
+    TMDL, and fabric-cicd matches it by literal substring -- only the hub knows it byte
+    for byte, so letting the dataplatform supply it would make the rewrite silently miss
+    and leave the model pointed at the hub's default workspace.
     """
+    environment = normalize_environment_key(environment)
     document = yaml.safe_load(parameter_yaml)
     if not isinstance(document, dict):
         raise GoldConnectionOverrideError("parameter.yml is not a mapping")
-    entries = document.get("find_replace")
-    if not isinstance(entries, list) or not entries:
-        raise GoldConnectionOverrideError("parameter.yml has no 'find_replace' entries")
+    entries = _parameter_entries(document)
 
-    new_url = (
-        f"https://onelake.dfs.fabric.microsoft.com/{override.workspace_id}/{override.item_id}"
-    )
-    previous = ""
-    rewritten = 0
+    if isinstance(override, GoldDirectLakeEnvironmentSpec):
+        values = {
+            "onelake_url": (
+                f"{_ONELAKE_URL_PREFIX}{override.workspace_id}/{override.item_id}"
+            )
+        }
+        kind = "a Direct Lake (workspace_id/item_id)"
+    else:
+        values = {
+            "server_hostname": override.server_hostname,
+            "http_path": override.http_path,
+        }
+        kind = "a Databricks (server_hostname/http_path)"
+
+    previous: list[str] = []
+    new: list[str] = []
+    rewritten: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         replace_value = entry.get("replace_value")
         if not isinstance(replace_value, dict):
             continue
-        previous = str(replace_value.get(environment, "")) or previous
-        replace_value[environment] = new_url
-        rewritten += 1
-    if not rewritten:
+        field = _parameter_field(entry.get("find_value"))
+        if field not in values:
+            continue
+        previous.append(str(replace_value.get(environment, "")))
+        replace_value[environment] = values[field]
+        new.append(values[field])
+        rewritten.add(field)
+    missing = sorted(set(values) - rewritten)
+    if missing:
         raise GoldConnectionOverrideError(
-            "parameter.yml has no 'replace_value' mapping to override; the hub may have "
-            "emitted a non-Direct-Lake model"
+            f"{GOLD_CONNECTION_OVERRIDE_PATH} gives {environment!r} {kind} connection, but "
+            f"parameter.yml has no entry for {missing}: the hub emitted the other kind of "
+            "semantic model. Declare the keys that match the hub's Gold adapter."
         )
     return (
         yaml.safe_dump(document, sort_keys=False, default_flow_style=False, allow_unicode=True),
-        previous,
-        new_url,
+        ", ".join(item for item in previous if item),
+        ", ".join(new),
     )

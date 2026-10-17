@@ -129,15 +129,15 @@ def test_override_rewrites_only_the_target_environment_and_preserves_find_value(
     )
 
     rewritten, previous, new_url = apply_gold_connection_override(
-        _parameter_yaml({"DEV": _DEFAULT_URL, "PROD": _DEFAULT_URL}),
+        _parameter_yaml({"dev": _DEFAULT_URL, "prod": _DEFAULT_URL}),
         "PROD",
-        overrides["PROD"],
+        overrides["prod"],
     )
 
     entry = yaml.safe_load(rewritten)["find_replace"][0]
     assert entry["find_value"] == _DEFAULT_URL
-    assert entry["replace_value"]["DEV"] == _DEFAULT_URL
-    assert entry["replace_value"]["PROD"] == new_url
+    assert entry["replace_value"]["dev"] == _DEFAULT_URL
+    assert entry["replace_value"]["prod"] == new_url
     assert previous == _DEFAULT_URL
     assert new_url == (
         "https://onelake.dfs.fabric.microsoft.com/"
@@ -182,7 +182,7 @@ def test_cli_is_a_clean_no_op_without_config_or_matching_environment(tmp_path, m
     monkeypatch.chdir(tmp_path)
     package = tmp_path / "semantic-model"
     package.mkdir()
-    original = _parameter_yaml({"DEV": _DEFAULT_URL, "PROD": _DEFAULT_URL})
+    original = _parameter_yaml({"dev": _DEFAULT_URL, "prod": _DEFAULT_URL})
     (package / "parameter.yml").write_text(original, encoding="utf-8")
 
     runner = CliRunner()
@@ -212,7 +212,7 @@ def test_cli_is_a_clean_no_op_without_config_or_matching_environment(tmp_path, m
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "declares no 'PROD' environment" in result.output
+    assert "declares no 'prod' environment" in result.output
     assert (package / "parameter.yml").read_text(encoding="utf-8") == original
 
 
@@ -221,15 +221,61 @@ def test_cli_fails_closed_on_an_environment_parameter_yml_does_not_declare(tmp_p
     monkeypatch.chdir(tmp_path)
     package = tmp_path / "semantic-model"
     package.mkdir()
-    (package / "parameter.yml").write_text(_parameter_yaml({"DEV": _DEFAULT_URL}), encoding="utf-8")
+    (package / "parameter.yml").write_text(_parameter_yaml({"dev": _DEFAULT_URL}), encoding="utf-8")
 
+    result = CliRunner().invoke(
+        cli,
+        ["apply-gold-connection", "--package-dir", "semantic-model", "--environment", "uat"],
+    )
+    assert result.exit_code != 0
+    assert "does not declare the 'uat' environment" in result.output
+    assert "['dev']" in result.output
+
+
+def test_an_older_hubs_uppercase_keys_are_lowercased_and_logged(tmp_path, monkeypatch):
+    """#1114: a `DEV`/`dev` casing mismatch used to fail; keys are now case-insensitive."""
+    monkeypatch.chdir(tmp_path)
+    package = tmp_path / "semantic-model"
+    package.mkdir()
+    (package / "parameter.yml").write_text(
+        _parameter_yaml({"DEV": _DEFAULT_URL, "PROD": _DEFAULT_URL}), encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["apply-gold-connection", "--package-dir", "semantic-model", "--environment", "Dev"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Lowercased parameter.yml environment key(s) ['DEV', 'PROD']" in result.output
+    entry = yaml.safe_load((package / "parameter.yml").read_text(encoding="utf-8"))
+    assert set(entry["find_replace"][0]["replace_value"]) == {"dev", "prod"}
+
+
+def test_keys_that_differ_only_in_case_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    package = tmp_path / "semantic-model"
+    package.mkdir()
+    (package / "parameter.yml").write_text(
+        _parameter_yaml({"DEV": _DEFAULT_URL, "dev": _DEFAULT_URL}), encoding="utf-8"
+    )
     result = CliRunner().invoke(
         cli,
         ["apply-gold-connection", "--package-dir", "semantic-model", "--environment", "dev"],
     )
     assert result.exit_code != 0
-    assert "does not declare the 'dev' environment" in result.output
-    assert "['DEV']" in result.output
+    assert "twice under different casing" in result.output
+
+    with pytest.raises(GoldConnectionOverrideError, match="are the same environment"):
+        parse_gold_connection_overrides(
+            {
+                "environments": {
+                    "DEV": {"workspace_id": _REAL_WS, "item_id": _REAL_LH},
+                    "dev": {"workspace_id": _REAL_WS, "item_id": _REAL_LH},
+                }
+            },
+            {},
+        )
 
 
 def test_cli_fails_closed_without_parameter_yml(tmp_path, monkeypatch):
@@ -300,7 +346,7 @@ def test_cli_applies_override_and_logs_before_after(tmp_path, monkeypatch):
     document = yaml.safe_load((package / "parameter.yml").read_text(encoding="utf-8"))
     entry = document["find_replace"][0]
     assert entry["find_value"] == _DEFAULT_URL
-    assert entry["replace_value"]["DEV"] == (
+    assert entry["replace_value"]["dev"] == (
         "https://onelake.dfs.fabric.microsoft.com/"
         "55555555-5555-5555-5555-555555555555/66666666-6666-6666-6666-666666666666"
     )
@@ -315,7 +361,7 @@ def test_only_the_target_environment_is_resolved():
         }
     }
     resolved = parse_gold_connection_overrides(document, {}, only="DEV")
-    assert set(resolved) == {"DEV"}
+    assert set(resolved) == {"dev"}
     with pytest.raises(GoldConnectionOverrideError):
         parse_gold_connection_overrides(document, {}, only="PROD")
 
@@ -353,4 +399,133 @@ class TestItemId:
         resolved = parse_gold_connection_overrides(
             document, {"WS": _REAL_WS, "ITEM": _REAL_LH}, only="UAT"
         )
-        assert resolved["UAT"].item_id == _REAL_LH
+        assert resolved["uat"].item_id == _REAL_LH
+
+
+class TestEnvironmentKeys:
+    """#1114: one spelling of an environment key across hub, dataplatform and deploy."""
+
+    def test_hub_keys_and_default_are_lowercased(self):
+        document = {
+            "gold": {
+                "direct_lake_connection": {
+                    "default_environment": "DEV",
+                    "environments": {
+                        "DEV": {"workspace_id": _REAL_WS, "item_id": _REAL_LH},
+                        " Prod ": {"workspace_id": _REAL_WS, "item_id": _REAL_LH},
+                    },
+                }
+            }
+        }
+        connection = parse_gold_direct_lake_connection(document)
+        assert connection.default_environment == "dev"
+        assert [item.name for item in connection.environments] == ["dev", "prod"]
+
+    def test_hub_keys_that_differ_only_in_case_are_rejected(self):
+        from kairos_ontology.core.projections.dbt.gold_connection import (
+            parse_gold_databricks_connection,
+        )
+
+        environment = {"server_hostname": "adb-1.1.azuredatabricks.net", "http_path": "/sql/x"}
+        document = {
+            "gold": {
+                "databricks_connection": {
+                    "default_environment": "dev",
+                    "environments": {"dev": environment, "DEV": environment},
+                }
+            }
+        }
+        with pytest.raises(GoldContractError, match="are the same environment"):
+            parse_gold_databricks_connection(document)
+
+
+def _databricks_parameter_yaml() -> str:
+    from kairos_ontology.core.projections.dbt.gold_connection import (
+        parse_gold_databricks_connection,
+    )
+    from kairos_ontology.core.projections.dbt.gold_render import _parameter_yaml as render
+
+    connection = parse_gold_databricks_connection(
+        {
+            "gold": {
+                "databricks_connection": {
+                    "environments": {
+                        "DEV": {
+                            "server_hostname": "adb-1111.11.azuredatabricks.net",
+                            "http_path": "/sql/1.0/warehouses/dev0000",
+                        }
+                    }
+                }
+            }
+        }
+    )
+    return render(connection)
+
+
+class TestDatabricksOverride:
+    """#1114: an override rewrites only the entries of its own kind."""
+
+    def test_databricks_override_rewrites_each_field_with_its_own_value(self):
+        overrides = parse_gold_connection_overrides(
+            {
+                "environments": {
+                    "UAT": {
+                        "server_hostname": "adb-3333.33.azuredatabricks.net",
+                        "http_path": "/sql/1.0/warehouses/uat0000",
+                    }
+                }
+            },
+            {},
+        )
+        rewritten, previous, new = apply_gold_connection_override(
+            _databricks_parameter_yaml(), "uat", overrides["uat"]
+        )
+
+        entries = yaml.safe_load(rewritten)["find_replace"]
+        by_find = {entry["find_value"]: entry["replace_value"] for entry in entries}
+        assert by_find["adb-1111.11.azuredatabricks.net"]["uat"] == (
+            "adb-3333.33.azuredatabricks.net"
+        )
+        assert by_find["/sql/1.0/warehouses/dev0000"]["uat"] == "/sql/1.0/warehouses/uat0000"
+        assert "onelake" not in rewritten
+        assert previous == ""
+        assert new == "adb-3333.33.azuredatabricks.net, /sql/1.0/warehouses/uat0000"
+
+    def test_a_direct_lake_override_against_a_databricks_model_fails_closed(self):
+        """The old override wrote a OneLake URL into the hostname and HTTP path."""
+        overrides = parse_gold_connection_overrides(
+            {"environments": {"uat": {"workspace_id": _REAL_WS, "item_id": _REAL_LH}}}, {}
+        )
+        with pytest.raises(GoldConnectionOverrideError, match="other kind of semantic model"):
+            apply_gold_connection_override(
+                _databricks_parameter_yaml(), "uat", overrides["uat"]
+            )
+
+    def test_a_databricks_override_against_a_direct_lake_model_fails_closed(self):
+        overrides = parse_gold_connection_overrides(
+            {
+                "environments": {
+                    "uat": {"server_hostname": "adb-3.3.azuredatabricks.net", "http_path": "/x"}
+                }
+            },
+            {},
+        )
+        with pytest.raises(GoldConnectionOverrideError, match="other kind of semantic model"):
+            apply_gold_connection_override(
+                _parameter_yaml({"dev": _DEFAULT_URL}), "uat", overrides["uat"]
+            )
+
+    def test_mixed_and_unknown_keys_are_rejected(self):
+        with pytest.raises(GoldConnectionOverrideError, match="mixes Direct Lake keys"):
+            parse_gold_connection_overrides(
+                {
+                    "environments": {
+                        "uat": {"workspace_id": _REAL_WS, "http_path": "/sql/1.0/warehouses/x"}
+                    }
+                },
+                {},
+            )
+        with pytest.raises(GoldConnectionOverrideError, match="unknown key"):
+            parse_gold_connection_overrides(
+                {"environments": {"uat": {"workspace": _REAL_WS}}}, {}
+            )

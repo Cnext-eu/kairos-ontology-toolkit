@@ -2821,6 +2821,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "dataplatform-deploy-powerbi-semantic-model/5.template",
         # Pre-#1102 generation, before the second pass publishing authored reports.
         "dataplatform-deploy-powerbi-semantic-model/6.template",
+        # Pre-#1114 generation: case-sensitive `target_environment`, defaulting to `DEV`.
+        "dataplatform-deploy-powerbi-semantic-model/7.template",
     ),
     # DD-240: the notebook embeds the BPA profile, which moved to version 2.
     "fabric/KairosModelBpa.Notebook/notebook-content.py": (
