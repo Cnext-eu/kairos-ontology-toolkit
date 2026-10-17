@@ -5,8 +5,20 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.27.2** is the latest GA release (2026-10-17), superseding
-> **5.27.1** (the same day). A patch release found upgrading a client hub to 5.27.1:
+> **Release status.** **5.27.3** is the latest GA release (2026-10-17), superseding
+> **5.27.2** (the same day). A security patch found by a scanner on a client dataplatform:
+>
+> - Scaffolded workflows pin every GitHub Action to a commit SHA, with the release as a
+>   comment (#1124). CI runs exactly the same action code as before.
+>
+> **What to expect on the first run after upgrading from 5.27.2.** On a hub and on a
+> dataplatform, `update --check` reports the scaffolded workflows as needing a refresh, and
+> the `managed-check` job fails until you run `update --refresh-workflows` and commit the
+> result. Each `uses:` line changes from a tag to `@<sha> # vX.Y.Z`; nothing else does. A
+> workflow declared under `customized-workflows` is left alone; pin its actions by hand.
+>
+> **Upgrading from 5.27.1?** 5.27.2's first-run notes still apply on top of the above. It was
+> a patch release found upgrading a client hub to 5.27.1:
 >
 > - Generated diagrams and the DDD files (`ubiquitous-language.ttl`, `concept-guide.md`,
 >   design notes, DDD reports) no longer carry the toolkit version, so an upgrade that draws
@@ -286,6 +298,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.27.3] — 2026-10-17
+
+### Security
+- **Scaffolded workflows pin every GitHub Action to a commit SHA.** They referenced
+  actions by tag (`astral-sh/setup-uv@v10.0.1`, `azure/login@v2`, `actions/checkout@v4`, …).
+  Whoever controls an action's repository can move a tag, and so change the code that runs in
+  a hub's or dataplatform's CI, including jobs holding Azure credentials and a hub token.
+  Security scanners fail pull requests on it. Each `uses:` now names the commit its tag points
+  at today, with the release as a comment (`@<sha> # v10.0.1`), so CI runs exactly the same
+  code as before. A test keeps every template pinned and every action on one release.
+  `update --refresh-workflows` delivers the pinned generation to existing hubs and
+  dataplatforms; a workflow declared under `customized-workflows` is left alone.
 
 ## [5.27.2] — 2026-10-17
 
