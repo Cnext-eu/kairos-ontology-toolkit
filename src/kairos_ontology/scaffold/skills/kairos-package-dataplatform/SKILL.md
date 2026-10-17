@@ -45,10 +45,25 @@ Treat the ontology hub as the producer and the dataplatform as the runtime consu
   target workspace and publishes it in a second pass after framing. Never commit a per-environment
   model ID, and never name a report after a model. Run `kairos-ontology check-authored-reports`
   before a PR, and `apply-report-theme` after changing the shared theme.
+- **Promotion is `promote.yml`, not a hand-dispatched deploy (DD-256).** Merging to `main`
+  builds and deploys `dev`; approving the `uat` and then `prod` GitHub Environments promotes
+  the same commit, each in one job that runs `dbt build --target <env>` and then the Power BI
+  deploy. Walk the user through approving, not through dispatching the deploy workflow:
+  dispatch is break-glass, one environment at a time. To roll back, run `promote.yml` with
+  `ref` set to the last known-good commit; its `packages.yml` and `hub-release.lock` travel
+  with it. The CICD.md "Promotion" and "Rollback and PROD hotfix" sections have the steps.
+- **A hub release reaches the platform through `bump-hub <tag>`**, which pins `packages.yml`
+  and writes `hub-release.lock` in one reviewed PR. Never type a hub SHA or archive checksum
+  into a workflow input when the lock can carry it; `pr-validate` fails when the two disagree.
+- **Environments are the dbt targets in the committed `profiles.yml` (DD-255).** Before a
+  first promotion, or after adding an environment, run
+  `kairos-ontology check-environments --github-repo <org>/<repo>` (add `--online` to resolve
+  the Fabric IDs) and fix what it names. Follow CICD.md "Add an environment"; never add the
+  environment to the hub.
 - The deploy job runs in the GitHub Environment named by `target_environment` and refreshes
   (frames) every Direct Lake model after publishing; a model that cannot read its tables
-  fails the deploy (DD-239). Check `FABRIC_ITEM_ID` points at the Warehouse dbt writes Gold
-  into before suspecting the hub.
+  fails the deploy (DD-239). Run `kairos-ontology resolve-environment --target <env>` to see
+  which Warehouse and workspaces it uses, and where each came from, before suspecting the hub.
 - After publishing, the deploy workflow runs the advisory Best Practice Analyzer notebook
   (`fabric/KairosModelBpa.Notebook`, DD-238). It is read-only over the model and never blocks
   a deploy. On Fabric (Direct Lake) it also checks guardrails and fallback to DirectQuery. On a
@@ -62,8 +77,8 @@ Treat the ontology hub as the producer and the dataplatform as the runtime consu
   script that strips them.
 
 Consume optional Gold semantic-model and MDM profile artifacts from the same CompilePlan build. The
-generated `deploy-powerbi-semantic-model.yml` workflow already verifies the hub release tag resolves
-to the expected hub SHA and that the downloaded `powerbi-semantic-model.zip` matches its recorded
+generated `deploy-powerbi-semantic-model.yml` workflow already verifies the hub release tag in
+`hub-release.lock` resolves to the expected hub SHA and that the downloaded `powerbi-semantic-model.zip` matches its recorded
 SHA-256 before extraction — never bypass or work around that verification, and never hand-edit or
 regenerate the archive's TMDL/PBIR/report JSON downstream. Validate TMDL/DAX, relationships,
 security, adapter behavior, and MDM runtime integration in their own toolchains. Consumer

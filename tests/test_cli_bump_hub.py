@@ -177,6 +177,15 @@ def test_resolve_hub_ref_sha_rejects_blank_ref():
 # --- `bump-hub` CLI command --------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_release_lookup():
+    """Keep these tests offline: `bump-hub` also looks up the release checksum (DD-256)."""
+    with patch(
+        "kairos_ontology.cli.operations._fetch_hub_release_archive_sha256", return_value=None
+    ):
+        yield
+
+
 @patch("kairos_ontology.cli.operations._resolve_hub_ref_sha", return_value=SHA)
 def test_bump_hub_first_use_uncomments_and_pins(mock_resolve, tmp_path, monkeypatch):
     packages = tmp_path / "packages.yml"
@@ -249,3 +258,22 @@ def test_bump_hub_fails_closed_when_hub_block_missing(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert "could not find the hub package block" in result.output
+
+
+def test_fetch_release_archive_sha256_reads_the_published_checksum():
+    from kairos_ontology.cli.shared import _fetch_hub_release_archive_sha256
+
+    digest = "b" * 64
+    completed = MagicMock(returncode=0, stdout=f"{digest}  powerbi-semantic-model.zip\n")
+    with patch("kairos_ontology.cli.shared.subprocess.run", return_value=completed) as run:
+        assert _fetch_hub_release_archive_sha256("v1.4.0", "acme/hub", "ghe.example") == digest
+    args = run.call_args.args[0]
+    assert args[:4] == ["gh", "release", "download", "v1.4.0"]
+    assert "ghe.example/acme/hub" in args
+
+    for stdout, code in (("", 0), ("not-a-digest\n", 0), (f"{digest}\n", 1)):
+        failed = MagicMock(returncode=code, stdout=stdout)
+        with patch("kairos_ontology.cli.shared.subprocess.run", return_value=failed):
+            assert _fetch_hub_release_archive_sha256("main", "acme/hub") is None
+    with patch("kairos_ontology.cli.shared.subprocess.run", side_effect=FileNotFoundError):
+        assert _fetch_hub_release_archive_sha256("v1", "acme/hub") is None

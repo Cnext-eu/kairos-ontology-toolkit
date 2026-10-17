@@ -1,0 +1,104 @@
+# Managed by kairos-ontology-toolkit. `update --refresh-workflows` replaces this file
+# while it matches a shipped generation, so an undeclared edit is silently reverted.
+# To keep one: declare it under [tool.kairos] customized-workflows in pyproject.toml,
+# and `update --check` will report it without failing or overwriting it. If the edit is
+# worth having everywhere, send it upstream instead (#772).
+#
+# Promotion (DD-256): one run carries ONE dataplatform commit through dev -> uat -> prod.
+#
+# - A push to main starts it; dev is built and deployed straight away.
+# - uat and prod each wait for their GitHub Environment's required reviewers. Approving
+#   is promoting: the job builds dbt for that target and deploys the Power BI models of
+#   the hub release in hub-release.lock, from the same commit dev got.
+# - Rolling back, or hotfixing: run this workflow by hand with `ref` set to the commit to
+#   promote. Its packages.yml and hub-release.lock travel with it.
+# - Environments are the dbt targets in profiles.yml (DD-255). To promote along a shorter
+#   path, set the repository variable KAIROS_PROMOTION_PATH, e.g. `dev,prod`.
+#
+# Each environment runs deploy-powerbi-semantic-model.yml as a reusable workflow, so one
+# job -- one approval -- covers the dbt build and the deploy. See CICD.md, "Promotion".
+
+name: Promote (dev -> uat -> prod)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: >-
+          Dataplatform commit, tag or branch to promote (default: this run's commit). An
+          older commit rolls back.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+env:
+  KAIROS_SKILL_CONTEXT: "1"
+
+jobs:
+  # Resolve the ref to one immutable SHA first, so a push landing while uat waits for
+  # approval cannot change what uat and prod receive.
+  pin:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.pin.outputs.sha }}
+      path: ${{ steps.pin.outputs.path }}
+    steps:
+      - name: Pin the commit to promote
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref || github.sha }}
+          PROMOTION_PATH: ${{ vars.KAIROS_PROMOTION_PATH || 'dev,uat,prod' }}
+        run: |
+          set -euo pipefail
+          SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REF}" -q .sha)
+          if ! printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::'$REF' does not resolve to a commit of $GITHUB_REPOSITORY."
+            exit 1
+          fi
+          KEYS=$(printf '%s' "$PROMOTION_PATH" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "path=,$KEYS," >> "$GITHUB_OUTPUT"
+          {
+            echo "### Promoting \`$SHA\`"
+            echo ""
+            echo "Path: \`$KEYS\` (repository variable KAIROS_PROMOTION_PATH)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dev:
+    needs: pin
+    if: ${{ contains(needs.pin.outputs.path, ',dev,') }}
+    uses: ./.github/workflows/deploy-powerbi-semantic-model.yml
+    with:
+      target_environment: dev
+      ref: ${{ needs.pin.outputs.sha }}
+      build_dbt: true
+    secrets: inherit
+
+  # `!failure() && !cancelled()`: a skipped earlier environment (not on the path) does not
+  # skip this one, but a failed one stops the promotion.
+  uat:
+    needs: [pin, dev]
+    if: ${{ !failure() && !cancelled() && contains(needs.pin.outputs.path, ',uat,') }}
+    uses: ./.github/workflows/deploy-powerbi-semantic-model.yml
+    with:
+      target_environment: uat
+      ref: ${{ needs.pin.outputs.sha }}
+      build_dbt: true
+    secrets: inherit
+
+  prod:
+    needs: [pin, uat]
+    if: ${{ !failure() && !cancelled() && contains(needs.pin.outputs.path, ',prod,') }}
+    uses: ./.github/workflows/deploy-powerbi-semantic-model.yml
+    with:
+      target_environment: prod
+      ref: ${{ needs.pin.outputs.sha }}
+      build_dbt: true
+    secrets: inherit

@@ -79,6 +79,9 @@ immutable CompilePlan and deterministic downstream artifacts.
   material ontology choices
 - `kairos.yaml`: namespace, catalog, adapters, and selected roots
 - `../ontology-hub-publish/`: derived artifacts only (sibling of the hub)
+- Promotion (dataplatform): `promote.yml` carries one commit through dev -> uat -> prod;
+  environments are the dbt targets in `profiles.yml`; `check-environments` diagnoses them
+  (DD-255, DD-256).
 - `CICD.md` / `CONTRIBUTING.md`: managed branching, review, validation, promotion,
   rollback, and hotfix guidance for this repository
 

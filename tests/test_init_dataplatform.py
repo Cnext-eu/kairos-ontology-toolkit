@@ -180,7 +180,10 @@ class TestInitDataplatform:
         cicd = (dataplatform_output / "CICD.md").read_text(encoding="utf-8")
         assert "kairos-ontology-toolkit:managed" in cicd
         assert "full 40-character hub commit SHA" in cicd
-        assert "DEV build -> approval -> UAT build" in cicd
+        # DD-256: one promote.yml run carries the same commit through each environment.
+        assert "promote.yml" in cicd
+        assert "uat:  waits for approval -> dbt build + deploy, same S" in cicd
+        assert "### Add an environment" in cicd
         assert "forward-port" in cicd
         assert "kairos-ontology update --upgrade" in cicd
         assert "powerbi-semantic-model.zip" in cicd
@@ -311,6 +314,13 @@ class TestInitDataplatform:
         assert not (skills_dir / "kairos-design-domain").exists()
         assert not (skills_dir / "kairos-execute-project").exists()
 
+    def test_promote_workflow_created(self, dataplatform_output):
+        """DD-256: the managed promotion workflow ships with every dataplatform."""
+        promote = dataplatform_output / ".github" / "workflows" / "promote.yml"
+        content = promote.read_text(encoding="utf-8")
+        assert "uses: ./.github/workflows/deploy-powerbi-semantic-model.yml" in content
+        assert "kairos-ontology-toolkit" in content.splitlines()[0]
+
     def test_fabric_deploy_workflow_created(self, dataplatform_output):
         wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
         assert wf.exists()
@@ -322,7 +332,8 @@ class TestInitDataplatform:
         assert "package_fabric_semantic_model.py" not in content
         assert "TestOrg" in content
         assert "test-ontology-hub" in content
-        assert "v1.2.0" in content
+        # DD-256: the release comes from the reviewed hub-release.lock, not a typed default.
+        assert "kairos-ontology hub-release" in content
 
     def test_fabric_deploy_workflow_verifies_hub_sha_and_archive_checksum(
         self, dataplatform_output
@@ -443,7 +454,7 @@ class TestInitDataplatform:
         assert publish < advisory
         step = content[advisory:]
         assert "continue-on-error: true" in step
-        assert "if: ${{ inputs.run_bpa_advisory }}" in step
+        assert "if: ${{ steps.release.outputs.deploy == 'true' && inputs.run_bpa_advisory }}" in step
         assert "run_bpa_advisory:" in content
         # Every path out of the script is exit 0: absent notebook, no capacity, and the end.
         assert step.count("sys.exit(0)") >= 3
@@ -486,10 +497,17 @@ class TestInitDataplatform:
             for item in workflow["jobs"]["deploy"]["steps"]
             if "FABRIC_WORKSPACE_ID" in item.get("env", {})
         }
-        # Override, publish, refresh, the two authored-report steps (#1102), BPA.
-        assert len(sources) == 6, sources
-        assert set(sources.values()) == {
-            "${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}"
+        raw = "${{ vars.FABRIC_WORKSPACE_ID || secrets.FABRIC_WORKSPACE_ID }}"
+        # The resolver's inputs (DD-255) read the Environment's value as given...
+        inputs = {"Resolve the environment from its dbt target", "Apply the environment's Gold connection"}
+        assert {name for name, value in sources.items() if value == raw} == inputs
+        # ...and every step that uses the workspace reads the resolved one first: publish,
+        # refresh, the two authored-report steps (#1102), BPA.
+        used = {name: value for name, value in sources.items() if name not in inputs}
+        assert len(used) == 5, used
+        assert set(used.values()) == {
+            "${{ steps.resolve.outputs.models_workspace_id || vars.FABRIC_WORKSPACE_ID "
+            "|| secrets.FABRIC_WORKSPACE_ID }}"
         }
 
     # --- DD-239: Fabric deploy per GitHub Environment, framed after publish ----------
@@ -512,7 +530,7 @@ class TestInitDataplatform:
         step = next(
             item
             for item in workflow["jobs"]["deploy"]["steps"]
-            if item.get("name") == "Apply dataplatform Direct Lake connection override"
+            if item.get("name") == "Apply the environment's Gold connection"
         )
         assert set(step["env"]) >= {"FABRIC_WORKSPACE_ID", "FABRIC_ITEM_ID"}
 
@@ -538,7 +556,9 @@ class TestInitDataplatform:
         refresh = names.index("Refresh the semantic model (Direct Lake)")
         assert refresh == publish + 1
         step = workflow["jobs"]["deploy"]["steps"][refresh]
-        assert step["if"] == "${{ inputs.refresh_after_publish }}"
+        assert step["if"] == (
+            "${{ steps.release.outputs.deploy == 'true' && inputs.refresh_after_publish }}"
+        )
         assert "continue-on-error" not in step, "a model that cannot frame must fail the deploy"
         assert '"mode: directLake"' in step["run"], "DirectQuery models are skipped"
         assert "sys.exit(1)" in step["run"]
@@ -702,7 +722,9 @@ class TestInitDataplatform:
         bpa = names.index("Advisory Best Practice Analyzer run (non-blocking)")
         assert archive < refresh < bind < publish < bpa
 
-        guard = "hashFiles('powerbi/reports/**/definition.pbir') != ''"
+        guard = (
+            "${{ steps.release.outputs.deploy == 'true' && hashFiles('powerbi/reports/**/definition.pbir') != '' }}"
+        )
         for step in (steps[bind], steps[publish]):
             assert step["if"] == guard
             # Never the hub archive: it stays read-only over item content (DD-206).
@@ -900,7 +922,11 @@ class TestProfilesExamplePlatformSelection:
             for line in content.splitlines()
             if line.strip().startswith("authentication:")
         ]
-        assert active_auth == ["authentication: environment"] * 3, active_auth
+        # DD-256: CI switches to `cli` (the azure/login session) through this variable;
+        # unset, as locally, it renders to `environment`.
+        assert active_auth == [
+            "authentication: \"{{ env_var('DBT_FABRIC_AUTHENTICATION', 'environment') }}\""
+        ] * 3, active_auth
         assert "authentication: ServicePrincipal" not in content
         assert "DBT_FABRIC_TENANT_ID" not in content
         assert "AZURE_TENANT_ID" in content

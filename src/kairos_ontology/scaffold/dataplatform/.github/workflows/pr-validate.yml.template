@@ -161,6 +161,13 @@ jobs:
         if: hashFiles('powerbi/reports/**/definition.pbir') != ''
         run: uv run --no-sync kairos-ontology check-authored-reports
 
+      # DD-256: the promote workflow deploys the hub release in hub-release.lock, which must
+      # name the hub commit packages.yml pins -- a dbt package and a semantic model from
+      # different hub commits would disagree on the Gold tables. `bump-hub <release tag>`
+      # moves both together. Without a lock this passes: promotions then build dbt only.
+      - name: Check hub-release.lock against the packages.yml pin
+        run: uv run --no-sync kairos-ontology hub-release
+
       # Opt-in, and the single highest-value gate available here (DD-215).
       #
       # `--empty` runs every model with `limit 0`: the warehouse still parses,

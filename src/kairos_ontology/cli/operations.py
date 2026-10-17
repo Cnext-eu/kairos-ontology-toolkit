@@ -63,6 +63,7 @@ from .shared import (
     _refresh_with_installed_toolkit,
     _remove_toolkit_test_ref_state,
     _resolve_channel,
+    _fetch_hub_release_archive_sha256,
     _resolve_hub_ref_sha,
     _resolve_refmodels_tag,
     _resolve_toolkit_ref_sha,
@@ -1323,6 +1324,11 @@ def update_refmodels(version_tag):
 def bump_hub(ref):
     """Pin the hub dbt package in packages.yml to REF's full commit SHA.
 
+    When REF is a hub release carrying the Power BI archive, also write
+    hub-release.lock (tag, commit, archive SHA-256), which the promote
+    workflow deploys (DD-256): the dbt package and the semantic model always
+    move together, through the pull request that commits both.
+
     Run from a dataplatform repository root containing packages.yml (DD-206
     §2, §12 item 4). REF is a hub branch, tag, or commit SHA; it is resolved
     against the hub's GitHub repository -- read from the existing ``git:``
@@ -1371,3 +1377,34 @@ def bump_hub(ref):
     print(f"   Ref:      {ref}")
     print(f"   Previous: {previous}")
     print(f"   New SHA:  {sha}")
+    _write_hub_release_lock(Path.cwd(), ref, sha, pin.org_repo, pin.host)
+
+
+def _write_hub_release_lock(root: Path, ref: str, sha: str, org_repo: str, host: str) -> None:
+    """Record REF's Power BI release beside the new pin, or say why it was not (DD-256)."""
+    from ..core.hub_release_lock import (
+        HUB_RELEASE_LOCK_PATH,
+        HubReleaseLock,
+        HubReleaseLockError,
+        read_hub_release_lock,
+        render_hub_release_lock,
+    )
+
+    digest = _fetch_hub_release_archive_sha256(ref, org_repo, host)
+    if digest is None:
+        try:
+            existing = read_hub_release_lock(root)
+        except HubReleaseLockError:
+            existing = None
+        if existing is not None and existing.hub_sha != sha:
+            print(
+                f"⚠️  {ref!r} is not a hub release with a Power BI archive, so "
+                f"{HUB_RELEASE_LOCK_PATH} still deploys {existing.tag}.\n"
+                "   The promote workflow fails closed while the two disagree: bump to a "
+                f"release tag, or delete {HUB_RELEASE_LOCK_PATH} to promote dbt only."
+            )
+        return
+    lock = HubReleaseLock(tag=ref.strip(), hub_sha=sha, archive_sha256=digest)
+    (root / HUB_RELEASE_LOCK_PATH).write_text(render_hub_release_lock(lock), encoding="utf-8")
+    print(f"✅ Wrote {HUB_RELEASE_LOCK_PATH}: {lock.tag}, archive SHA-256 {digest}")
+    print("   Commit it with packages.yml; the promote workflow deploys this release.")

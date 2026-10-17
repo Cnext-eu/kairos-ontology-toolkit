@@ -318,5 +318,6 @@ during cleanup.
 | [DD-253](decisions/dd-253-authored-reports-live-in-the-dataplatform-and-bind-to-their-model-by-name-at-deploy-time.md) | Authored reports live in the dataplatform and bind to their model by name at deploy time | Accepted | 2026-09-28 |
 | [DD-254](decisions/dd-254-a-business-validation-document-is-generated-facts-plus-a-confirmed-narrative.md) | A business validation document is generated facts plus a confirmed narrative | Accepted | 2026-10-01 |
 | [DD-255](decisions/dd-255-the-dbt-target-is-the-environment-authority-and-a-hub-holds-no-environment-ids.md) | The dbt target is the environment authority, and a hub holds no environment IDs | Accepted | 2026-10-17 |
+| [DD-256](decisions/dd-256-a-promotion-is-one-workflow-run-that-carries-one-commit-and-its-hub-release-through-every.md) | A promotion is one workflow run that carries one commit and its hub release through every environment | Accepted | 2026-10-17 |
 
 ---

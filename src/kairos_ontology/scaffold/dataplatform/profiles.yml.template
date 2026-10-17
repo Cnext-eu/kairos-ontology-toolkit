@@ -44,6 +44,9 @@
     # connection string, which the mssql-python driver rejects, and the bare
     # `ServicePrincipal` spelling is not accepted at all ("Unsupported authentication
     # method") -- so `environment` is the one that works on this driver stack.
+    # The deploy workflow sets DBT_FABRIC_AUTHENTICATION=cli when its GitHub Environment
+    # holds no AZURE_CLIENT_SECRET, using the federated `azure/login` session instead
+    # (DD-256). Locally, unset, it stays `environment`.
     #
     # One Fabric workspace (or at least one Warehouse) per environment.
     # @config
@@ -53,21 +56,21 @@
     #   server: "{your-dev-workspace}.datawarehouse.fabric.microsoft.com"
     #   database: "{your-warehouse-name}"
     #   schema: "dbo"
-    #   authentication: environment
+    #   authentication: "{{ env_var('DBT_FABRIC_AUTHENTICATION', 'environment') }}"
     # uat:
     #   type: fabric
     #   driver: "ODBC Driver 18 for SQL Server"
     #   server: "{your-uat-workspace}.datawarehouse.fabric.microsoft.com"
     #   database: "{your-warehouse-name}"
     #   schema: "dbo"
-    #   authentication: environment
+    #   authentication: "{{ env_var('DBT_FABRIC_AUTHENTICATION', 'environment') }}"
     # prod:
     #   type: fabric
     #   driver: "ODBC Driver 18 for SQL Server"
     #   server: "{your-prod-workspace}.datawarehouse.fabric.microsoft.com"
     #   database: "{your-warehouse-name}"
     #   schema: "dbo"
-    #   authentication: environment
+    #   authentication: "{{ env_var('DBT_FABRIC_AUTHENTICATION', 'environment') }}"
     # @endconfig
 # --- END PLATFORM ---
 

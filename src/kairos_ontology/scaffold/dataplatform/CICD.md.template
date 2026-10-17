@@ -14,14 +14,16 @@ development and review conventions.
 
 A `bump/hub-*` PR updates these items together:
 
-1. the full 40-character hub commit SHA in `packages.yml`;
+1. the full 40-character hub commit SHA in `packages.yml`, and -- when the ref is a hub
+   release carrying the Power BI archive -- `hub-release.lock` (tag, the same SHA, and the
+   archive's SHA-256), which the promote workflow deploys (DD-256);
 2. the resolved dbt package lock; and
 3. all physical source bindings required by the new package.
 
 The concrete mechanism for item 3:
 
 ```powershell
-kairos-ontology bump-hub <ref>                    # 1: pins packages.yml to the new SHA
+kairos-ontology bump-hub <ref>                    # 1: pins packages.yml (+ hub-release.lock)
 uv run dbt deps                                   # 2: refreshes the resolved package lock
 kairos-ontology validate-source-bindings          # see which bindings need re-confirmation
 # ...review the reported `stale` findings, and any `missing`/`unknown`/`duplicate` ones...
@@ -36,7 +38,10 @@ unknown, duplicate) is already clean, so review and fix those first. Commit the 
 file(s) as part of the same `bump/hub-*` PR, before opening it.
 
 Do not pin a moving branch in production. A release tag may help reviewers find the hub release,
-but the package revision is the commit SHA.
+but the package revision is the commit SHA. Bump to a release tag: `pr-validate` fails when
+`hub-release.lock` names a different hub commit than `packages.yml` (a dbt package and a semantic
+model from different commits would disagree on the Gold tables). A dataplatform that deploys no
+Power BI models has no lock, and promotes dbt only.
 
 ## Pull-request checks
 
@@ -97,27 +102,67 @@ dependency order; introduce Slim CI only when project scale demonstrates that it
 
 ## Promotion
 
-After merge, every job checks out the same dataplatform commit:
+`.github/workflows/promote.yml` (managed, DD-256) carries **one commit** through every
+environment:
 
 ```text
-commit D8 -> DEV build -> approval -> UAT build -> approval -> PROD build
+merge to main (commit S) -> dev: dbt build + Power BI deploy
+                         -> uat:  waits for approval -> dbt build + deploy, same S
+                         -> prod: waits for approval -> dbt build + deploy, same S
 ```
 
-Use GitHub Environments for credentials and approvals: the Power BI deploy job runs in the
-GitHub Environment named by its `target_environment` input (DD-239), so that Environment's
-secrets, variables and required reviewers apply. Retain `manifest.json`,
-`run_results.json`, and the workflow run for each deployment. Never rebuild from current `main`
-during an existing promotion.
+- A push to `main` starts it. The first job pins `S` to its full SHA, so a later merge cannot
+  change what `uat` and `prod` receive while they wait.
+- Each environment is one job: `deploy-powerbi-semantic-model.yml` as a reusable workflow, with
+  `build_dbt` on. It checks out `S`, runs `dbt build --target <env>` with the committed
+  `profiles.yml`, then deploys the hub release in `hub-release.lock` to that environment's
+  workspaces (DD-255 resolves them). One job means one approval per environment.
+- **Approving is promoting.** Required reviewers on the `uat` and `prod` GitHub Environments
+  gate each step; nothing is typed. A rejected or failed environment stops the run.
+- The environment list is the dbt targets `dev`, `uat`, `prod`. For a shorter path, set the
+  repository variable `KAIROS_PROMOTION_PATH` (for example `dev,prod`). Another target, such as a
+  sandbox, is deployed by dispatching `deploy-powerbi-semantic-model.yml` with `build_dbt` on.
+- Without `hub-release.lock` the run builds dbt only.
+
+Retain `manifest.json`, `run_results.json`, and the workflow run for each deployment. Never
+rebuild from current `main` during an existing promotion.
+
+Dispatching `deploy-powerbi-semantic-model.yml` by hand stays possible, for one environment at a
+time: give it `build_dbt`, or the run ID of a dbt build that already succeeded there. It deploys
+the release in `hub-release.lock` unless all three release inputs are given.
+
+### Add an environment
+
+1. Add its target to `profiles.yml` (endpoint and database only; no credential) and, if its
+   models or reports live in a workspace other than its Gold Warehouse's, its entry under
+   `vars.kairos.environments` in `dbt_project.yml`. Use a lowercase name: it is the environment
+   key everywhere.
+2. Create a GitHub Environment with the same name. Add its secrets (see "Fabric deploy
+   prerequisites"), and required reviewers unless it is `dev`.
+3. Add an Entra federated credential with subject `repo:<org>/<repo>:environment:<name>`.
+4. If it is not `dev`, `uat` or `prod`, it is not on the promote path: deploy it by dispatch, or
+   adjust `KAIROS_PROMOTION_PATH` when it replaces one of them.
+5. Check everything before the first run:
+
+   ```powershell
+   uv run kairos-ontology check-environments --github-repo <org>/<repo>          # offline
+   uv run kairos-ontology check-environments --github-repo <org>/<repo> --online # resolves IDs
+   ```
+
+   It names each missing piece and what to do about it. The hub is not touched.
 
 ## Rollback and PROD hotfix
 
-Rollback redeploys the last known-good dataplatform SHA from GitHub deployment history.
+**Rollback** runs `promote.yml` by hand with `ref` set to the last known-good commit (GitHub's
+deployment history lists it per environment). Its `packages.yml` and `hub-release.lock` travel
+with it, so dbt and the Power BI models go back together, through the same approvals.
 
 For an urgent fix when `main` has advanced:
 
 1. branch from the exact SHA running in PROD;
 2. add the smallest fix and a regression test;
-3. run required checks and deploy that exact hotfix SHA after approval;
+3. run required checks, then run `promote.yml` with `ref` set to the hotfix SHA (set
+   `KAIROS_PROMOTION_PATH` first if it should skip an environment);
 4. create a new branch from current `main`;
 5. cherry-pick or reapply the same fix; and
 6. merge the forward-port through a normal PR.
@@ -172,10 +217,12 @@ dbt deployment and Fabric/Power BI artifact deployment are separate lanes. The P
 consumes `powerbi-semantic-model.zip` from the same hub release as the dbt package. The
 archive contains the first generated `SemanticModel` and `Report` versions.
 
-The workflow must accept and verify the expected hub SHA and archive SHA-256 before extraction.
-After the target environment's dbt build succeeds, it uses that GitHub Environment's credentials
-to deploy both `SemanticModel` and `Report` item types. DEV, UAT, and PROD receive the same archive;
-only approved workspace and connection parameterization changes.
+The workflow verifies the hub SHA and archive SHA-256 from `hub-release.lock` before extraction.
+After the target environment's dbt build succeeds -- in the same job, under `promote.yml` -- it
+uses that GitHub Environment's credentials to deploy both `SemanticModel` and `Report` item types.
+DEV, UAT, and PROD receive the same archive; only approved workspace and connection
+parameterization changes. dbt authenticates with `AZURE_CLIENT_SECRET` when the Environment holds
+one, and otherwise with the federated `azure/login` session (`DBT_FABRIC_AUTHENTICATION=cli`).
 
 Power BI rollback redeploys the previously successful archive. Never regenerate or hand-edit the
 TMDL, PBIR or report JSON **of the hub archive** in the dataplatform. Any wrapper generation or TMDL
@@ -233,6 +280,11 @@ The reports the BI engineer builds live in this repository, under `powerbi/repor
   model's name on every release, and would overwrite yours.
 
 ### Direct Lake connection overrides
+
+**With a committed `profiles.yml` this section does not apply** (DD-255): the deploy resolves each
+environment's Gold Warehouse from its dbt target and applies it with
+`apply-gold-connection --from-dbt-target`, and `gold-connections.yml` is not read. What follows is
+the fallback for a dataplatform without one.
 
 Deploy-time parameterization is the exception to "read-only", and is this repo's job by design.
 A Fabric Direct Lake semantic model resolves every partition through one named expression whose

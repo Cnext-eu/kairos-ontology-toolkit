@@ -770,6 +770,43 @@ def _resolve_hub_ref_sha(ref: str, hub_repo: str, host: str = "github.com") -> s
     return sha if _COMMIT_SHA_RE.fullmatch(sha) else None
 
 
+def _fetch_hub_release_archive_sha256(
+    tag: str, hub_repo: str, host: str = "github.com"
+) -> str | None:
+    """Return the SHA-256 a hub release records for its Power BI archive (DD-256).
+
+    ``release-projections.yml`` publishes ``powerbi-semantic-model.zip.sha256`` beside the
+    archive. ``None`` when *tag* is not a release, the release has no archive (a hub
+    without Gold), ``gh`` is missing, or the file is malformed -- the caller then leaves
+    ``hub-release.lock`` alone.
+    """
+    hostname = (host or "github.com").strip() or "github.com"
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "release",
+                "download",
+                tag.strip(),
+                "--repo",
+                f"{hostname}/{hub_repo}",
+                "--pattern",
+                "powerbi-semantic-model.zip.sha256",
+                "--output",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    digest = result.stdout.split()[0].strip().lower()
+    return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else None
+
+
 @dataclass(frozen=True)
 class _HubPackagePin:
     """Current state of the hub package block in a dataplatform ``packages.yml``."""
@@ -2727,6 +2764,8 @@ _DATAPLATFORM_WORKFLOW_SOURCES = {
     ".github/workflows/deploy-powerbi-semantic-model.yml": (
         "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template"
     ),
+    # DD-256: one run carries one commit through dev -> uat -> prod.
+    ".github/workflows/promote.yml": "dataplatform/.github/workflows/promote.yml.template",
     # Not workflows, but the deploy workflow's advisory BPA step publishes and runs this
     # Fabric notebook (DD-238, #982), and it needs the same lifecycle: its
     # semantic-link-labs pin and embedded rule map move with each toolkit release, and an
@@ -2784,6 +2823,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "hub-pr-validate/7.template",
         # Pre-#1102 dataplatform generation, before the authored-reports check.
         "dataplatform-pr-validate/5.template",
+        # Pre-DD-256 generation, before the hub-release.lock consistency check.
+        "dataplatform-pr-validate/6.template",
     ),
     # Pre-#771 generation, before every `uv run` gained `--no-sync`. Also carries the
     # pre-#721 skill-context placement for full-validate.
@@ -2823,6 +2864,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "dataplatform-deploy-powerbi-semantic-model/6.template",
         # Pre-#1114 generation: case-sensitive `target_environment`, defaulting to `DEV`.
         "dataplatform-deploy-powerbi-semantic-model/7.template",
+        # Pre-DD-256 generation: dispatch only, hand-typed release inputs, no dbt build.
+        "dataplatform-deploy-powerbi-semantic-model/8.template",
     ),
     # DD-240: the notebook embeds the BPA profile, which moved to version 2.
     "fabric/KairosModelBpa.Notebook/notebook-content.py": (

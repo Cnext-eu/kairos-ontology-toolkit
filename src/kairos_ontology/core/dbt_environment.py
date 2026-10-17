@@ -164,6 +164,24 @@ def _render(value: str, environ: Mapping[str, str], *, where: str) -> str:
         ) from exc
 
 
+def list_dbt_targets(
+    project_dir: Path,
+    *,
+    profiles_dir: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Return the target names of the project's profile, in file order."""
+    environ = os.environ if environ is None else environ
+    profile = project_profile_name(project_dir)
+    path = find_profiles_dir(project_dir, profiles_dir, environ) / "profiles.yml"
+    document = _read_yaml(path, "profiles.yml")
+    block = document.get(profile) if isinstance(document, dict) else None
+    outputs = block.get("outputs") if isinstance(block, dict) else None
+    if not isinstance(outputs, dict) or not outputs:
+        raise EnvironmentResolutionError(f"{path}: profile {profile!r} has no outputs")
+    return [str(name) for name in outputs]
+
+
 def load_dbt_target(
     project_dir: Path,
     target: str,
