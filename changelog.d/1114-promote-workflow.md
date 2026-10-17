@@ -45,3 +45,9 @@
   "Add an environment" runbook. `kairos-package-dataplatform`, `kairos-setup-dataplatform` and
   `kairos-help` now guide through approving promotions and adding environments, instead of
   dispatching deploys by hand.
+- `check-environments` was tested on a real client dataplatform. Three changes came out of it:
+  - an endpoint the deploy's GitHub Environment supplies (`env_var('FABRIC_SERVER')`) is
+    deferred offline instead of failing;
+  - `--github-repo` reaches GitHub Enterprise (`HOST/OWNER/REPO`, or the host of `origin`);
+  - it fails when the repository's deploy workflow has no `workflow_call`, which is the case
+    for an older or customized copy that `promote.yml` cannot call.

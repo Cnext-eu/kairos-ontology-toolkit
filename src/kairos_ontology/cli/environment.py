@@ -115,13 +115,69 @@ def _checked_hub_release_lock(project_dir: Path):
     return lock
 
 
-def _github_environments(repo: str) -> set[str] | None:
+def _split_github_repo(value: str, project_dir: Path) -> tuple[str, str]:
+    """Return ``(host, owner/repo)`` for ``--github-repo``.
+
+    ``HOST/OWNER/REPO`` names a GitHub Enterprise host explicitly. Plain ``OWNER/REPO``
+    takes the host of the project's ``origin`` remote when that remote is the same
+    repository, so a dataplatform on GitHub Enterprise needs no extra flag.
+    """
+    import re
+    import subprocess
+
+    parts = value.strip().strip("/").split("/")
+    if len(parts) == 3:
+        return parts[0], "/".join(parts[1:])
+    repo = "/".join(parts)
+    try:
+        origin = subprocess.run(
+            ["git", "-C", str(project_dir), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        origin = ""
+    match = re.match(r"^(?:https?://(?:[^@/]+@)?|git@)([^/:]+)[/:](.+?)(?:\.git)?/?$", origin)
+    if match and match.group(2).lower() == repo.lower():
+        return match.group(1), repo
+    return "github.com", repo
+
+
+def _deploy_is_callable(project_dir: Path) -> bool | None:
+    """Whether the repository's deploy workflow can be called by promote.yml (DD-256).
+
+    ``None`` when there is no deploy workflow at all.
+    """
+    import yaml
+
+    path = project_dir / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+    if not path.is_file():
+        return None
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return False
+    # PyYAML reads the bare key `on` as the boolean True.
+    triggers = (document or {}).get(True) or (document or {}).get("on") or {}
+    return isinstance(triggers, dict) and "workflow_call" in triggers
+
+
+def _github_environments(repo: str, host: str = "github.com") -> set[str] | None:
     """The lowercased Environment names of *repo*, or ``None`` when `gh` cannot list them."""
     import subprocess
 
     try:
         result = subprocess.run(
-            ["gh", "api", f"/repos/{repo}/environments", "--jq", ".environments[].name"],
+            [
+                "gh",
+                "api",
+                "--hostname",
+                host,
+                f"/repos/{repo}/environments",
+                "--jq",
+                ".environments[].name",
+            ],
             capture_output=True,
             text=True,
             timeout=30,
@@ -188,7 +244,8 @@ def hub_release_cmd(project_dir: Path, output_format: str):
     "--github-repo",
     default=None,
     metavar="OWNER/REPO",
-    help="Also check that each environment has a GitHub Environment (needs `gh`).",
+    help="Also check that each environment has a GitHub Environment (needs `gh`). "
+    "HOST/OWNER/REPO for GitHub Enterprise; OWNER/REPO takes the host of `origin`.",
 )
 def check_environments_cmd(
     project_dir: Path, profiles_dir: Path | None, online: bool, github_repo: str | None
@@ -225,7 +282,15 @@ def check_environments_cmd(
         except EnvironmentResolutionError as exc:
             problem(f"{name}: {exc}")
             continue
-        detail = resolved.gold_item_id or resolved.server_hostname or "IDs resolved at deploy"
+        if resolved.deferred_env:
+            detail = (
+                f"endpoint from {', '.join(resolved.deferred_env)} -- set it in the "
+                f"{resolved.environment!r} GitHub Environment"
+            )
+        else:
+            detail = (
+                resolved.gold_item_id or resolved.server_hostname or "IDs resolved at deploy"
+            )
         click.echo(f"  ✓ {resolved.environment} ({resolved.target_type}): {detail}")
 
     try:
@@ -253,6 +318,29 @@ def check_environments_cmd(
 
     from ..core.hub_release_lock import HubReleaseLockError
 
+    click.echo("Workflows:")
+    callable_deploy = _deploy_is_callable(project_dir)
+    if callable_deploy is None:
+        problem(
+            "no .github/workflows/deploy-powerbi-semantic-model.yml: run "
+            "`kairos-ontology update --refresh-workflows`"
+        )
+    elif not callable_deploy:
+        problem(
+            "deploy-powerbi-semantic-model.yml has no `workflow_call` trigger, so promote.yml "
+            "cannot call it. It is an older or customized copy: if pyproject.toml lists it "
+            "under [tool.kairos] customized-workflows, port your changes onto the managed "
+            "template (or upstream them), remove the entry, and run "
+            "`kairos-ontology update --refresh-workflows`"
+        )
+    else:
+        click.echo("  ✓ the deploy workflow can be called by promote.yml")
+    if not (project_dir / ".github" / "workflows" / "promote.yml").is_file():
+        notes.append(
+            "No .github/workflows/promote.yml: `kairos-ontology update --refresh-workflows` "
+            "installs it."
+        )
+
     click.echo("Hub release (hub-release.lock):")
     try:
         lock = _checked_hub_release_lock(project_dir)
@@ -268,10 +356,15 @@ def check_environments_cmd(
             click.echo(f"  ✓ {lock.tag}, the hub commit packages.yml pins")
 
     if github_repo:
-        click.echo(f"GitHub Environments ({github_repo}):")
-        existing = _github_environments(github_repo)
+        host, github_repo = _split_github_repo(github_repo, project_dir)
+        click.echo(f"GitHub Environments ({host}/{github_repo}):")
+        existing = _github_environments(github_repo, host)
         if existing is None:
-            problem(f"could not list the Environments of {github_repo} (check `gh auth status`)")
+            problem(
+                f"could not list the Environments of {host}/{github_repo} (check "
+                f"`gh auth status --hostname {host}`; a GitHub Enterprise repository can be "
+                "named HOST/OWNER/REPO)"
+            )
         else:
             for key in keys:
                 if key in existing:

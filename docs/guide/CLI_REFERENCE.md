@@ -383,7 +383,7 @@ kairos-ontology check-environments [OPTIONS]
 | `--project-dir` | `.` | dbt project directory (holds dbt_project.yml). |
 | `--profiles-dir` |  | Directory holding profiles.yml (default: as dbt -- DBT_PROFILES_DIR, the project directory, then ~/.dbt). |
 | `--online` |  | Also resolve each environment's IDs through the Fabric REST API. |
-| `--github-repo` |  | Also check that each environment has a GitHub Environment (needs `gh`). |
+| `--github-repo` |  | Also check that each environment has a GitHub Environment (needs `gh`). HOST/OWNER/REPO for GitHub Enterprise; OWNER/REPO takes the host of `origin`. |
 
 
 ## class-disposition

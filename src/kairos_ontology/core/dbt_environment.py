@@ -58,6 +58,19 @@ class EnvironmentResolutionError(Exception):
     """The dbt target, its vars, or the Fabric lookup cannot resolve the environment."""
 
 
+class MissingEnvVarError(EnvironmentResolutionError):
+    """A profile field reads an ``env_var()`` the current environment does not set.
+
+    A legitimate pattern, not only a mistake: one profile whose targets all read
+    ``FABRIC_SERVER``, with each GitHub Environment setting its own value. Offline
+    resolution therefore defers it instead of failing.
+    """
+
+    def __init__(self, message: str, variable: str) -> None:
+        super().__init__(message)
+        self.variable = variable
+
+
 # --------------------------------------------------------------------------------------
 # profiles.yml
 # --------------------------------------------------------------------------------------
@@ -149,8 +162,8 @@ def _render(value: str, environ: Mapping[str, str], *, where: str) -> str:
             return environ[name]
         if default is not None:
             return str(default)
-        raise EnvironmentResolutionError(
-            f"profiles.yml {where} reads env_var({name!r}), which is not set"
+        raise MissingEnvVarError(
+            f"profiles.yml {where} reads env_var({name!r}), which is not set", name
         )
 
     sandbox = SandboxedEnvironment(undefined=StrictUndefined, autoescape=False)
@@ -159,6 +172,9 @@ def _render(value: str, environ: Mapping[str, str], *, where: str) -> str:
     except EnvironmentResolutionError:
         raise
     except TemplateError as exc:
+        cause = exc.__cause__ or exc.__context__
+        if isinstance(cause, EnvironmentResolutionError):
+            raise cause from None
         raise EnvironmentResolutionError(
             f"profiles.yml {where} uses Jinja beyond env_var(): {exc}"
         ) from exc
@@ -292,6 +308,9 @@ class ResolvedEnvironment:
     models_workspace_id: str | None = None
     reports_workspace_id: str | None = None
     sources: Mapping[str, str] = field(default_factory=dict)
+    #: Offline only: the env vars the target's endpoint reads that are not set here, and
+    #: that the deploy's GitHub Environment must therefore supply.
+    deferred_env: tuple[str, ...] = ()
 
     def connection_override(self) -> GoldDirectLakeEnvironmentSpec | GoldConnectionEnvironmentSpec:
         """The Gold connection as the override ``apply-gold-connection`` applies."""
@@ -459,15 +478,34 @@ def resolve_environment(
             return resolved, f"vars.kairos {var_name} {value!r} via fabric-api"
         return fallback
 
+    deferred_env: list[str] = []
+
+    def endpoint(name: str) -> str | None:
+        """Read an endpoint field; offline, an env var only the deploy sets is deferred."""
+        try:
+            return dbt_target.get(name)
+        except MissingEnvVarError as exc:
+            if not offline:
+                raise
+            deferred_env.append(exc.variable)
+            return None
+
+    def deferred_source() -> str:
+        names = ", ".join(sorted(set(deferred_env)))
+        return f"deferred: the deploy's GitHub Environment must set {names}"
+
     gold_workspace_id = gold_item_id = server_hostname = http_path = None
     if dbt_target.type == "databricks":
-        server_hostname = _endpoint_host(dbt_target.get("host"))
-        http_path = dbt_target.get("http_path")
-        sources["server_hostname"] = sources["http_path"] = "dbt target"
+        host = endpoint("host")
+        server_hostname = _endpoint_host(host) if host else None
+        http_path = endpoint("http_path")
+        source = deferred_source() if deferred_env else "dbt target"
+        sources["server_hostname"] = sources["http_path"] = source
         gold_source: tuple[str | None, str] = (None, "unset")
     else:
-        dbt_target.get("server")
-        dbt_target.get("database")  # fail early, offline too, on a missing or placeholder value
+        # Fail early, offline too, on a missing or placeholder value.
+        endpoint("server")
+        endpoint("database")
         if explicit("FABRIC_ITEM_ID"):
             gold_item_id = explicit("FABRIC_ITEM_ID")
             sources["gold_item_id"] = "env FABRIC_ITEM_ID"
@@ -483,7 +521,9 @@ def resolve_environment(
                     "derive both from the dbt target"
                 )
         elif offline:
-            sources["gold_workspace_id"] = sources["gold_item_id"] = deferred
+            sources["gold_workspace_id"] = sources["gold_item_id"] = (
+                f"{deferred}; {deferred_source()}" if deferred_env else deferred
+            )
         else:
             warehouse = _find_gold_warehouse(
                 dbt_target, workspaces, client, variables.get("gold_workspace")
@@ -513,4 +553,5 @@ def resolve_environment(
         models_workspace_id=models_workspace_id,
         reports_workspace_id=reports_workspace_id,
         sources=sources,
+        deferred_env=tuple(sorted(set(deferred_env))),
     )

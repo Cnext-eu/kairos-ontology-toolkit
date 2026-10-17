@@ -53,6 +53,12 @@ def _platform(root: Path, *, pinned: str = SHA, lock: HubReleaseLock | None = No
     )
     if lock is not None:
         (root / HUB_RELEASE_LOCK_PATH).write_text(render_hub_release_lock(lock), "utf-8")
+    workflows = root / ".github" / "workflows"
+    workflows.mkdir(parents=True, exist_ok=True)
+    for name in ("deploy-powerbi-semantic-model.yml", "promote.yml"):
+        (workflows / name).write_text(
+            (_WORKFLOWS / f"{name}.template").read_text(encoding="utf-8"), encoding="utf-8"
+        )
     return root
 
 
@@ -184,6 +190,47 @@ class TestCheckEnvironments:
         assert "no GitHub Environment 'prod'" in result.output
         assert "repo:acme/dp:environment:prod" in result.output
         assert "KAIROS_PROMOTION_PATH" in result.output  # uat is missing from the path
+
+    def test_an_endpoint_only_the_deploy_sets_is_deferred_offline(self, tmp_path):
+        """One profile whose targets read FABRIC_SERVER, set per GitHub Environment."""
+        _platform(tmp_path)
+        profile = yaml.safe_load((tmp_path / "profiles.yml").read_text("utf-8"))
+        for output in profile["platform"]["outputs"].values():
+            output["server"] = "{{ env_var('FABRIC_SERVER') }}"
+        (tmp_path / "profiles.yml").write_text(yaml.safe_dump(profile), encoding="utf-8")
+
+        result = _invoke("check-environments", "--project-dir", str(tmp_path))
+
+        assert result.exit_code == 0, result.output
+        assert "endpoint from FABRIC_SERVER -- set it in the 'uat' GitHub Environment" in (
+            result.output
+        )
+        # Online (as the deploy runs) an unset variable still fails.
+        online = _invoke(
+            "resolve-environment", "--target", "uat", "--project-dir", str(tmp_path)
+        )
+        assert online.exit_code != 0
+        assert "env_var('FABRIC_SERVER')" in online.output
+
+    def test_a_deploy_workflow_promote_cannot_call_is_a_problem(self, tmp_path):
+        """A frozen, customized deploy copy has no workflow_call: promote.yml would fail."""
+        _platform(tmp_path)
+        (tmp_path / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml").write_text(
+            "on:\n  workflow_dispatch: {}\njobs: {}\n", encoding="utf-8"
+        )
+        result = _invoke("check-environments", "--project-dir", str(tmp_path))
+        assert result.exit_code != 0
+        assert "no `workflow_call` trigger" in result.output
+        assert "customized-workflows" in result.output
+
+    def test_a_github_enterprise_repo_is_queried_on_its_host(self, tmp_path):
+        from kairos_ontology.cli.environment import _split_github_repo
+
+        assert _split_github_repo("ghe.example/acme/dp", tmp_path) == ("ghe.example", "acme/dp")
+        completed = type("Done", (), {"stdout": "https://ghe.example/acme/dp.git\n"})()
+        with patch("subprocess.run", return_value=completed):
+            assert _split_github_repo("acme/dp", tmp_path) == ("ghe.example", "acme/dp")
+            assert _split_github_repo("acme/other", tmp_path) == ("github.com", "acme/other")
 
     def test_no_profile_says_how_to_start(self, tmp_path):
         (tmp_path / "dbt_project.yml").write_text("name: p\nprofile: p\n", encoding="utf-8")
