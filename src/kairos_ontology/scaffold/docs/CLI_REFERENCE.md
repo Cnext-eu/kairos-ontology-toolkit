@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-110 commands.
+112 commands.
 
 ## Index
 
@@ -36,6 +36,7 @@ not reasoning.
 | [`catalog-test`](#catalog-test) | Test catalog resolution for imports. |
 | [`check-ai-config`](#check-ai-config) | Check AI provider configuration and optional reachability (DD-159). |
 | [`check-authored-reports`](#check-authored-reports) | Check the authored reports before they reach a deploy. |
+| [`check-environments`](#check-environments) | Check that every environment can be promoted to, and say what to fix (DD-256). |
 | [`class-disposition`](#class-disposition) | Record why a hub class is deliberately not bound to Silver (DD-231). |
 | [`class-disposition clear`](#class-disposition-clear) | Withdraw recorded dispositions -- as auditable as recording them. |
 | [`class-disposition init`](#class-disposition-init) | Create the ledger, turning undecided classes from warnings into errors. |
@@ -79,6 +80,7 @@ not reasoning.
 | [`harvest-gold`](#harvest-gold) | Diff an edited semantic model against this hub and propose the authoring. |
 | [`hook`](#hook) | Claude Code hooks the hub scaffold wires (DD-245). |
 | [`hook read-context`](#hook-read-context) | Answer a Claude Code Read hook from the JSON on stdin. |
+| [`hub-release`](#hub-release) | Show the hub release this dataplatform deploys, from hub-release.lock (DD-256). |
 | [`import-flatfile`](#import-flatfile) | Import CSV/.xlsx/Parquet flat files as source schema documentation. |
 | [`import-source`](#import-source) | Import source schema YAML and generate/refresh bronze vocabulary TTL. |
 | [`import-tmdl`](#import-tmdl) | Import and inventory TMDL/PBIP files for ontology modeling. |
@@ -286,7 +288,7 @@ kairos-ontology build-glossary [OPTIONS]
 
 ## bump-hub
 
-Pin the hub dbt package in packages.yml to REF's full commit SHA. Run from a dataplatform repository root containing packages.yml (DD-206 §2, §12 item 4). REF is a hub branch, tag, or commit SHA; it is resolved against the hub's GitHub repository -- read from the existing ``git:`` line in packages.yml, commented or not -- to an immutable 40-character commit SHA via `gh api`. The hub package block is uncommented and pinned on first use, and its ``revision:`` is updated in place on every subsequent bump. Fails closed if REF cannot be resolved: packages.yml is left untouched.  Examples: kairos-ontology bump-hub v1.4.0 kairos-ontology bump-hub main kairos-ontology bump-hub 0123456789abcdef0123456789abcdef01234567
+Pin the hub dbt package in packages.yml to REF's full commit SHA. When REF is a hub release carrying the Power BI archive, also write hub-release.lock (tag, commit, archive SHA-256), which the promote workflow deploys (DD-256): the dbt package and the semantic model always move together, through the pull request that commits both. Run from a dataplatform repository root containing packages.yml (DD-206 §2, §12 item 4). REF is a hub branch, tag, or commit SHA; it is resolved against the hub's GitHub repository -- read from the existing ``git:`` line in packages.yml, commented or not -- to an immutable 40-character commit SHA via `gh api`. The hub package block is uncommented and pinned on first use, and its ``revision:`` is updated in place on every subsequent bump. Fails closed if REF cannot be resolved: packages.yml is left untouched.  Examples: kairos-ontology bump-hub v1.4.0 kairos-ontology bump-hub main kairos-ontology bump-hub 0123456789abcdef0123456789abcdef01234567
 
 ```
 kairos-ontology bump-hub [OPTIONS] REF
@@ -366,6 +368,22 @@ kairos-ontology check-authored-reports [OPTIONS]
 |---|---|---|
 | `--reports-dir` | `powerbi/reports` | Directory holding the `<Name>.Report` folders and reports.yml. |
 | `--format` | `text` |  |
+
+
+## check-environments
+
+Check that every environment can be promoted to, and say what to fix (DD-256). For each dbt target in profiles.yml: it resolves (offline unless --online), the vars.kairos entries name real targets, the promote workflow's dev -> uat -> prod path is covered, hub-release.lock agrees with packages.yml, and -- with --github-repo -- a GitHub Environment of the same name exists. Read-only. Exit 1 on any problem.
+
+```
+kairos-ontology check-environments [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--project-dir` | `.` | dbt project directory (holds dbt_project.yml). |
+| `--profiles-dir` |  | Directory holding profiles.yml (default: as dbt -- DBT_PROFILES_DIR, the project directory, then ~/.dbt). |
+| `--online` |  | Also resolve each environment's IDs through the Fabric REST API. |
+| `--github-repo` |  | Also check that each environment has a GitHub Environment (needs `gh`). HOST/OWNER/REPO for GitHub Enterprise; OWNER/REPO takes the host of `origin`. |
 
 
 ## class-disposition
@@ -1043,6 +1061,20 @@ kairos-ontology hook read-context [OPTIONS]
 ```
 
 
+## hub-release
+
+Show the hub release this dataplatform deploys, from hub-release.lock (DD-256). Fails when the lock is malformed, or names a different hub commit than packages.yml pins: the dbt package and the semantic model must come from the same hub commit. Without a lock, prints `deploy=false` -- the promote workflow then builds dbt only.
+
+```
+kairos-ontology hub-release [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--project-dir` | `.` | dbt project directory (holds dbt_project.yml). |
+| `--format` | `text` |  |
+
+
 ## import-flatfile
 
 Import CSV/.xlsx/Parquet flat files as source schema documentation. Reads flat files and produces the standard source schema format (_manifest.yaml + per-table YAML + samples). Use import-source afterwards to generate the bronze vocabulary TTL.  Supported inputs: - Single .csv file → 1 table - Single .xlsx file → 1 table per worksheet - Single .parquet file → 1 table - Directory of .csv/.xlsx/.parquet files → 1 table per file/sheet (non-recursive by default; pass --recursive for nested export trees)  Directory mode tolerates unreadable files: each one is skipped with a warning and the rest are imported (exit 0). If no file in the directory can be read, nothing is written and the exit code is 1. A single file given directly always fails fast. Legacy .xls files are recognized but never readable — convert to .xlsx first.  Examples: kairos-ontology import-flatfile --from exports/customers.csv --system erp kairos-ontology import-flatfile --from data/report.xlsx --system finance kairos-ontology import-flatfile --from exports/orders.parquet --system wms kairos-ontology import-flatfile --from data-exports/ --system legacy-erp kairos-ontology import-flatfile --from nested-exports/ --recursive --system legacy-erp kairos-ontology import-flatfile --from .input/data --system erp \ --exclude-columns "volume,subfolder,table"  Next step after import-flatfile: kairos-ontology import-source --from integration/sources/{system}/
@@ -1124,7 +1156,7 @@ kairos-ontology init [OPTIONS]
 
 ## init-dataplatform
 
-Scaffold a dataplatform dbt project linked to this ontology hub. Run this command from within an ontology-hub repository. It creates a sibling directory with a dbt project pre-configured to consume the hub's projections via dbt deps.  NAME is the project name (default: derived from hub name, e.g., "contoso-ontology-hub" → "contoso-dataplatform").  What it creates: - dbt_project.yml with correct package reference - packages.yml pinned to the hub's current version - profiles.yml (committed, DD-255): one dbt target per environment (dev/uat/prod) for your platform -- the environment authority - macros/extract_source_schema.sql for bronze introspection (fallback; prefer the `extract-schema` CLI command) - macros/generate_schema_name.sql for bare bronze/silver/gold schema names - _sources.yml template with physical binding placeholders - pyproject.toml with uv + toolkit dependency - .github/workflows/pr-validate.yml (dbt deps/parse/compile + binding check) - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd) - .github/fabric/gold-connections.yml.example - fabric/KairosModelBpa.Notebook (advisory post-deploy Best Practice Analyzer run) - README.md with setup instructions - CICD.md with branch, promotion, rollback, and hotfix guidance - CONTRIBUTING.md with branch-naming and PR conventions - <name>.code-workspace opening the hub and this dataplatform together  Examples: kairos-ontology init-dataplatform kairos-ontology init-dataplatform contoso-data --platform databricks
+Scaffold a dataplatform dbt project linked to this ontology hub. Run this command from within an ontology-hub repository. It creates a sibling directory with a dbt project pre-configured to consume the hub's projections via dbt deps.  NAME is the project name (default: derived from hub name, e.g., "contoso-ontology-hub" → "contoso-dataplatform").  What it creates: - dbt_project.yml with correct package reference - packages.yml pinned to the hub's current version - profiles.yml (committed, DD-255): one dbt target per environment (dev/uat/prod) for your platform -- the environment authority - macros/extract_source_schema.sql for bronze introspection (fallback; prefer the `extract-schema` CLI command) - macros/generate_schema_name.sql for bare bronze/silver/gold schema names - _sources.yml template with physical binding placeholders - pyproject.toml with uv + toolkit dependency - .github/workflows/pr-validate.yml (dbt deps/parse/compile + binding check) - .github/workflows/deploy-powerbi-semantic-model.yml (dbt build + fabric-cicd, one environment) - .github/workflows/promote.yml (one commit through dev -> uat -> prod, DD-256) - .github/fabric/gold-connections.yml.example - fabric/KairosModelBpa.Notebook (advisory post-deploy Best Practice Analyzer run) - README.md with setup instructions - CICD.md with branch, promotion, rollback, and hotfix guidance - CONTRIBUTING.md with branch-naming and PR conventions - <name>.code-workspace opening the hub and this dataplatform together  Examples: kairos-ontology init-dataplatform kairos-ontology init-dataplatform contoso-data --platform databricks
 
 ```
 kairos-ontology init-dataplatform [OPTIONS] [NAME]

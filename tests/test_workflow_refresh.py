@@ -188,9 +188,11 @@ _LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
     "github-workflows/copilot-setup-steps.yml":
         "63b90be2aec5ddb4b26b51b3844ba64128491f78660af599ce09e9b19ddaa9e6",
     "dataplatform/.github/workflows/pr-validate.yml.template":
-        "ea40b4f757fd275f5cf73568b15363602e8c28247f82a61738f490dae8ccb823",
+        "2f70f1e37eac6dbf6ce24921a0f8f7212fbf5157a67d57b8c255c0d763baa5bc",
+    "dataplatform/.github/workflows/promote.yml.template":
+        "708d7dd2cb855bb6fafebd5d4f487b9b0408de2ab48ac107c3c1ab546eb59673",
     "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template":
-        "c88be7eb33efc6e843b71f372f904465dc9d7d086a4696c2772dbee80f3224d0",
+        "b96ca1c6856d7dd2a144e2c61c1894bba72b79d2e5b120ec15632ac1ff0a8915",
     "dataplatform/fabric/KairosModelBpa.Notebook/notebook-content.py.template":
         "3f4397ed56eafa311ec5c6f9f887e5a02dd9cbec078013e13c6bed3344b3849d",
     "dataplatform/fabric/KairosModelBpa.Notebook/.platform.template":

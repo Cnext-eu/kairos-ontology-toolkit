@@ -26,6 +26,10 @@ deployment configuration, and runtime tests.
    Gold Warehouse, name it under `vars.kairos.environments.<env>` in `dbt_project.yml`.
    Check each target with `uv run kairos-ontology resolve-environment --target <env>`
    (`--offline` when no Fabric sign-in is at hand).
+   The scaffold also writes the managed `.github/workflows/promote.yml` (DD-256): merging to
+   `main` promotes one commit through `dev`, `uat` and `prod`, each environment waiting for its
+   GitHub Environment's reviewers. Pin the hub with `kairos-ontology bump-hub <release tag>`,
+   which writes `packages.yml` and `hub-release.lock` together, and commit both.
    `--platform` picks where **this dbt project's own silver/gold models write** and which
    adapter is templated — bronze source data can live in any same-workspace item (e.g. a
    Fabric Lakehouse) regardless of the chosen platform; bind it via `database:` in
@@ -38,11 +42,14 @@ deployment configuration, and runtime tests.
 5. Consume the compiler-emitted dbt package at an immutable Git revision or artifact version.
 6. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` against the target adapter.
 7. Validate generated Power BI assets in the selected Fabric/Power BI deployment toolchain when
-   Gold output is consumed. Before the first Power BI deploy, walk the user through
-   `CICD.md` "Fabric deploy prerequisites": one GitHub Environment per target holding
-   `FABRIC_WORKSPACE_ID` and `FABRIC_ITEM_ID` (the Warehouse dbt writes Gold into), a
-   federated credential per Environment, the service-principal tenant setting and workspace
-   role (DD-239). The scaffold includes `fabric/KairosModelBpa.Notebook`, which the
+   Gold output is consumed. Before the first promotion, walk the user through
+   `CICD.md` "Fabric deploy prerequisites" and "Add an environment": one GitHub Environment
+   per dbt target (`dev`, `uat`, `prod`) holding the Azure IDs, required reviewers on `uat` and
+   `prod`, a federated credential per Environment, the service-principal tenant setting and
+   workspace role (DD-239). `FABRIC_WORKSPACE_ID`/`FABRIC_ITEM_ID` are optional once
+   `profiles.yml` identifies the Gold Warehouse (DD-255). Finish with
+   `kairos-ontology check-environments --github-repo <org>/<repo> --online`, which names each
+   missing piece. The scaffold includes `fabric/KairosModelBpa.Notebook`, which the
    deploy workflow runs after publishing as an advisory Best Practice Analyzer check (DD-238).
    To keep its findings, create a lakehouse and set the `FABRIC_BPA_LAKEHOUSE_ID` and
    `FABRIC_BPA_LAKEHOUSE_NAME` repository variables. Without them findings are only printed in

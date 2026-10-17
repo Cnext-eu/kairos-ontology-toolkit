@@ -1735,7 +1735,9 @@ def init_dataplatform(name, dest, platform, org_override):
       - _sources.yml template with physical binding placeholders
       - pyproject.toml with uv + toolkit dependency
       - .github/workflows/pr-validate.yml (dbt deps/parse/compile + binding check)
-      - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd)
+      - .github/workflows/deploy-powerbi-semantic-model.yml (dbt build + fabric-cicd,
+        one environment)
+      - .github/workflows/promote.yml (one commit through dev -> uat -> prod, DD-256)
       - .github/fabric/gold-connections.yml.example
       - fabric/KairosModelBpa.Notebook (advisory post-deploy Best Practice Analyzer run)
       - README.md with setup instructions
@@ -1994,6 +1996,15 @@ def init_dataplatform(name, dest, platform, org_override):
         deploy_wf_dst.write_text(wf_content, encoding="utf-8")
         click.echo("  ✓ .github/workflows/deploy-powerbi-semantic-model.yml")
 
+    # DD-256: the promotion workflow, which calls the deploy workflow once per environment.
+    promote_wf_src = _DATAPLATFORM_SCAFFOLD / ".github" / "workflows" / "promote.yml.template"
+    if promote_wf_src.is_file():
+        promote_content = promote_wf_src.read_text(encoding="utf-8")
+        for placeholder, value in subs.items():
+            promote_content = promote_content.replace(placeholder, value)
+        (github_dir / "workflows" / "promote.yml").write_text(promote_content, encoding="utf-8")
+        click.echo("  ✓ .github/workflows/promote.yml")
+
     # No `deployment-settings.json.example` any more (DD-239): nothing ever read it, and it
     # restated secrets and item types the deploy workflow and CICD.md already own.
 
@@ -2093,9 +2104,12 @@ def init_dataplatform(name, dest, platform, org_override):
     click.echo("   # Edit models/_sources.yml with actual database/schema")
     click.echo("   dbt deps")
     click.echo("   dbt build --target dev")
+    click.echo("   # Pin a hub release: kairos-ontology bump-hub <tag>  (packages.yml + lock)")
     click.echo(
-        "   # Configure Fabric secrets and run .github/workflows/deploy-powerbi-semantic-model.yml"
+        "   # Set up dev/uat/prod GitHub Environments (CICD.md), then: "
+        "kairos-ontology check-environments"
     )
+    click.echo("   # Merging to main then promotes through .github/workflows/promote.yml")
 
 
 # ---------------------------------------------------------------------------
