@@ -191,8 +191,12 @@ class TestCheckEnvironments:
         assert "repo:acme/dp:environment:prod" in result.output
         assert "KAIROS_PROMOTION_PATH" in result.output  # uat is missing from the path
 
-    def test_an_endpoint_only_the_deploy_sets_is_deferred_offline(self, tmp_path):
-        """One profile whose targets read FABRIC_SERVER, set per GitHub Environment."""
+    def test_an_endpoint_read_from_an_env_var_is_named_as_the_problem(self, tmp_path):
+        """The deploy passes dbt no GitHub Environment variable, so the endpoint is unset.
+
+        `resolve-environment --offline` still defers it (a local `.env` may set it), but the
+        promotion check fails with the fix: the endpoint belongs in profiles.yml.
+        """
         _platform(tmp_path)
         profile = yaml.safe_load((tmp_path / "profiles.yml").read_text("utf-8"))
         for output in profile["platform"]["outputs"].values():
@@ -201,10 +205,13 @@ class TestCheckEnvironments:
 
         result = _invoke("check-environments", "--project-dir", str(tmp_path))
 
-        assert result.exit_code == 0, result.output
-        assert "endpoint from FABRIC_SERVER -- set it in the 'uat' GitHub Environment" in (
-            result.output
+        assert result.exit_code != 0
+        assert "uat: the endpoint reads FABRIC_SERVER" in result.output
+        assert "write the 'uat' target's endpoint into profiles.yml" in result.output
+        offline = _invoke(
+            "resolve-environment", "--target", "uat", "--project-dir", str(tmp_path), "--offline"
         )
+        assert offline.exit_code == 0, offline.output
         # Online (as the deploy runs) an unset variable still fails.
         online = _invoke(
             "resolve-environment", "--target", "uat", "--project-dir", str(tmp_path)
@@ -335,3 +342,56 @@ class TestHubAccessAndAzureLogin:
         (login,) = [s for s in steps if s.get("uses") == "azure/login@v2"]
         assert login["with"]["client-id"] == "${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}"
         assert login["with"]["tenant-id"] == "${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}"
+
+
+
+class TestShellVariablesSurviveRendering:
+    """#1114: `${HUB_REPO}` in the deploy workflow became `$<hub repo>` on every render."""
+
+    TEMPLATE = (
+        'env:\n  HUB_REPO: "{HUB_REPO}"\n'
+        'run: gh api "repos/${HUB_ORG}/${HUB_REPO}/commits/x" # {ORG}\n'
+    )
+
+    def test_render_leaves_shell_variables_alone(self):
+        from kairos_ontology.cli.workflow_refresh import render
+
+        rendered = render(self.TEMPLATE, {"HUB_REPO": "hub", "ORG": "acme"})
+        assert 'HUB_REPO: "hub"' in rendered
+        assert "repos/${HUB_ORG}/${HUB_REPO}/commits" in rendered
+        assert "# acme" in rendered
+
+    def test_a_correct_rendering_is_current_and_the_legacy_one_is_repaired(self, tmp_path):
+        from kairos_ontology.cli.workflow_refresh import classify, render
+
+        target = tmp_path / "deploy.yml"
+        target.write_text(render(self.TEMPLATE, {"HUB_REPO": "hub", "ORG": "acme"}), "utf-8")
+        current = classify(target, self.TEMPLATE)
+        assert current.state == "current"
+        assert current.substitutions == {"HUB_REPO": "hub", "ORG": "acme"}
+
+        legacy = self.TEMPLATE.replace("{HUB_REPO}", "hub").replace("{ORG}", "acme")
+        target.write_text(legacy, encoding="utf-8")
+        outdated = classify(target, self.TEMPLATE)
+        assert outdated.state == "outdated" and outdated.refreshable
+        assert outdated.substitutions == {"HUB_REPO": "hub", "ORG": "acme"}
+        assert "${HUB_REPO}" in render(self.TEMPLATE, outdated.substitutions)
+
+    def test_init_dataplatform_keeps_the_deploy_workflows_shell_variables(self):
+        from kairos_ontology.cli.setup import _render_scaffold
+
+        text = (_WORKFLOWS / "deploy-powerbi-semantic-model.yml.template").read_text("utf-8")
+        rendered = _render_scaffold(text, {"{ORG}": "acme", "{HUB_REPO}": "hub"})
+        assert '--repo "${HUB_ORG}/${HUB_REPO}"' in rendered
+        assert 'HUB_REPO: "hub"' in rendered and 'HUB_ORG: "acme"' in rendered
+
+    def test_a_missing_deploy_workflow_is_installed_from_the_pin(self, tmp_path):
+        from kairos_ontology.cli.operations import _derived_workflow_substitutions
+
+        _platform(tmp_path)
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["dbt-fabric>=1.11"]\n', encoding="utf-8"
+        )
+        derived = _derived_workflow_substitutions(tmp_path)
+        assert derived["ORG"] == "acme" and derived["HUB_REPO"] == "customer-ontology-hub"
+        assert "DBT_CI_PROFILE_YAML" in derived

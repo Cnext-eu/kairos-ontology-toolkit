@@ -5,7 +5,24 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.27.0** is the latest GA release (2026-10-17). A minor release:
+> **Release status.** **5.27.1** is the latest GA release (2026-10-17), superseding
+> **5.27.0** (the same day). A patch release found adopting `promote.yml` on a client
+> dataplatform:
+>
+> - Scaffolded deploy workflows keep their `${HUB_REPO}` shell variable; it was rendered to
+>   `$<hub repo>`, breaking the release download. `update --refresh-workflows` repairs an
+>   existing one.
+> - `update --refresh-workflows` installs a missing deploy or PR workflow.
+> - `check-environments` says to write an endpoint into `profiles.yml`, because the deploy
+>   cannot read it from a GitHub Environment variable.
+>
+> **What to expect on the first run after upgrading from 5.27.0.** On a dataplatform,
+> `update --check` reports `deploy-powerbi-semantic-model.yml` as outdated (unless it is
+> declared customized); `update --refresh-workflows` rewrites it with the shell variables
+> intact.
+>
+> **Upgrading from 5.26.1?** 5.27.0's first-run notes still apply on top of the above. It
+> was a minor release:
 > DEV → UAT → PROD promotion is one managed workflow, and the dbt target is the environment
 > authority (#1114):
 >
@@ -257,6 +274,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.27.1] — 2026-10-17
+
+### Fixed
+- **Scaffolded deploy workflows kept their own shell variables.** Rendering substituted
+  `{HUB_REPO}` inside the shell variable `${HUB_REPO}`, so every
+  `deploy-powerbi-semantic-model.yml` written by `init-dataplatform` (since #138) checked and
+  downloaded the hub release from `$<hub repo>`, a repository path that does not exist. Two
+  changes fix it:
+  - `init-dataplatform` and `update --refresh-workflows` now leave `${...}` alone;
+  - a workflow rendered the old way is reported as **outdated** rather than customized, so
+    `update --refresh-workflows` repairs it.
+- **`update --refresh-workflows` installs a missing deploy or PR workflow.** The hub org and
+  repo now come from the `packages.yml` pin. Before, a dataplatform that deleted a
+  customized copy to take the managed one could not get it back, and `promote.yml` had
+  nothing to call.
+- **`check-environments` no longer advises setting an endpoint in the GitHub Environment.**
+  The deploy passes dbt only its Azure credentials, so a profile endpoint read through
+  `env_var()` is unset there. That is now a problem, and the fix is to write the endpoint
+  into `profiles.yml`. `resolve-environment --offline` still defers it.
 
 ## [5.27.0] — 2026-10-17
 

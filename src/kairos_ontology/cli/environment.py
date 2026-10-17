@@ -283,14 +283,17 @@ def check_environments_cmd(
             problem(f"{name}: {exc}")
             continue
         if resolved.deferred_env:
-            detail = (
-                f"endpoint from {', '.join(resolved.deferred_env)} -- set it in the "
-                f"{resolved.environment!r} GitHub Environment"
+            # The managed deploy passes dbt only the Azure credentials, never an arbitrary
+            # GitHub Environment variable, so an endpoint read through env_var() is unset
+            # there and both the dbt build and the resolution fail (#1114).
+            problem(
+                f"{resolved.environment}: the endpoint reads "
+                f"{', '.join(resolved.deferred_env)}, which the deploy workflow does not "
+                f"pass to dbt -- write the {resolved.environment!r} target's endpoint into "
+                "profiles.yml (an endpoint and a database name are not secrets)"
             )
-        else:
-            detail = (
-                resolved.gold_item_id or resolved.server_hostname or "IDs resolved at deploy"
-            )
+            continue
+        detail = resolved.gold_item_id or resolved.server_hostname or "IDs resolved at deploy"
         click.echo(f"  ✓ {resolved.environment} ({resolved.target_type}): {detail}")
 
     try:

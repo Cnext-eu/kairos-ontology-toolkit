@@ -1569,6 +1569,17 @@ def new_repo(
     print("  uv sync")
 
 
+def _render_scaffold(content: str, subs: dict[str, str]) -> str:
+    """Substitute ``{NAME}`` placeholders, never the shell's ``${NAME}`` (#1114).
+
+    The same renderer ``update --refresh-workflows`` uses, so a file this writes is one the
+    refresh recognises as current.
+    """
+    from .workflow_refresh import render
+
+    return render(content, {key.strip("{}"): value for key, value in subs.items()})
+
+
 def _ci_profile_yaml_block(profile_name: str, platform: str, *, indent: str = "          ") -> str:
     """Render an indented, credential-free dbt ``ci`` target for ``pr-validate.yml``.
 
@@ -1848,8 +1859,7 @@ def init_dataplatform(name, dest, platform, org_override):
             content = src.read_text(encoding="utf-8")
             if src_name == "profiles.yml.template":
                 content = _activate_profile_platform(content, platform)
-            for placeholder, value in subs.items():
-                content = content.replace(placeholder, value)
+            content = _render_scaffold(content, subs)
             (repo_dir / dst_name).write_text(content, encoding="utf-8")
             click.echo(f"  ✓ {dst_name}")
     click.echo(f"    toolkit {toolkit_ref} (channel '{toolkit_channel}')")
@@ -1937,8 +1947,7 @@ def init_dataplatform(name, dest, platform, org_override):
         src = _DATAPLATFORM_SCAFFOLD / "models" / "_sources.yml.template"
         if src.exists():
             content = src.read_text(encoding="utf-8")
-            for placeholder, value in subs.items():
-                content = content.replace(placeholder, value)
+            content = _render_scaffold(content, subs)
             (repo_dir / "models" / "_sources.yml").write_text(content, encoding="utf-8")
             click.echo("  ✓ models/_sources.yml (template)")
 
@@ -1974,8 +1983,7 @@ def init_dataplatform(name, dest, platform, org_override):
     pr_wf_dst = github_dir / "workflows" / "pr-validate.yml"
     if pr_wf_src.is_file():
         pr_wf_content = pr_wf_src.read_text(encoding="utf-8")
-        for placeholder, value in subs.items():
-            pr_wf_content = pr_wf_content.replace(placeholder, value)
+        pr_wf_content = _render_scaffold(pr_wf_content, subs)
         pr_wf_dst.parent.mkdir(parents=True, exist_ok=True)
         pr_wf_dst.write_text(pr_wf_content, encoding="utf-8")
         click.echo("  ✓ .github/workflows/pr-validate.yml")
@@ -1990,8 +1998,7 @@ def init_dataplatform(name, dest, platform, org_override):
     deploy_wf_dst = github_dir / "workflows" / "deploy-powerbi-semantic-model.yml"
     if deploy_wf_src.is_file():
         wf_content = deploy_wf_src.read_text(encoding="utf-8")
-        for placeholder, value in subs.items():
-            wf_content = wf_content.replace(placeholder, value)
+        wf_content = _render_scaffold(wf_content, subs)
         deploy_wf_dst.parent.mkdir(parents=True, exist_ok=True)
         deploy_wf_dst.write_text(wf_content, encoding="utf-8")
         click.echo("  ✓ .github/workflows/deploy-powerbi-semantic-model.yml")
@@ -2000,8 +2007,7 @@ def init_dataplatform(name, dest, platform, org_override):
     promote_wf_src = _DATAPLATFORM_SCAFFOLD / ".github" / "workflows" / "promote.yml.template"
     if promote_wf_src.is_file():
         promote_content = promote_wf_src.read_text(encoding="utf-8")
-        for placeholder, value in subs.items():
-            promote_content = promote_content.replace(placeholder, value)
+        promote_content = _render_scaffold(promote_content, subs)
         (github_dir / "workflows" / "promote.yml").write_text(promote_content, encoding="utf-8")
         click.echo("  ✓ .github/workflows/promote.yml")
 
@@ -2014,8 +2020,7 @@ def init_dataplatform(name, dest, platform, org_override):
     gold_conn_dst = github_dir / "fabric" / "gold-connections.yml.example"
     if gold_conn_src.is_file():
         gold_conn_content = gold_conn_src.read_text(encoding="utf-8")
-        for placeholder, value in subs.items():
-            gold_conn_content = gold_conn_content.replace(placeholder, value)
+        gold_conn_content = _render_scaffold(gold_conn_content, subs)
         gold_conn_dst.parent.mkdir(parents=True, exist_ok=True)
         gold_conn_dst.write_text(gold_conn_content, encoding="utf-8")
         click.echo("  ✓ .github/fabric/gold-connections.yml.example")
