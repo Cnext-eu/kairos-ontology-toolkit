@@ -30,7 +30,7 @@ from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import RDF, RDFS
 
 from .ddd_context_projector import STATUS_UNBOUND, _label, _silver_label
-from .shared import _toolkit_version, class_ancestors, effective_domain_classes
+from .shared import class_ancestors, effective_domain_classes
 from .ubiquitous_language_projector import LanguageModel
 from .uri_utils import extract_local_name
 
@@ -127,7 +127,6 @@ def render_concept_guide(
         "> bindings; regenerate it, never edit it. The narrative — why the model is shaped this",
         "> way, the workshop's own words — belongs in a context's design note or a companion page.",
         "",
-        f"**Toolkit version:** {_toolkit_version()} · "
         f"**Sample values:** {'included' if samples_per_property else 'off (opt in with `projections.concept_guide.samples: true`)'}",
         "",
         "## Three names, one concept",

@@ -735,6 +735,8 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
                     f"   Run `uv run kairos-ontology update` to finish the upgrade."
                 )
                 raise SystemExit(1)
+            if refresh_code == 0 and not is_dataplatform:
+                _print_regeneration_reminder()
             raise SystemExit(refresh_code)
 
     if is_dataplatform:
@@ -1245,6 +1247,29 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
         if not devcontainer_dst.exists() and devcontainer_src.is_dir():
             shutil.copytree(devcontainer_src, devcontainer_dst)
             print("  ✓ Created .devcontainer/ (VS Code Dev Container with Node.js)")
+
+
+#: The commands whose output a hub tracks and `pr-validate.yml` regenerates and diffs.
+#: Kept in step with that workflow's `compile` and `architecture` jobs.
+HUB_REGENERATION_COMMANDS = (
+    "uv run kairos-ontology compile --all --emit --confirm-emit",
+    "uv run kairos-ontology project --target erd --target ddd",
+)
+
+
+def _print_regeneration_reminder() -> None:
+    """Name the commands that bring a hub's tracked output up to the new toolkit (#1121).
+
+    An upgrade changes no authored input, but a new toolkit can draw or emit different
+    bytes, and CI fails the pull request on any difference from what is committed. The
+    upgrade itself does not regenerate: emitting is a reviewable change of its own.
+    """
+    print(
+        "\nNext: regenerate the hub's tracked output with the new toolkit and commit it.\n"
+        "CI regenerates the same files and fails the pull request on any difference:"
+    )
+    for command in HUB_REGENERATION_COMMANDS:
+        print(f"  {command}")
 
 
 def _upgrade_refmodels(version_tag: str | None) -> str:

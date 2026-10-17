@@ -743,3 +743,73 @@ class TestReadHubChannel:
         monkeypatch.chdir(tmp_path)
 
         assert _read_hub_channel() == "preview"
+
+
+class TestUpdateUpgradeNamesTheRegeneration:
+    """A hub upgrade names the commands CI diffs against, so the first push is not red
+    (#1121)."""
+
+    @patch("kairos_ontology.cli.operations._upgrade_refmodels")
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_hub_upgrade_prints_every_regeneration_command(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_refmodels,
+        runner, tmp_path
+    ):
+        from kairos_ontology.cli.operations import HUB_REGENERATION_COMMANDS
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_scaffolded_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 0, result.output
+        for command in HUB_REGENERATION_COMMANDS:
+            assert command in result.output
+
+    @patch("kairos_ontology.cli.operations._upgrade_refmodels")
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._refresh_with_installed_toolkit", return_value=3)
+    @patch("subprocess.run")
+    def test_a_failed_refresh_prints_no_next_step(
+        self, mock_run, mock_refresh, mock_channel, mock_resolve, mock_refmodels,
+        runner, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_scaffolded_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 3
+        assert "kairos-ontology project --target erd" not in result.output
+
+    @patch("kairos_ontology.cli.operations._managed_dataplatform_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("subprocess.run")
+    def test_a_dataplatform_upgrade_names_no_hub_commands(
+        self, mock_run, mock_channel, mock_resolve, mock_managed, runner, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_new_dataplatform_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 0, result.output
+        assert "kairos-ontology project --target erd" not in result.output
+
+    def test_the_commands_are_the_ones_pr_validate_diffs(self):
+        from kairos_ontology.cli.operations import HUB_REGENERATION_COMMANDS
+
+        workflow = (
+            SCAFFOLD_TEMPLATE.parent / "github-workflows" / "pr-validate.yml"
+        ).read_text(encoding="utf-8")
+        for command in HUB_REGENERATION_COMMANDS:
+            ci_form = command.replace("uv run ", "uv run --no-sync ", 1)
+            assert ci_form in workflow, command

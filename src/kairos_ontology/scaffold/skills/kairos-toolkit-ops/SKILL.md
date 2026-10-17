@@ -20,7 +20,13 @@ generated diffs.
   pinned release (or `--version <ver>` for a specific version).
 
 After an update, inspect `git diff`, run managed/scaffold tests, and compile representative v5
-bindings. Updating reference models is explicit: inspect the ontology closure
+bindings. A hub then regenerates its tracked output with the new toolkit and commits it, or
+`pr-validate.yml` fails on the difference: `compile --all --emit --confirm-emit` and
+`project --target erd --target ddd` (`update --upgrade` prints both). Diagrams and the DDD
+files carry no toolkit version (#1121), so a release that draws nothing differently leaves
+them unchanged.
+
+Updating reference models is explicit: inspect the ontology closure
 (`show-class-inventory --domain <domain>`, `explain-term`; never a `.ttl` as text, DD-103)
 and compiler diagnostics before accepting changed semantics.
 
