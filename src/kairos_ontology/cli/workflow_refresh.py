@@ -43,6 +43,13 @@ _PLACEHOLDER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 #: make recovery ambiguous.
 _SHELL_ESCAPED = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 
+#: A placeholder the scaffold does substitute: ``{NAME}`` not preceded by ``$``. The
+#: renderers used to replace every ``{NAME}``, so the deploy workflow's shell variable
+#: ``${HUB_REPO}`` became ``$<hub repo>`` and its release lookups pointed at a repository
+#: that does not exist (#1114). :func:`classify` still recognises that legacy rendering,
+#: as an outdated generation, so a refresh repairs it.
+_SUBSTITUTED = re.compile(r"(?<!\$)\{[A-Za-z_][A-Za-z0-9_]*\}")
+
 
 @dataclass(frozen=True, slots=True)
 class WorkflowStatus:
@@ -63,7 +70,16 @@ class WorkflowStatus:
         return self.state in {"missing", "outdated"}
 
 
-def _template_pattern(template: str) -> re.Pattern[str]:
+def _tokens(template: str, *, legacy: bool) -> list[str]:
+    """Split *template* into literal text and the placeholders a renderer substitutes.
+
+    *legacy* reproduces the pre-#1114 renderers, which also substituted inside ``${...}``.
+    """
+    pattern = _PLACEHOLDER if legacy else _SUBSTITUTED
+    return [token for token in re.split(f"({pattern.pattern})", template) if token]
+
+
+def _template_pattern(template: str, *, legacy: bool = False) -> re.Pattern[str]:
     """Build a regex matching any rendering of *template*.
 
     Each distinct placeholder becomes one capture group; repeat occurrences become
@@ -73,10 +89,9 @@ def _template_pattern(template: str) -> re.Pattern[str]:
     parts: list[str] = []
     seen: dict[str, int] = {}
     index = 0
-    for token in re.split(r"(\{[A-Za-z_][A-Za-z0-9_]*\})", template):
-        if not token:
-            continue
-        if _PLACEHOLDER.fullmatch(token):
+    substituted = _PLACEHOLDER if legacy else _SUBSTITUTED
+    for token in _tokens(template, legacy=legacy):
+        if substituted.fullmatch(token):
             name = token[1:-1]
             if name in seen:
                 parts.append(f"\\{seen[name]}")
@@ -89,17 +104,21 @@ def _template_pattern(template: str) -> re.Pattern[str]:
     return re.compile("".join(parts) + r"\Z", re.DOTALL)
 
 
-def _placeholder_names(template: str) -> list[str]:
+def _placeholder_names(template: str, *, legacy: bool = False) -> list[str]:
+    """Placeholder names in capture-group order, exactly as :func:`_template_pattern`."""
     names: list[str] = []
-    masked = _SHELL_ESCAPED.sub("", template)
-    for match in _PLACEHOLDER.finditer(masked):
-        name = match.group()[1:-1]
-        if name not in names:
-            names.append(name)
+    substituted = _PLACEHOLDER if legacy else _SUBSTITUTED
+    for token in _tokens(template, legacy=legacy):
+        if substituted.fullmatch(token):
+            name = token[1:-1]
+            if name not in names:
+                names.append(name)
     return names
 
 
-def recover_substitutions(template: str, actual: str) -> dict[str, str] | None:
+def recover_substitutions(
+    template: str, actual: str, *, legacy: bool = False
+) -> dict[str, str] | None:
     """Return the values *actual* was rendered with, or ``None`` if it was modified.
 
     ``None`` is the conservative answer: it means the file is not byte-for-byte some
@@ -107,18 +126,22 @@ def recover_substitutions(template: str, actual: str) -> dict[str, str] | None:
     stale generation, possibly a deliberate local change. Only the caller's knowledge of
     which templates the toolkit has shipped can tell those apart.
     """
-    match = _template_pattern(template).match(actual)
+    match = _template_pattern(template, legacy=legacy).match(actual)
     if match is None:
         return None
-    return dict(zip(_placeholder_names(template), match.groups(), strict=False))
+    recovered = dict(zip(_placeholder_names(template, legacy=legacy), match.groups(), strict=False))
+    # A legacy rendering left a name the scaffold never supplied as ``{NAME}``; that is not a
+    # value, and carrying it into a refresh would only re-render the placeholder.
+    return {name: value for name, value in recovered.items() if value != f"{{{name}}}"}
 
 
 def render(template: str, substitutions: dict[str, str]) -> str:
-    """Render *template*, leaving unknown placeholders untouched."""
-    rendered = template
-    for name, value in substitutions.items():
-        rendered = rendered.replace(f"{{{name}}}", value)
-    return rendered
+    """Render *template*, leaving unknown placeholders and shell ``${...}`` untouched."""
+
+    def replace(match: re.Match[str]) -> str:
+        return substitutions.get(match.group()[1:-1], match.group())
+
+    return _SUBSTITUTED.sub(replace, template)
 
 
 def classify(
@@ -141,8 +164,13 @@ def classify(
     if current is not None:
         return WorkflowStatus(path, "current", current)
 
-    for previous in superseded_templates:
-        recovered = recover_substitutions(previous, actual)
+    # The legacy rendering of the current template is outdated, not customized: it is the
+    # same file with broken shell variables, and a refresh repairs it (#1114).
+    for previous, legacy in (
+        (current_template, True),
+        *((template, mode) for template in superseded_templates for mode in (False, True)),
+    ):
+        recovered = recover_substitutions(previous, actual, legacy=legacy)
         if recovered is not None:
             return WorkflowStatus(path, "outdated", recovered)
 

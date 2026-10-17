@@ -240,7 +240,21 @@ def _derived_workflow_substitutions(repo_root: Path) -> dict[str, str]:
         return {}
     from .setup import _ci_profile_yaml_block
 
-    return {"DBT_CI_PROFILE_YAML": _ci_profile_yaml_block(profile.strip(), adapter)}
+    derived = {"DBT_CI_PROFILE_YAML": _ci_profile_yaml_block(profile.strip(), adapter)}
+    # The deploy workflow's {ORG}/{HUB_REPO} name the hub, which the packages.yml pin
+    # already records (#1114): without them a missing deploy workflow could not be
+    # installed, and promote.yml would have nothing to call.
+    packages = repo_root / "packages.yml"
+    if packages.is_file():
+        try:
+            org, _, repo = _parse_hub_package_pin(
+                packages.read_text(encoding="utf-8")
+            ).org_repo.partition("/")
+        except (OSError, ValueError):
+            org = repo = ""
+        if org and repo:
+            derived.update({"ORG": org, "HUB_REPO": repo})
+    return derived
 
 
 def _migrate_dataplatform_custom_models(repo_root: Path, check: bool) -> None:
