@@ -24,7 +24,8 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
-# Schema routing per environment
+# Custom schema for this project's own models. dbt prefixes it with the target's
+# `schema`, so the environment is chosen by `--target`, not here.
 models:
   +schema: silver
 

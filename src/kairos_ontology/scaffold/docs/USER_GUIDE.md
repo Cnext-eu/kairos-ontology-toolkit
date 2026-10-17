@@ -125,12 +125,12 @@ adapter: databricks
 
 gold:
   databricks_connection:
-    default_environment: DEV
+    default_environment: dev
     environments:
-      DEV:
+      dev:
         server_hostname: adb-1111111111111111.11.azuredatabricks.net
         http_path: /sql/1.0/warehouses/dev0000000000000
-      PROD:
+      prod:
         server_hostname: adb-2222222222222222.22.azuredatabricks.net
         http_path: /sql/1.0/warehouses/prod000000000000
 ```

@@ -157,7 +157,7 @@ def test_gold_consumes_exact_shaped_registry_without_rebuilding(tmp_path, monkey
     assert observed["domain"] == "party"
     assert observed["parity"]["authority"] == "compile-plan"
     assert observed["parity"]["provenance_hash"] == plan.provenance_hash
-    assert observed["connection"].default_environment == "DEV"
+    assert observed["connection"].default_environment == "dev"
     assert (
         observed["connection"].default.server_hostname
         == "adb-1111111111111111.11.azuredatabricks.net"

@@ -61,12 +61,12 @@ warehouse. Authoring cannot be inferred from the ontology, so declare it per env
 ```yaml
 gold:
   databricks_connection:
-    default_environment: DEV
+    default_environment: dev
     environments:
-      DEV:
+      dev:
         server_hostname: adb-1111111111111111.11.azuredatabricks.net
         http_path: /sql/1.0/warehouses/dev0000000000000
-      PROD:
+      prod:
         server_hostname: adb-2222222222222222.22.azuredatabricks.net
         http_path: /sql/1.0/warehouses/prod000000000000
 ```
@@ -75,8 +75,15 @@ The projected TMDL partitions carry the `default_environment` values, and a gene
 fabric-cicd `parameter.yml` (at the root of the semantic-model package) rewrites them for the
 environment being deployed to. `default_environment` may be omitted only with a single
 environment. Gold projection fails closed with `gold.databricks-connection-missing` until the
-block exists. `adapter: fabric` needs none of this: a Direct Lake partition resolves its binding
-from the workspace it lands in.
+block exists. Environment keys are case-insensitive and normalised to lowercase (`dev`, `uat`,
+`prod`), the spelling dbt targets and the deploy use.
+
+`adapter: fabric-warehouse` (Direct Lake) needs the same thing under
+`gold.direct_lake_connection`: per environment, the `workspace_id` and the `item_id` of the
+Warehouse dbt writes Gold into. A Direct Lake partition's OneLake URL embeds both, and Gold
+projection fails closed with `gold.direct-lake-connection-missing` without the block. An
+environment the hub should not know about can instead be supplied by the dataplatform
+(`.github/fabric/gold-connections.yml`, see its `CICD.md`).
 
 ## Pin the accelerator (multi-pack hubs)
 

@@ -130,12 +130,16 @@ Never merge the old production branch wholesale into current `main`.
 
 Set these up once per target before the first deploy (DD-239):
 
-- **One GitHub Environment per target** (`DEV`, `UAT`, `PROD`, matching the environment keys
-  in the hub's `parameter.yml`; keys are case-sensitive). Each holds `FABRIC_WORKSPACE_ID`,
-  `FABRIC_ITEM_ID` (the Warehouse dbt writes Gold into) and the Azure IDs `AZURE_CLIENT_ID`
-  and `AZURE_TENANT_ID`. The two Fabric IDs may be Environment variables or secrets; every
-  step reads the variable first and falls back to the secret. The Azure IDs are secrets. Add
-  required reviewers on UAT and PROD to gate promotion.
+- **One GitHub Environment per target**, named like the dbt target: `dev`, `uat`, `prod`.
+  Environment keys are case-insensitive and normalised to lowercase everywhere (#1114) -- the
+  deploy's `target_environment`, the hub's `parameter.yml` and `gold-connections.yml` -- and
+  GitHub matches Environment names case-insensitively, so existing `DEV`/`UAT`/`PROD`
+  Environments keep working. Each holds `FABRIC_WORKSPACE_ID`, `FABRIC_ITEM_ID` (the
+  Warehouse dbt writes Gold into) and the Azure IDs `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`
+  (`AZURE_SUBSCRIPTION_ID` is optional). The two Fabric IDs may be Environment variables or
+  secrets; every step reads the variable first and falls back to the secret. The Azure IDs
+  are secrets. A value set on the repository instead is visible in every Environment. Add
+  required reviewers on `uat` and `prod` to gate promotion.
 - **An Entra ID app (service principal) with a federated credential per Environment.** The
   subject is `repo:<org>/<repo>:environment:<ENV>`. *Upgrading from a workflow without
   Environments:* the subject used to be `repo:<org>/<repo>:ref:refs/heads/<branch>`, so
@@ -237,14 +241,19 @@ Instead, declare the workspace and item IDs this platform owns in
 
 ```yaml
 environments:
-  PROD:
+  uat:
+    workspace_id: "${FABRIC_WORKSPACE_ID}"
+    item_id: "${FABRIC_ITEM_ID}"
+  prod:
     workspace_id: "${FABRIC_WORKSPACE_ID}"
     item_id: "${FABRIC_ITEM_ID}"
 ```
 
 A whole value written as `${FABRIC_WORKSPACE_ID}` or `${FABRIC_ITEM_ID}` is resolved from the
-repository variable (or secret) of that name, which the deploy workflow passes into the
-override step, so real GUIDs need never be committed. No other `${NAME}` can resolve: a
+variable (or secret) of that name in the deploy's GitHub Environment, which the deploy workflow
+passes into the override step, so real GUIDs need never be committed. A hub on the Databricks
+adapter takes `server_hostname` and `http_path` per environment instead; only the entries of
+the matching kind are rewritten. No other `${NAME}` can resolve: a
 workflow step only sees the environment it is given. For the `fabric-warehouse` adapter,
 `item_id` is the item ID of the Warehouse dbt writes Gold into (`lakehouse_id` is a deprecated
 alias). The deploy workflow applies this after the archive's SHA-256 has been
@@ -259,8 +268,9 @@ verified, via `kairos-ontology apply-gold-connection`, which:
 - keeps the hub's own values when the file is absent or declares no matching environment;
 - **fails the deploy** when the archive carries no `parameter.yml` (a release packaged before
   the toolkit shipped it: re-release the hub), or when `parameter.yml` does not declare the
-  target environment. Keys are case-sensitive. Before this, both cases silently deployed the
-  hub's default workspace to every environment.
+  target environment. Keys are compared after lowercasing, so `DEV` and `dev` are one
+  environment; an older hub's uppercase keys are renamed and the rename is logged. Before
+  this, both cases silently deployed the hub's default workspace to every environment.
 
 ### Advisory Best Practice Analyzer run
 

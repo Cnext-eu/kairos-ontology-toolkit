@@ -25,14 +25,22 @@
 #
 # Copy to `gold-connections.yml` (same directory). A whole value written as
 # ${FABRIC_WORKSPACE_ID} or ${FABRIC_ITEM_ID} is resolved at deploy time from the
-# repository VARIABLE (or secret) of that name -- the deploy workflow passes exactly those
-# two into the override step, so no other ${NAME} can resolve. `item_id` is the Fabric
+# variable (or secret) of that name in the GitHub Environment the deploy runs in, falling
+# back to the repository's -- the deploy workflow passes exactly those two into the
+# override step, so no other ${NAME} can resolve. `item_id` is the Fabric
 # item Gold lives in: for the fabric-warehouse adapter, the Warehouse dbt writes Gold into
 # (`lakehouse_id` is still accepted as a deprecated alias). With the deploy job running in
 # a GitHub Environment (DD-239), each Environment supplies its own two values, so one
 # entry per environment name with the same two references is all this file needs.
+#
+# Environment keys are case-insensitive and normalised to lowercase (#1114): `dev`, `uat`,
+# `prod`, the same spelling as the dbt targets. A hub on the Databricks adapter takes
+# `server_hostname` and `http_path` per environment instead of the two IDs.
 
 environments:
-  PROD:
+  uat:
+    workspace_id: "${FABRIC_WORKSPACE_ID}"
+    item_id: "${FABRIC_ITEM_ID}"
+  prod:
     workspace_id: "${FABRIC_WORKSPACE_ID}"
     item_id: "${FABRIC_ITEM_ID}"

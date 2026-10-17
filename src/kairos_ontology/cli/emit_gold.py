@@ -819,8 +819,12 @@ def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: 
 
     - the package carries no `parameter.yml` (a release packaged before the toolkit
       shipped it -- re-release the hub);
-    - after any override, `parameter.yml` does not declare ENVIRONMENT, e.g. a typo or a
-      `DEV`/`dev` casing mismatch, which fabric-cicd would silently skip.
+    - after any override, `parameter.yml` does not declare ENVIRONMENT, e.g. a typo,
+      which fabric-cicd would silently skip.
+
+    Environment keys are case-insensitive (#1114): ENVIRONMENT, the override file's keys
+    and the shipped `parameter.yml` keys are all lowercased, so pass fabric-cicd the
+    lowercase key too. An older hub's `DEV`/`PROD` keys are renamed, and the rename logged.
 
     The archive and its verified checksum are never touched; only the already-extracted
     `parameter.yml` is rewritten, after verification.
@@ -831,6 +835,8 @@ def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: 
         GoldConnectionOverrideError,
         apply_gold_connection_override,
         declared_parameter_environments,
+        normalize_environment_key,
+        normalize_parameter_environments,
         parse_gold_connection_overrides,
     )
 
@@ -840,6 +846,20 @@ def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: 
             f"No {PARAMETER_ARTIFACT_PATH} in {package_dir}, so fabric-cicd would deploy "
             "the hub's default workspace to every environment. The release was packaged "
             "before the toolkit shipped it in the archive (#993): re-release the hub."
+        )
+
+    environment = normalize_environment_key(environment)
+    try:
+        normalised, renamed = normalize_parameter_environments(
+            parameter_path.read_text(encoding="utf-8")
+        )
+    except GoldConnectionOverrideError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if renamed:
+        parameter_path.write_text(normalised, encoding="utf-8")
+        click.echo(
+            f"Lowercased {PARAMETER_ARTIFACT_PATH} environment key(s) {list(renamed)}: "
+            "environment keys are case-insensitive (#1114)."
         )
 
     resolved_config = config_path or Path(GOLD_CONNECTION_OVERRIDE_PATH)
@@ -881,7 +901,7 @@ def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: 
         raise click.ClickException(
             f"{PARAMETER_ARTIFACT_PATH} does not declare the {environment!r} environment "
             f"(declared: {sorted(declared)}), so fabric-cicd would skip the rewrite and "
-            "deploy the hub's default workspace. Use one of the declared keys (they are "
-            "case-sensitive), declare it in the hub's kairos.yaml, or add it to "
+            "deploy the hub's default workspace. Use one of the declared keys, declare it "
+            "in the hub's kairos.yaml, or add it to "
             f"{resolved_config}."
         )
