@@ -905,8 +905,8 @@ def run_projections(
         # dbt contract preflight: dead code. `target_name` can never be "dbt" here --
         # RETIRED_COMPILER_TARGETS/_reject_retired_compiler_targets rejects it before
         # this loop is reached (see run_projections' guard above and project_graph's).
-        # Custom dbt contracts are handled by the real pipeline via
-        # core.dbt_bundle.assemble_dbt_bundle, invoked from the compile-plan emit path.
+        # Custom dbt contracts are handled by the compile-plan emit path
+        # (kernel._planned_dbt_dependencies, DD-140/DD-261), which does not use dbt_bundle.
         # if target_name == "dbt" and transforms_dir and transforms_dir.is_dir():
         #     from .dbt_contracts import discover_dbt_contracts
         #

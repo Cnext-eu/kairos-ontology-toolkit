@@ -323,5 +323,6 @@ during cleanup.
 | [DD-258](decisions/dd-258-a-shipped-reference-lists-seed-carries-every-fact-its-members-state.md) | A shipped reference list's seed carries every fact its members state | Accepted | 2026-10-18 |
 | [DD-259](decisions/dd-259-a-source-table-another-binding-replaced-is-superseded-and-the-audit-checks-the-replacement.md) | A source table another binding replaced is `superseded`, and the audit checks the replacement | Accepted | 2026-10-18 |
 | [DD-260](decisions/dd-260-a-generated-seed-lives-in-the-reference-seed-folder-and-is-regenerated-where-it-lives.md) | A generated seed lives in the reference seed folder and is regenerated where it lives | Accepted | 2026-10-18 |
+| [DD-261](decisions/dd-261-authored-tests-ride-along-with-the-contracted-closure.md) | Authored tests ride along with the contracted closure | Accepted | 2026-10-18 |
 
 ---

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 import re
 from dataclasses import dataclass, replace
@@ -105,6 +106,7 @@ from .dbt_source import (
     extract_sources,
     resolve_dbt_model_dependency_paths,
     resolve_dbt_model_source,
+    strip_jinja_comments,
 )
 from .ir import CanonicalProjectIR, EntityBindingSpec
 from .plan import CompileEntityPlan, CompilePlan, PlannedCompileArtifact, PlannedDbtDependency
@@ -1202,6 +1204,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         dbt_relations.append(relation)
         dbt_provenance.extend(binding_provenance)
         contracted_source_pairs.update(binding_pairs)
+    dbt_provenance.extend(_authored_test_inputs(root, dbt_provenance))
     # Parse each hub source file at most once: each candidate is read once and a cheap
     # byte-level pre-filter (_could_match_any_ref/_could_match_any_source_pair) skips a
     # full RDF parse for files that provably cannot contribute a requested ref or
@@ -4001,6 +4004,91 @@ class _DbtDependencyClosure:
     source_pairs: tuple[tuple[str, str], ...]
 
 
+_TRANSFORMS_PREFIX = "integration/transforms/dbt/"
+_PROPERTIES_SUFFIXES = frozenset({".yml", ".yaml"})
+#: ``{% test name(...) %}``: a generic test definition, which a properties file applies by name.
+_GENERIC_TEST_RE = re.compile(r"\{%-?\s*test\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def _declared_dbt_models(text: str) -> frozenset[str]:
+    """The model names a dbt properties document declares under ``models:``."""
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return frozenset()
+    if not isinstance(document, dict):
+        return frozenset()
+    return frozenset(
+        entry["name"]
+        for entry in document.get("models") or []
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    )
+
+
+def _generic_tests_used(text: str, properties_texts: list[str]) -> bool:
+    """True when a properties text applies a generic test that *text* defines."""
+    names = _GENERIC_TEST_RE.findall(strip_jinja_comments(text))
+    return any(
+        re.search(rf"(?<![\w.]){re.escape(name)}(?!\w)", properties)
+        for name in names
+        for properties in properties_texts
+    )
+
+
+def _authored_test_inputs(root: Path, provenance: list[ProvenanceInput]) -> list[ProvenanceInput]:
+    """The authored tests a domain's contracted closures carry into its scope (#1152).
+
+    A closure model's own properties file (``int_*``/``stg_*`` models no binding selects),
+    the singular tests that ``ref()`` a closure model or seed, and the generic test
+    definitions those properties apply. Only closure-relevant files join, so editing an
+    unrelated test leaves the domain's provenance unchanged.
+    """
+    known = {item.name for item in provenance}
+    model_stems = {
+        Path(name).stem
+        for name in known
+        if name.startswith(f"{_TRANSFORMS_PREFIX}models/") and name.endswith(".sql")
+    }
+    ref_stems = model_stems | {
+        Path(name).stem
+        for name in known
+        if name.startswith(f"{_TRANSFORMS_PREFIX}seeds/") and name.endswith(".csv")
+    }
+    if not model_stems:
+        return []
+    transforms = root / "integration" / "transforms" / "dbt"
+
+    def read(directory: Path, suffixes: frozenset[str]) -> list[tuple[str, str]]:
+        if not directory.is_dir():
+            return []
+        found = []
+        for path in sorted(directory.rglob("*")):
+            name = path.relative_to(root).as_posix()
+            if not path.is_file() or path.suffix.lower() not in suffixes or name in known:
+                continue
+            try:
+                found.append((name, path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeError):
+                continue
+        return found
+
+    added = [
+        ProvenanceInput(name, text)
+        for name, text in read(transforms / "models", _PROPERTIES_SUFFIXES)
+        if _declared_dbt_models(text) & model_stems
+    ]
+    properties_texts = [
+        item.content
+        for item in (*provenance, *added)
+        if item.name.startswith(f"{_TRANSFORMS_PREFIX}models/")
+        and Path(item.name).suffix.lower() in _PROPERTIES_SUFFIXES
+    ]
+    for name, text in read(transforms / "tests", frozenset({".sql"})):
+        if extract_refs(text) & ref_stems or _generic_tests_used(text, properties_texts):
+            added.append(ProvenanceInput(name, text))
+    return added
+
+
 def _dbt_dependency_closures(
     bindings: tuple[EntityBinding, ...],
     scope: BuildScope,
@@ -4374,6 +4462,9 @@ def _planned_dbt_dependencies(
             )
         select_dependency(closure.binding, model.contract_path, kind="properties")
 
+    _select_authored_tests(closures, inputs, selected, generated_models, select_dependency)
+    diagnostics.extend(_unpublished_test_diagnostics(closures, inputs, selected, generated_models))
+
     dependencies = tuple(
         PlannedDbtDependency(
             path=str(item["path"]),
@@ -4386,6 +4477,153 @@ def _planned_dbt_dependencies(
         for item in sorted(selected.values(), key=lambda item: str(item["path"]))
     )
     return dependencies, tuple(diagnostics)
+
+
+def _closure_bindings_by_name(
+    closures: tuple[_DbtDependencyClosure, ...], *, seeds: bool
+) -> dict[str, list[EntityBinding]]:
+    """The bindings whose closure carries each model (and, with *seeds*, each seed) name."""
+    owners: dict[str, list[EntityBinding]] = {}
+    for closure in closures:
+        paths = (*closure.sql_paths, *(closure.seed_paths if seeds else ()))
+        for path in paths:
+            bindings = owners.setdefault(Path(path).stem, [])
+            if closure.binding not in bindings:
+                bindings.append(closure.binding)
+    return owners
+
+
+def _singular_test_verdict(
+    text: str,
+    closures: tuple[_DbtDependencyClosure, ...],
+    selected: dict[str, dict[str, object]],
+    generated_models: dict[str, str],
+) -> tuple[list[EntityBinding], str]:
+    """``(owners, reason)`` for one authored singular test.
+
+    *owners* are the bindings whose closure the test reads; none means the test is not this
+    domain's. An empty *reason* means every ``ref()`` resolves to a published model or seed
+    and every ``source()`` to one the closures declare, so the test is publishable.
+    """
+    refs = extract_refs(text)
+    by_name = _closure_bindings_by_name(closures, seeds=True)
+    owners: list[EntityBinding] = []
+    for ref_name in sorted(refs):
+        for binding in by_name.get(ref_name, ()):
+            if binding not in owners:
+                owners.append(binding)
+    if not owners:
+        return [], ""
+    published = {
+        str(item["model_name"]).casefold() for item in selected.values() if item["model_name"]
+    } | set(generated_models)
+    missing = sorted(ref_name for ref_name in refs if ref_name.casefold() not in published)
+    if missing:
+        return owners, f"it refs {', '.join(repr(name) for name in missing)}, which no binding publishes"
+    extraction = extract_sources(text)
+    declared = {pair for closure in closures for pair in closure.source_pairs}
+    undeclared = sorted(extraction.pairs - declared)
+    if extraction.unparsed or undeclared:
+        return owners, "it reads a source() the published closures do not declare"
+    return owners, ""
+
+
+def _is_authored_test(path: str) -> bool:
+    return path.startswith(f"{_TRANSFORMS_PREFIX}tests/") and path.endswith(".sql")
+
+
+def _select_authored_tests(
+    closures: tuple[_DbtDependencyClosure, ...],
+    inputs: dict[str, str],
+    selected: dict[str, dict[str, object]],
+    generated_models: dict[str, str],
+    select_dependency: Callable[..., None],
+) -> None:
+    """Publish the authored tests that belong to the selected closures (#1152, DD-261).
+
+    Three kinds, all selected whole and byte-for-byte like the binding's own contract file:
+
+    - the properties file of a closure model no binding selects, so its column docs and
+      ``data_tests`` reach the published project;
+    - a singular test whose every ``ref()`` resolves to a published model or seed;
+    - a generic test definition that a published properties file applies.
+    """
+    model_owners = _closure_bindings_by_name(closures, seeds=False)
+    published_sql = {
+        str(item["model_name"]) for item in selected.values() if item["kind"] == "sql"
+    }
+    properties_owners: list[tuple[str, list[EntityBinding]]] = [
+        (inputs[contract], [closure.binding])
+        for closure in closures
+        if closure.binding.source.dbt_model is not None
+        and (contract := closure.binding.source.dbt_model.contract_path.replace("\\", "/"))
+        in inputs
+    ]
+    for path in sorted(inputs):
+        if (
+            not path.startswith(f"{_TRANSFORMS_PREFIX}models/")
+            or Path(path).suffix.lower() not in _PROPERTIES_SUFFIXES
+            or path.removeprefix(_TRANSFORMS_PREFIX).casefold() in selected
+        ):
+            continue
+        owners: list[EntityBinding] = []
+        for name in sorted(_declared_dbt_models(inputs[path]) & published_sql):
+            owners.extend(binding for binding in model_owners.get(name, ()) if binding not in owners)
+        for binding in owners:
+            select_dependency(binding, path, kind="properties")
+        if owners:
+            properties_owners.append((inputs[path], owners))
+
+    for path in sorted(inputs):
+        if not _is_authored_test(path):
+            continue
+        text = inputs[path]
+        if _GENERIC_TEST_RE.search(strip_jinja_comments(text)):
+            owners = []
+            for properties, bindings in properties_owners:
+                if _generic_tests_used(text, [properties]):
+                    owners.extend(binding for binding in bindings if binding not in owners)
+            for binding in owners:
+                select_dependency(binding, path, kind="test")
+            continue
+        owners, reason = _singular_test_verdict(text, closures, selected, generated_models)
+        if reason:
+            continue
+        for binding in owners:
+            select_dependency(binding, path, kind="test")
+
+
+def _unpublished_test_diagnostics(
+    closures: tuple[_DbtDependencyClosure, ...],
+    inputs: dict[str, str],
+    selected: dict[str, dict[str, object]],
+    generated_models: dict[str, str],
+) -> list[CompileDiagnostic]:
+    """Warn about a singular test that reads the closures but cannot be published (#1152)."""
+    diagnostics: list[CompileDiagnostic] = []
+    for path in sorted(inputs):
+        if not _is_authored_test(path) or _GENERIC_TEST_RE.search(
+            strip_jinja_comments(inputs[path])
+        ):
+            continue
+        owners, reason = _singular_test_verdict(inputs[path], closures, selected, generated_models)
+        if not reason:
+            continue
+        diagnostics.append(
+            CompileDiagnostic(
+                code="dbt-source.test-not-published",
+                message=(
+                    f"authored dbt test {path!r} is not published because {reason}; it would "
+                    "never run in the dataplatform. Bind the models it reads, or move the test "
+                    "onto a model the closure publishes"
+                ),
+                location=SourceLocation(
+                    path=owners[0].source_path, pointer="/source/dbtModel/sqlPath"
+                ),
+                severity=DiagnosticSeverity.WARNING,
+            )
+        )
+    return diagnostics
 
 
 def _load_domain_contract(

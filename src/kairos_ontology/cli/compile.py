@@ -60,6 +60,9 @@ _DEPENDENCY_KINDS: dict[str, _DependencyKind] = {
     "properties": _DependencyKind(frozenset({".yml", ".yaml"}), False, "models/"),
     "seed": _DependencyKind(frozenset({".csv"}), True, "seeds/"),
     "seed_properties": _DependencyKind(frozenset({".yml", ".yaml"}), False, "seeds/"),
+    # #1152: an authored singular test or generic test definition. A test is not in dbt's
+    # ref() namespace, so it carries no model_name either.
+    "test": _DependencyKind(frozenset({".sql"}), False, "tests/"),
 }
 
 
