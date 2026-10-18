@@ -5,8 +5,32 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.27.3** is the latest GA release (2026-10-17), superseding
-> **5.27.2** (the same day). A security patch found by a scanner on a client dataplatform:
+> **Release status.** **5.28.0** is the latest GA release (2026-10-18). A minor release
+> about reference data (#1126, DD-257). A code list is one of three kinds: shipped by the
+> reference models as individuals, loaded by the hub, or owned by a source system.
+>
+> - **`export-reference-list`** writes a shipped list (UNECE Rec 19/20/21, ISO 3166 …) as a
+>   dbt seed keyed on `(code_list, code)`. Its docs record the snapshot and type every
+>   column as text. `--all` regenerates every generated seed after a reference-models
+>   upgrade.
+> - **`validate-dbt-contracts`** rejects a crosswalk seed code that is missing from the
+>   reference seed its `relationships` test names.
+> - **The hub `pr-validate` workflow** runs `export-reference-list --all --check`, so a seed
+>   left behind by an upgrade fails the PR.
+> - **New how-to:** "Use reference data and code lists", with examples for binding, local
+>   extensions and crosswalks.
+> - **The toolkit is tested against reference models 1.41.1**, and its daily pin bump works
+>   again.
+> - **pyjwt and urllib3** are raised for new advisories.
+>
+> **What to expect on the first run after upgrading from 5.27.3.** On a hub, `update
+> --check` reports `pr-validate.yml` as outdated; `update --refresh-workflows` adds the
+> reference-seed step. The step passes with nothing to do until the hub generates a seed.
+> `update --upgrade` now also prints `export-reference-list --all` first among the
+> regeneration commands. Dataplatforms see no change. Compiled output is unchanged.
+>
+> **Upgrading from 5.27.2?** 5.27.3's first-run notes still apply on top of the above. It
+> was a security patch found by a scanner on a client dataplatform:
 >
 > - Scaffolded workflows pin every GitHub Action to a commit SHA, with the release as a
 >   comment (#1124). CI runs exactly the same action code as before.
@@ -298,6 +322,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.28.0] — 2026-10-18
+
+### Added
+- **`kairos-ontology export-reference-list <class> --domain <domain>` writes a shipped
+  reference list as a dbt seed (#1126 P2, DD-257).** Pass a list the reference models ship
+  with members (UNECE Rec 19/20/21, ISO 3166 countries and subdivisions …) or your
+  governed class that such lists subclass.
+  - **The seed.** One row per member under `integration/transforms/dbt/seeds/`, keyed on
+    `(code_list, code)`, with the upstream IRI as a column.
+  - **Its docs.** They record each list's snapshot version and source, and type every
+    column as your adapter's text type, so codes such as `02` keep their leading zero.
+  - **Safe re-runs.** Re-run after each reference-models upgrade. `--check` writes nothing
+    and exits 1 when the seed is stale. The command refuses to overwrite a seed it did not
+    generate (`--force` overrides), never touches the `<name>_local` extension seed, and
+    refuses a class with no members (a hub-loaded or client-owned list).
+- **`validate-dbt-contracts` checks crosswalk seeds against the reference list they map to
+  (#1126 P3, DD-257).** A crosswalk seed declares its target in its docs with dbt's own
+  `relationships` test (`to: "ref('transport_mode_code')"`, `field: code`).
+  - **What it checks.** When the target is an authored seed, a code it lacks is now an
+    error (`dbt-contract.crosswalk-unknown-code`) naming the value and its line. Before,
+    such a typo only showed up as an empty link after the build.
+  - **What it allows.** An empty cell is a code left unmapped on purpose. A target that is a
+    model is left to dbt, which runs the same test after the build.
+  - **Warnings.** A target that names nothing, or a column either CSV lacks, is
+    `dbt-contract.crosswalk-unresolved`.
+- **Hub CI fails when a generated reference seed falls behind the reference models
+  (#1126, DD-257).**
+  - **What changed.** `export-reference-list` now records the class and domain in each
+    generated seed's docs. `export-reference-list --all` regenerates every generated
+    seed from that record, and `--all --check` fails when one is stale.
+  - **Where it runs.** The hub `pr-validate` workflow runs `--all --check` next to
+    `validate-dbt-contracts`. It passes with nothing to do in a hub that generated no
+    seeds.
+  - **After an upgrade.** `update --upgrade` now names `export-reference-list --all`
+    first among the regeneration commands it prints.
+
+  Hubs pick up the workflow change with `kairos-ontology update --refresh-workflows`. The
+  previous generation is recorded, so it refreshes automatically. A seed generated before
+  this change has no recorded origin; regenerate it once with
+  `export-reference-list <class> --domain <domain>`.
+
+### Fixed
+- **The toolkit is tested against reference models 1.41.1 again, and the daily pin bump
+  works.** The bump job moved only the dependency pin, so its own test run failed every
+  day from 2026-09-20 and no bump PR was ever opened. The fallback version a new hub
+  scaffold uses when the release list is unreachable must not trail that pin, and nothing
+  raised it. The bump now raises both. Pin and fallback move from v1.35.2 to v1.41.1.
+
+### Security
+- **pyjwt 2.15.1 and urllib3 2.8.0 in the lock file.** These clear PYSEC-2026-4140 to 4152
+  and 4183 (pyjwt) and PYSEC-2026-4175 to 4177 (urllib3). Both packages arrive through the
+  `mcp`, `azure` and `foundry` extras.
+
+### Documentation
+- **New how-to: Use reference data and code lists.** A code list is one of three kinds:
+  - shipped by the reference models as individuals (UNECE Rec 19/20/21, ISO 3166);
+  - loaded by the hub (UN/LOCODE locations);
+  - owned by a client or source system (a TMS master; ISO 6346 container codes, which
+    cannot be shipped).
+
+  This matches the reference models from 1.41.0. The kind follows from where the class is
+  defined and whether it has members, not from `isReferenceData`. Local extensions are
+  seed rows unioned in with an `origin` column, not ontology individuals.
+
+  Each kind reaches Silver through an ordinary binding, keyed on the code. The guide has
+  worked examples for:
+  - exporting a shipped list into a seed;
+  - adding local extension rows (user-assigned codes such as `XK`) and extra columns;
+  - mapping source codes to the list through left-joined crosswalk seeds.
+
+  The `kairos-design-mapping` and `kairos-develop-dbt-transformation` skills point to it.
+
+### Decisions
+- **DD-257: a reference list is shipped, loaded by the hub, or owned by a source, and its
+  extensions live with its rows.** It also corrects `kairos-ext:isReferenceData`'s
+  description in `kairos-ext.ttl`: in v5 it changes neither the table name (no `ref_`
+  prefix) nor the load policy. The binding decides both. Compiled output is unchanged.
 
 ## [5.27.3] — 2026-10-17
 
