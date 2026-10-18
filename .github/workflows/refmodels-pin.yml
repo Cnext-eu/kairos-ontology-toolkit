@@ -69,7 +69,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add pyproject.toml uv.lock
+          git add pyproject.toml uv.lock src/kairos_ontology/cli/shared.py
           git commit -m "chore: bump reference-models pin to ${VERSION}
           Automated: the pinned release fell behind the channel's latest.
           Co-Authored-By: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"

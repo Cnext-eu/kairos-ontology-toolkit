@@ -161,6 +161,56 @@ class TestExitCodes:
 
 
 class TestUpdateRewrite:
+    @pytest.fixture(autouse=True)
+    def _fallback_source(self, tmp_path):
+        """Never let an update test rewrite the real ``cli/shared.py``."""
+        source = tmp_path / "shared.py"
+        source.write_text('x = 1\n_REFMODELS_FALLBACK_TAG = "v1.20.0"\ny = 2\n', encoding="utf-8")
+        with mock.patch.object(check_refmodels_pin, "FALLBACK_SOURCE", source):
+            yield source
+
+    def test_raises_the_fallback_tag_with_the_pin(self, tmp_path, _fallback_source, capsys):
+        """The daily bump moved only the pin, so its own suite failed on the fallback test
+        every day from 2026-09-20 and no bump PR was ever opened."""
+        pyproject = tmp_path / "pyproject.toml"
+        with pyproject.open("w", encoding="utf-8", newline="") as fh:
+            fh.write(_pyproject("1.20.0"))
+        with (
+            mock.patch.object(check_refmodels_pin, "PYPROJECT", pyproject),
+            mock.patch.object(check_refmodels_pin, "latest_release", return_value="v1.33.1"),
+            mock.patch.object(
+                check_refmodels_pin.subprocess, "run",
+                return_value=mock.MagicMock(returncode=0, stderr=""),
+            ),
+        ):
+            assert check_refmodels_pin.main(["--update"]) == 0
+        assert _fallback_source.read_text(encoding="utf-8") == (
+            'x = 1\n_REFMODELS_FALLBACK_TAG = "v1.33.1"\ny = 2\n'
+        )
+        assert "_REFMODELS_FALLBACK_TAG v1.20.0 → v1.33.1" in capsys.readouterr().out
+
+    def test_a_fallback_already_ahead_is_left_alone(self, _fallback_source):
+        _fallback_source.write_text('_REFMODELS_FALLBACK_TAG = "v1.40.0"\n', encoding="utf-8")
+        assert check_refmodels_pin.raise_fallback_tag("v1.33.1") is None
+        assert "v1.40.0" in _fallback_source.read_text(encoding="utf-8")
+
+    def test_a_missing_fallback_assignment_is_an_error(self, _fallback_source):
+        _fallback_source.write_text("nothing here\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="_REFMODELS_FALLBACK_TAG"):
+            check_refmodels_pin.raise_fallback_tag("v1.33.1")
+
+    def test_the_real_source_declares_the_fallback(self):
+        text = check_refmodels_pin.REPO_ROOT.joinpath(
+            "src", "kairos_ontology", "cli", "shared.py"
+        ).read_text(encoding="utf-8")
+        assert check_refmodels_pin._FALLBACK_RE.search(text)
+
+    def test_the_bump_workflow_commits_the_fallback_too(self):
+        workflow = (
+            check_refmodels_pin.REPO_ROOT / ".github" / "workflows" / "refmodels-pin.yml"
+        ).read_text(encoding="utf-8")
+        assert "git add pyproject.toml uv.lock src/kairos_ontology/cli/shared.py" in workflow
+
     def test_rewrites_both_the_tag_and_the_wheel_filename(self, tmp_path):
         """The version appears twice in the URL; rewriting one produces a 404 pin."""
         pyproject = tmp_path / "pyproject.toml"
