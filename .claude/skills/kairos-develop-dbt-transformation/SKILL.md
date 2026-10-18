@@ -298,6 +298,11 @@ entry for an `int_merged__` model, and returning to kairos-design-mapping to wir
    legacy-named IRI identifies the contracted model output only; do not generate a
    separate virtual-source artifact or registry.
 
+   Tests on a `stg_`/`int_` model in the closure go in that model's own properties
+   file, which is published whole with the closure. A singular test under `tests/`
+   is published only when every `ref()` it makes is published. Otherwise
+   `compile --check` warns `dbt-source.test-not-published` (DD-261).
+
    **`fabric-warehouse` adapter caveat:** when `supported_adapters` includes `fabric-warehouse` and
    `config.contract.enforced: true`, `dbt-fabric`'s materialization macro rejects the
    model if it detects a "nested CTE" — but its detector just counts literal

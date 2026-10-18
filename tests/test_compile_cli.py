@@ -824,11 +824,137 @@ def test_a_seed_name_in_two_folders_fails_the_compile(tmp_path):
     )
 
 
+# ---------------------------------------------------------------------------
+# Authored tests ride along with the closure (#1152, DD-261)
+# ---------------------------------------------------------------------------
+
+_INT_PROPERTIES = (
+    "version: 2\nmodels:\n  - name: int_customer_clean\n    columns:\n"
+    "      - name: customer_id\n        data_tests: [not_null, is_positive]\n"
+)
+
+
+def _tested_contracted_hub(root):
+    hub = _seeded_contracted_hub(root)
+    dbt = hub / "integration" / "transforms" / "dbt"
+    (dbt / "models" / "customer_stage.sql").write_text(
+        "select customer_id, customer_name from {{ source('crm', 'customers') }} "
+        "left join {{ ref('country_codes') }} on 1 = 1 "
+        "left join {{ ref('int_customer_clean') }} on 1 = 1\n",
+        encoding="utf-8",
+    )
+    (dbt / "models" / "int_customer_clean.sql").write_text(
+        "select 1 as customer_id\n", encoding="utf-8"
+    )
+    (dbt / "models" / "int_customer_clean.yml").write_text(_INT_PROPERTIES, encoding="utf-8")
+    tests = dbt / "tests"
+    (tests / "generic").mkdir(parents=True)
+    (tests / "assert_customer_has_country.sql").write_text(
+        "select * from {{ ref('customer_stage') }} as c\n"
+        "left join {{ ref('country_codes') }} as k on 1 = 1 where k.code is null\n",
+        encoding="utf-8",
+    )
+    (tests / "generic" / "is_positive.sql").write_text(
+        "{% test is_positive(model, column_name) %}\n"
+        "select * from {{ model }} where {{ column_name }} <= 0\n{% endtest %}\n",
+        encoding="utf-8",
+    )
+    (tests / "generic" / "is_unused.sql").write_text(
+        "{% test is_unused(model) %}select 1 where 1 = 0{% endtest %}\n", encoding="utf-8"
+    )
+    (tests / "assert_unrelated.sql").write_text(
+        "select * from {{ ref('some_other_model') }}\n", encoding="utf-8"
+    )
+    return hub
+
+
+def test_emit_publishes_closure_model_properties_and_singular_tests(tmp_path):
+    hub = _tested_contracted_hub(tmp_path / "hub")
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    target = tmp_path / "publish" / "medallion" / "dbt"
+
+    _emit_compile_artifacts(result, target, hub)
+
+    planned = {item.path: item for item in result.plan.dbt_dependencies}
+    assert planned["models/int_customer_clean.yml"].kind == "properties"
+    assert planned["models/int_customer_clean.yml"].binding_names == ("crm-customer",)
+    assert planned["tests/assert_customer_has_country.sql"].kind == "test"
+    assert planned["tests/assert_customer_has_country.sql"].model_name == ""
+    assert planned["tests/generic/is_positive.sql"].kind == "test"
+    # A generic test nothing applies, and a test reading nothing published, stay behind.
+    assert "tests/generic/is_unused.sql" not in planned
+    assert "tests/assert_unrelated.sql" not in planned
+    assert not [
+        item for item in result.diagnostics.items if item.code == "dbt-source.test-not-published"
+    ]
+    assert (target / "models" / "int_customer_clean.yml").read_text(
+        encoding="utf-8"
+    ) == _INT_PROPERTIES
+    assert (target / "tests" / "assert_customer_has_country.sql").is_file()
+
+    # Re-emitting round-trips the kind="test" dependency state.
+    _emit_compile_artifacts(result, target, hub)
+    assert (target / "tests" / "generic" / "is_positive.sql").is_file()
+
+
+def test_a_test_reading_an_unpublished_model_warns_and_stays_behind(tmp_path):
+    hub = _tested_contracted_hub(tmp_path / "hub")
+    (hub / "integration" / "transforms" / "dbt" / "tests" / "assert_partial.sql").write_text(
+        "select * from {{ ref('int_customer_clean') }}\n"
+        "join {{ ref('int_never_bound') }} on 1 = 1\n",
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    assert "tests/assert_partial.sql" not in {item.path for item in result.plan.dbt_dependencies}
+    [warning] = [
+        item for item in result.diagnostics.items if item.code == "dbt-source.test-not-published"
+    ]
+    assert warning.severity.value == "warning"
+    assert "'int_never_bound'" in warning.message
+    assert "assert_partial.sql" in warning.message
+
+
+def test_a_test_reading_an_undeclared_source_warns(tmp_path):
+    hub = _tested_contracted_hub(tmp_path / "hub")
+    (hub / "integration" / "transforms" / "dbt" / "tests" / "assert_source.sql").write_text(
+        "select * from {{ ref('customer_stage') }}\n"
+        "join {{ source('erp', 'orders') }} on 1 = 1\n",
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+
+    [warning] = [
+        item for item in result.diagnostics.items if item.code == "dbt-source.test-not-published"
+    ]
+    assert "source()" in warning.message
+
+
+def test_an_unrelated_test_edit_leaves_the_provenance_unchanged(tmp_path):
+    hub = _tested_contracted_hub(tmp_path / "hub")
+    before = compile_domain(hub, "party", CompileMode.CHECK).provenance_hash
+    (hub / "integration" / "transforms" / "dbt" / "tests" / "assert_unrelated.sql").write_text(
+        "select 2 from {{ ref('some_other_model') }}\n", encoding="utf-8"
+    )
+    assert compile_domain(hub, "party", CompileMode.CHECK).provenance_hash == before
+    (hub / "integration" / "transforms" / "dbt" / "models" / "int_customer_clean.yml").write_text(
+        _INT_PROPERTIES + "        description: edited\n", encoding="utf-8"
+    )
+    assert compile_domain(hub, "party", CompileMode.CHECK).provenance_hash != before
+
+
 def test_dependency_kind_registry_fails_closed_on_unknown_and_misplaced_kinds():
     """The registry replaced a boolean ladder whose prefix ternary assumed `models/`."""
     from kairos_ontology.cli.compile import _DEPENDENCY_KINDS, _dependency_entry_is_valid
 
-    assert set(_DEPENDENCY_KINDS) == {"sql", "properties", "seed", "seed_properties"}
+    assert set(_DEPENDENCY_KINDS) == {"sql", "properties", "seed", "seed_properties", "test"}
+    assert _dependency_entry_is_valid("test", "tests/assert_x.sql", "")
+    assert not _dependency_entry_is_valid("test", "tests/assert_x.sql", "assert_x")
+    assert not _dependency_entry_is_valid("test", "models/assert_x.sql", "")
 
     # Every registered kind, in its correct shape.
     assert _dependency_entry_is_valid("sql", "models/int_a.sql", "int_a")

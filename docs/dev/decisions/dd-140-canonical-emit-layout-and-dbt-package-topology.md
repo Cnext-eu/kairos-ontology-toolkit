@@ -283,3 +283,14 @@ Forward-looking note, not yet built: reference-data *sourcing* is expected to ev
 toward a separate Kairos MDM Hub platform, with the Ontology Hub retaining the semantics
 layer. This amendment does not build toward that — it only names the direction so a future
 change has context when seeds stop being purely hand-authored CSVs.
+
+### Amendment (2026-10-18): authored tests ride along with the closure (#1152)
+
+The contracted selection above carried closure SQL, seeds, seed docs and the binding's one
+`contractPath` file. A closure model's own properties file and the hub's singular tests were
+never selected, so their tests never reached the dataplatform.
+[DD-261](dd-261-authored-tests-ride-along-with-the-contracted-closure.md) adds them to the
+scope and the plan:
+- a closure model's properties file is selected whole, as kind `properties`;
+- a singular test whose every `ref()` is published, and a generic test definition a
+  published properties file applies, are selected as the new kind `test` under `tests/`.

@@ -34,6 +34,22 @@ The model properties YAML is the physical output contract. Include every output 
 type plus the minimal `meta.kairos` target, grain, physical key, and adapter metadata. Use
 `kairos-develop-dbt-transformation` for the SQL/YAML contract workflow.
 
+## Tests
+
+Your tests reach the dataplatform with the closure that the binding's `ref()`s select
+(DD-261):
+- **A closure model's own properties file**, such as `int_<source>__<entity>.yml`, is
+  published whole, with its `data_tests`, even when no binding selects that model.
+- **A singular test** under `tests/` is published when every `ref()` it makes resolves to a
+  published model or seed.
+- **A generic test** (`{% test name(...) %}`) under `tests/` is published when a published
+  properties file applies it.
+
+`compile --check` warns `dbt-source.test-not-published` for a test that reads the closure
+but also reads a model no binding publishes, or an undeclared `source()`. Such a test would
+never run. A test that reads only generated Silver models is not published; put it in the
+dataplatform.
+
 ## Seeds
 
 Use `seeds/` for small, static, hand-maintained reference data that belongs in version
