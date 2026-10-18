@@ -59,9 +59,17 @@ class TestWorksheetShape:
 
     def test_no_proposals_reproduces_the_previous_output(self):
         """The argument is optional, so a caller that does not pass it is unaffected."""
-        assert generate_concept_mapping(_model("d_Customer")) == generate_concept_mapping(
-            _model("d_Customer"), None
-        )
+
+        # `generated_at` is the wall clock at second resolution, so two calls can straddle
+        # a second boundary; compare everything else.
+        def _without_timestamp(document: str) -> str:
+            return "\n".join(
+                line for line in document.splitlines() if not line.startswith("generated_at:")
+            )
+
+        assert _without_timestamp(
+            generate_concept_mapping(_model("d_Customer"))
+        ) == _without_timestamp(generate_concept_mapping(_model("d_Customer"), None))
 
     def test_the_header_explains_what_candidate_means(self):
         document = generate_concept_mapping(_model("d_Customer"))
