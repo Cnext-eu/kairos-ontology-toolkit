@@ -16,6 +16,7 @@ the [decision log](https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main
 | Carry an architect's logical model without growing Silver | [Document the architecture with a DDD overlay](document-architecture-with-a-ddd-overlay.md) |
 | Connect a source table to a canonical entity | [Bind a source to an entity](bind-a-source-to-an-entity.md) |
 | Onboard a second system to an entity you already model | [Add a second source to a class](add-a-second-source-to-a-class.md) |
+| Bind a code list, extend it locally, and map source codes to it | [Use reference data and code lists](use-reference-data.md) |
 | Handle logic a binding cannot express | [Write a contracted dbt model](write-a-contracted-dbt-model.md) |
 | Produce the dbt artifacts | [Compile and emit](compile-and-emit.md) |
 | Deliver a Power BI semantic model | [Design a Gold product](design-a-gold-product.md) |

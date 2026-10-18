@@ -88,7 +88,7 @@ kairos-ext:discriminatorColumn a owl:AnnotationProperty ;
 
 kairos-ext:isReferenceData a owl:AnnotationProperty ;
     rdfs:label "is reference data"@en ;
-    rdfs:comment "If true, the table is a reference/code-list table with ref_ prefix and SCD type 1 (R8)."@en ;
+    rdfs:comment "If true, the class is a reference list whose rows are shipped as its individuals or loaded by the hub (DD-257). It does not change physical naming or load policy; the binding decides both."@en ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:boolean .
 

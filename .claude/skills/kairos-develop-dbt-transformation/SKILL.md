@@ -138,6 +138,21 @@ version control** — a maintainer edits it in a pull request, not a pipeline. I
 the data comes out of a real system, or changes often enough that a human editing
 CSV is the wrong loop, it is a source, not a seed: import it and bind it normally.
 
+**Code-list seeds (DD-257).**
+- **A list the reference models ship as individuals** (UNECE, ISO 3166): export
+  its members from the resolved closure with `load_ontology`. Never copy them out
+  of the `.ttl`. Record the snapshot and `dcterms:source` in the seed docs.
+- **Local extension rows** go in a sibling `<list>_local` seed. The model unions
+  them in with an `origin` column, and their codes come from the standard's
+  user-assigned range.
+- **Hub-owned attributes** go in a sibling seed joined on the code.
+- **Crosswalks** (`<source>_<list>_map`) are left-joined, and the codes they leave
+  unmapped on purpose are named in their docs.
+- **Never inner-join a fact or master model to a reference list.** An unknown
+  code then drops the row.
+
+Worked examples: the how-to `use-reference-data.md`.
+
 Rules that matter while authoring:
 
 - **The file stem is the dbt resource name.** `seeds/country_codes.csv` is reached
