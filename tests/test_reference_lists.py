@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 from pathlib import Path
 
 import pytest
@@ -119,10 +121,13 @@ class TestRender:
     def test_csv_is_keyed_on_list_and_code_with_the_iri_as_a_column(self, graph):
         reference = collect_reference_list(graph, "https://example.org/std/ModeList")
         assert render_seed_csv(reference).splitlines() == [
-            "code_list,code,name,iri",
-            "ModeList,02,Rail transport,https://example.org/std/ModeList-02",
-            "ModeList,1,Maritime transport,https://example.org/std/ModeList-1",
-            "ModeList,4,Air transport,https://example.org/std/ModeList-4",
+            "code_list,code,name,iri,list_version,list_source,deprecated",
+            "ModeList,02,Rail transport,https://example.org/std/ModeList-02,"
+            "2026-10-17,https://example.org/std/,false",
+            "ModeList,1,Maritime transport,https://example.org/std/ModeList-1,"
+            "2026-10-17,https://example.org/std/,false",
+            "ModeList,4,Air transport,https://example.org/std/ModeList-4,"
+            "2026-10-17,https://example.org/std/,false",
         ]
 
     def test_docs_carry_the_marker_snapshot_and_text_types(self, graph):
@@ -183,7 +188,8 @@ class TestCli:
         csv_text = (hub / _SEEDS / "mode_list.csv").read_text(encoding="utf-8")
         assert (
             csv_text.splitlines()[1]
-            == "ModeList,02,Rail transport,https://example.org/std/ModeList-02"
+            == "ModeList,02,Rail transport,https://example.org/std/ModeList-02,"
+            "2026-10-17,https://example.org/std/,false"
         )
         docs = yaml.safe_load((hub / _SEEDS / "mode_list.yml").read_text(encoding="utf-8"))
         assert docs["seeds"][0]["config"]["column_types"]["code"] == "VARCHAR(16)"
@@ -306,3 +312,172 @@ def _all(*args: str):
     return CliRunner().invoke(
         cli, ["export-reference-list", "--all", *args], catch_exceptions=False
     )
+
+
+_CURRENCY_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix iso: <https://example.org/iso4217#> .
+
+<https://example.org/iso4217> a owl:Ontology .
+
+iso:CurrencyCode a owl:Class ;
+    owl:versionInfo "2026-09-17" ;
+    dcterms:source <https://example.org/list-three.xml>, <https://example.org/list-one.xml> .
+iso:numericCode a owl:DatatypeProperty ; rdfs:label "numeric code" .
+iso:minorUnit a owl:DatatypeProperty ; rdfs:label "minor unit" .
+iso:withdrawalDate a owl:DatatypeProperty ; rdfs:label "withdrawal date" .
+iso:entity a owl:DatatypeProperty .
+iso:note a owl:AnnotationProperty .
+
+iso:EUR a owl:NamedIndividual, iso:CurrencyCode ;
+    rdf:value "EUR" ; rdfs:label "Euro" ;
+    iso:numericCode "978" ; iso:minorUnit 2 ;
+    iso:entity "BELGIUM", "AUSTRIA" ;
+    iso:note "an annotation, not a fact column" ;
+    skos:altLabel "euro" .
+iso:XAU a owl:NamedIndividual, iso:CurrencyCode ;
+    rdf:value "XAU" ; rdfs:label "Gold" ; iso:numericCode "959" .
+iso:ISJ a owl:NamedIndividual, iso:CurrencyCode ;
+    rdf:value "ISJ" ; rdfs:label "Old Krona" ;
+    iso:numericCode "352" ; iso:withdrawalDate "1989 to 1990" ;
+    owl:deprecated "true"^^xsd:boolean .
+"""
+
+_ISO = "https://example.org/iso4217#CurrencyCode"
+
+
+@pytest.fixture
+def currency() -> Graph:
+    return Graph().parse(data=_CURRENCY_TTL, format="turtle")
+
+
+def _rows(reference) -> dict[str, dict[str, str]]:
+    return {row["code"]: row for row in csv.DictReader(io.StringIO(render_seed_csv(reference)))}
+
+
+class TestMemberFacts:
+    """A row carries every fact the reference models state about its code (DD-258, #1137)."""
+
+    def test_each_datatype_property_is_a_column_after_the_fixed_ones(self, currency):
+        reference = collect_reference_list(currency, _ISO)
+        assert reference.columns == (
+            "code_list",
+            "code",
+            "name",
+            "iri",
+            "list_version",
+            "list_source",
+            "deprecated",
+            "entity",
+            "minor_unit",
+            "numeric_code",
+            "withdrawal_date",
+        )
+
+    def test_rows_carry_the_facts_and_leave_a_missing_fact_empty(self, currency):
+        rows = _rows(collect_reference_list(currency, _ISO))
+        assert rows["EUR"]["numeric_code"] == "978"
+        assert rows["EUR"]["minor_unit"] == "2"
+        assert rows["EUR"]["withdrawal_date"] == ""
+        assert rows["XAU"]["minor_unit"] == ""
+
+    def test_several_values_share_a_cell_sorted(self, currency):
+        rows = _rows(collect_reference_list(currency, _ISO))
+        assert rows["EUR"]["entity"] == "AUSTRIA | BELGIUM"
+
+    def test_annotations_and_labels_are_not_fact_columns(self, currency):
+        columns = collect_reference_list(currency, _ISO).columns
+        assert "note" not in columns
+        assert "alt_label" not in columns
+
+    def test_a_withdrawn_code_stays_a_row_marked_deprecated(self, currency):
+        rows = _rows(collect_reference_list(currency, _ISO))
+        assert rows["ISJ"]["deprecated"] == "true"
+        assert rows["ISJ"]["withdrawal_date"] == "1989 to 1990"
+        assert rows["EUR"]["deprecated"] == "false"
+
+    def test_every_row_carries_its_lists_version_and_every_source(self, currency):
+        row = _rows(collect_reference_list(currency, _ISO))["EUR"]
+        assert row["list_version"] == "2026-09-17"
+        assert row["list_source"] == (
+            "https://example.org/list-one.xml | https://example.org/list-three.xml"
+        )
+
+    def test_a_list_without_version_or_source_leaves_the_cells_empty(self, graph):
+        reference = collect_reference_list(
+            graph, "https://example.com/ont/reference-data#TransportModeCode"
+        )
+        legacy = _rows(reference)["A"]
+        assert (legacy["list_version"], legacy["list_source"]) == ("", "")
+
+    def test_two_properties_with_one_local_name_are_refused(self, currency):
+        currency.parse(
+            data="@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.org/other#numericCode> a owl:DatatypeProperty .\n"
+            '<https://example.org/iso4217#EUR> <https://example.org/other#numericCode> "1" .',
+            format="turtle",
+        )
+        with pytest.raises(ReferenceListError, match="share one seed column"):
+            collect_reference_list(currency, _ISO)
+
+    def test_a_property_named_like_a_fixed_column_is_refused(self, currency):
+        currency.parse(
+            data="@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "<https://example.org/iso4217#listVersion> a owl:DatatypeProperty .\n"
+            '<https://example.org/iso4217#EUR> <https://example.org/iso4217#listVersion> "x" .',
+            format="turtle",
+        )
+        with pytest.raises(ReferenceListError, match="a fixed column"):
+            collect_reference_list(currency, _ISO)
+
+    def test_docs_describe_every_column(self, currency):
+        reference = collect_reference_list(currency, _ISO)
+        seed = yaml.safe_load(render_seed_docs(reference, "currency_code", None))["seeds"][0]
+        described = {column["name"]: column["description"] for column in seed["columns"]}
+        assert tuple(described) == reference.columns
+        assert described["numeric_code"].startswith("numeric code (https://example.org/")
+        assert "owl:deprecated" in described["deprecated"]
+
+    def test_a_changed_fact_is_a_changed_code(self, currency):
+        reference = collect_reference_list(currency, _ISO)
+        current = render_seed_csv(reference).replace(",978,", ",999,")
+        assert diff_seed(current, reference).changed == (("CurrencyCode", "EUR"),)
+
+    def test_a_seed_from_before_the_fact_columns_reads_as_changed(self, currency):
+        reference = collect_reference_list(currency, _ISO)
+        old = "code_list,code,name,iri\n" + "".join(
+            f"{m.code_list},{m.code},{m.name},{m.iri}\n" for m in reference.members
+        )
+        diff = diff_seed(old, reference)
+        assert (diff.added, diff.removed) == ((), ())
+        assert len(diff.changed) == 3
+
+
+class TestCliFacts:
+    def test_check_flags_a_seed_from_before_the_fact_columns(self, hub):
+        assert _export("std:ModeList").exit_code == 0
+        path = hub / _SEEDS / "mode_list.csv"
+        rows = path.read_text(encoding="utf-8").splitlines()
+        path.write_text(
+            "\n".join(",".join(row.split(",")[:4]) for row in rows) + "\n", encoding="utf-8"
+        )
+        result = _export("std:ModeList", "--check")
+        assert result.exit_code == 1
+        assert "3 changed" in result.output
+
+    def test_writing_reports_deprecated_codes_and_the_fact_columns(self, tmp_path, monkeypatch):
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        (tmp_path / "model" / "ontologies" / "reference-data.ttl").write_text(
+            _CURRENCY_TTL, encoding="utf-8"
+        )
+        (tmp_path / "kairos.yaml").write_text("adapter: fabric-warehouse\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        result = _export("iso:CurrencyCode")
+        assert result.exit_code == 0, result.output
+        assert "1 deprecated (withdrawn) code(s)" in result.output
+        assert "numeric_code" in result.output

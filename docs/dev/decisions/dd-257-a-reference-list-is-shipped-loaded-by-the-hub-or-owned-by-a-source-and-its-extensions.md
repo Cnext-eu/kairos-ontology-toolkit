@@ -66,6 +66,8 @@ the list's rows live.**
    - **Where a list ships twice, bind the one the reference models name.** Countries:
      `unlcdv:Country`, not the OMG-LCC copy. Currencies: `unece:CurrencyCodeList`, not the
      IATA copy.
+     *Revised by [DD-258](dd-258-a-shipped-reference-lists-seed-carries-every-fact-its-members-state.md):
+     currencies bind `iso4217:CurrencyCode`, from SIX.*
    - **No new annotation is defined.** A marker is added to `kairos-ext.ttl` only when a
      toolkit reader acts on it (#1126 P2).
 
@@ -127,6 +129,9 @@ the list's rows live.**
 
 - **`kairos-ontology export-reference-list` writes a kind-1 list's seed** (#1126 P2):
   - It reads the members from the resolved closure and keys them on `(code_list, code)`.
+    [DD-258](dd-258-a-shipped-reference-lists-seed-carries-every-fact-its-members-state.md)
+    adds each list's version and source, `deprecated` and the members' datatype facts as
+    columns.
   - It writes seed docs that record each list's snapshot and source and type every column
     as the adapter's text type.
   - It refuses to overwrite a seed it did not generate, and refuses a class with no

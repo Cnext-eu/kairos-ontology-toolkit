@@ -143,8 +143,12 @@ CSV is the wrong loop, it is a source, not a seed: import it and bind it normall
   generate the seed with `kairos-ontology export-reference-list <class>
   --domain <domain>`. Never copy members out of the `.ttl`.
   - The seed is keyed on `(code_list, code)`, with the upstream IRI as a column.
-  - Its generated docs carry the snapshot and `dcterms:source`, and type every
-    column as text.
+  - Each row also carries `list_version`, `list_source`, `deprecated` and one
+    column per datatype property of the members (ISO 4217: `numeric_code`,
+    `minor_unit`, ...) (DD-258). Bind those columns; never type a snapshot date
+    or a shipped attribute into SQL or a sibling seed. Name the columns in a
+    `_local` union: an upgrade can add a fact column.
+  - Its generated docs describe every column and type it as text.
   - Never edit the generated seed. After a reference-models upgrade, run
     `export-reference-list --all`, which regenerates every generated seed from
     the class and domain its docs record. `pr-validate` runs `--all --check`
