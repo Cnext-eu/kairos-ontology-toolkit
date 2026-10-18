@@ -538,3 +538,34 @@ def test_commented_out_ref_is_not_a_bundle_dependency(tmp_path: Path) -> None:
     bundle = assemble_dbt_bundle(root, [_contract()], known_resources=("stg_source",))
 
     assert "models/intermediate/conformed.sql" in bundle.artifacts
+
+
+# ---------------------------------------------------------------------------
+# Seeds in subfolders (#1145)
+# ---------------------------------------------------------------------------
+
+
+def test_a_seed_in_a_subfolder_resolves_and_keeps_its_path(tmp_path: Path) -> None:
+    root = _bundle(tmp_path)
+    moved = root / "seeds" / "reference"
+    moved.mkdir(parents=True)
+    _seed(root).rename(moved / "country_codes.csv")
+    (root / "models/intermediate/conformed.sql").write_text(
+        "select * from {{ ref('country_codes') }}\n",
+        encoding="utf-8",
+    )
+
+    bundle = assemble_dbt_bundle(root, [_contract()])
+
+    assert bundle.seed_names == {"country_codes"}
+    assert "seeds/reference/country_codes.csv" in bundle.artifacts
+
+
+def test_two_seeds_of_one_name_in_different_folders_fail(tmp_path: Path) -> None:
+    root = _bundle(tmp_path)
+    _seed(root)
+    (root / "seeds" / "reference").mkdir()
+    (root / "seeds" / "reference" / "country_codes.csv").write_text("code\nBE\n", encoding="utf-8")
+
+    with pytest.raises(DbtContractError, match="duplicate dbt seed name 'country_codes'"):
+        assemble_dbt_bundle(root, [_contract()])

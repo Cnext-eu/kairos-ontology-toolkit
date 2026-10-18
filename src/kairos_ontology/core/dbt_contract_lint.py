@@ -444,6 +444,29 @@ def _seed_findings(transforms_dir: Path, hub_root: Path) -> list[DbtContractFind
     seeds_dir = transforms_dir / "seeds"
     seed_paths = _authored_seed_csvs(transforms_dir)
     seed_stems = {path.stem for path in seed_paths}
+    # A seed's dbt name is its file name, whatever subfolder it sits in (#1145).
+    seed_by_stem: dict[str, list[Path]] = {}
+    for path in seed_paths:
+        seed_by_stem.setdefault(path.stem, []).append(path)
+
+    # --- two seeds sharing one name (ERROR) ------------------------------------------------
+    # dbt refuses to parse a project with two seeds of one name, and nothing else catches
+    # it: their paths differ, so the bundle's path check lets both through.
+    for stem, paths in sorted(seed_by_stem.items()):
+        if len(paths) > 1:
+            findings.append(
+                DbtContractFinding(
+                    code="dbt-contract.seed-duplicate-name",
+                    severity=SEVERITY_ERROR,
+                    message=(
+                        f"seed {stem!r} is authored more than once "
+                        f"({', '.join(_relative(path, hub_root) for path in paths)}); dbt "
+                        "names a seed by its file name whatever its folder, so keep one"
+                    ),
+                    path=_relative(paths[1], hub_root),
+                    model=stem,
+                )
+            )
 
     # --- unreadable / headerless seed data (warning) ---------------------------------------
     for path in seed_paths:
@@ -499,7 +522,7 @@ def _seed_findings(transforms_dir: Path, hub_root: Path) -> list[DbtContractFind
                     f"{_relative(model_stems[stem], hub_root)}; dbt models and seeds share "
                     "one ref() namespace, so rename one of them"
                 ),
-                path=_relative(seeds_dir / f"{stem}.csv", hub_root),
+                path=_relative(seed_by_stem[stem][0], hub_root),
                 model=stem,
             )
         )
@@ -568,7 +591,6 @@ def _seed_findings(transforms_dir: Path, hub_root: Path) -> list[DbtContractFind
     # --- crosswalk seeds against the reference seed they map to (ERROR, DD-257) ----------
     findings.extend(
         _crosswalk_findings(
-            seeds_dir,
             seed_entries,
             {path.stem: path for path in reversed(seed_paths)},
             set(model_stems),
@@ -611,7 +633,6 @@ def _relationships_tests(column: dict) -> list[dict]:
 
 
 def _crosswalk_findings(
-    seeds_dir: Path,
     seed_entries: list[tuple[Path, dict]],
     seed_paths: dict[str, Path],
     model_stems: set[str],
@@ -694,7 +715,7 @@ def _crosswalk_findings(
                                 "the crosswalk maps to must exist in the reference list; leave "
                                 "the cell empty for a code that is unmapped on purpose"
                             ),
-                            path=_relative(seeds_dir / f"{name}.csv", hub_root),
+                            path=_relative(seed_paths[name], hub_root),
                             model=name,
                         )
                     )

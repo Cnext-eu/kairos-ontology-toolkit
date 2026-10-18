@@ -671,6 +671,45 @@ def test_emit_writes_seed_column_docs_and_fails_closed_on_tampering(tmp_path):
         _emit_compile_artifacts(result, target, hub)
 
 
+def test_emit_keeps_a_seed_and_its_docs_in_their_subfolder(tmp_path):
+    """#1145: dbt names a seed by its file name, so a seed may live in any seeds subfolder."""
+    hub = _seeded_contracted_hub(tmp_path / "hub")
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    (seeds / "reference").mkdir()
+    (seeds / "country_codes.csv").rename(seeds / "reference" / "country_codes.csv")
+    (seeds / "reference" / "country_codes.yml").write_text(
+        "version: 2\nseeds:\n  - name: country_codes\n", encoding="utf-8"
+    )
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    target = tmp_path / "publish" / "medallion" / "dbt"
+
+    _emit_compile_artifacts(result, target, hub)
+
+    planned = {item.path: item for item in result.plan.dbt_dependencies}
+    assert planned["seeds/reference/country_codes.csv"].model_name == "country_codes"
+    assert planned["seeds/reference/country_codes.yml"].kind == "seed_properties"
+    assert (target / "seeds" / "reference" / "country_codes.csv").is_file()
+    assert not (target / "seeds" / "country_codes.csv").exists()
+    from kairos_ontology.core.dbt_validation import _dangling_refs
+
+    assert _dangling_refs(target) == {}
+
+
+def test_a_seed_name_in_two_folders_fails_the_compile(tmp_path):
+    hub = _seeded_contracted_hub(tmp_path / "hub")
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    (seeds / "reference").mkdir()
+    (seeds / "reference" / "country_codes.csv").write_text("code\nBE\n", encoding="utf-8")
+
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+
+    assert not result.succeeded
+    assert any(
+        item.code.startswith("dbt-source.dependency-") for item in result.diagnostics.items
+    )
+
+
 def test_dependency_kind_registry_fails_closed_on_unknown_and_misplaced_kinds():
     """The registry replaced a boolean ladder whose prefix ternary assumed `models/`."""
     from kairos_ontology.cli.compile import _DEPENDENCY_KINDS, _dependency_entry_is_valid
