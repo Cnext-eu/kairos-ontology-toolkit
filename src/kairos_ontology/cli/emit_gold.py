@@ -347,7 +347,7 @@ def _emit_gold_product(
     summary = f"{len(artifacts)} Gold artifact(s) for {label} to {target}"
     if not confirm_emit:
         click.echo(f"✅ Would emit {summary}")
-    _report_unresolved(artifacts, product)
+    _report_unresolved(artifacts, product, logical)
     _report_unresolved_bridges(artifacts, product)
     _report_shared_tables(artifacts, product)
     _report_shape_findings(logical, product)
@@ -554,12 +554,16 @@ def _table_domains(plans) -> dict[str, str]:
     return mapping
 
 
-def _report_unresolved(artifacts: dict[str, str], product) -> None:
+def _report_unresolved(artifacts: dict[str, str], product, logical=None) -> None:
     """Warn about a foreign key whose target table is not in this product (#744).
 
     Not fatal: the model is valid and useful without the join, and the fix is an authoring
     decision -- add the owning domain to the product, or accept the dead column. Before
     #744 this was silent, and a cross-domain product lost half its star with no signal.
+
+    A key whose owning domain *is* in the product is left out (#1142): adding the domain
+    is not its fix, and it is reported, or excused, as the shape practice
+    ``semantic-model.dimension-key-without-dimension``.
     """
     import json
 
@@ -569,7 +573,17 @@ def _report_unresolved(artifacts: dict[str, str], product) -> None:
     )
     if report is None:
         return
-    unresolved = json.loads(report).get("unresolved_relationships") or []
+    in_product = {
+        (property_uri, source_table)
+        for property_uri, source_table, _column, _target in (
+            getattr(logical, "dimension_keys", ()) or ()
+        )
+    }
+    unresolved = [
+        item
+        for item in json.loads(report).get("unresolved_relationships") or []
+        if (item["property"], item["source_table"]) not in in_product
+    ]
     if not unresolved:
         return
     for item in unresolved:
@@ -593,7 +607,7 @@ def _report_unresolved(artifacts: dict[str, str], product) -> None:
         click.echo(f"       {item['source_table']} -> {item['target_class']}")
     click.echo(
         "     Add the owning domain to this product in kairos.yaml (gold.products), "
-        "or author the target as a Gold table in a participating domain."
+        "or remove the key with kairos-ext:goldExcludeColumn."
     )
 
 
