@@ -67,6 +67,9 @@ if sys.stdout.encoding != "utf-8":
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO_ROOT / "pyproject.toml"
+#: Holds ``_REFMODELS_FALLBACK_TAG``, which must never fall behind the pin:
+#: ``tests/test_scaffold_refmodels_pin.py`` fails when it does.
+FALLBACK_SOURCE = REPO_ROOT / "src" / "kairos_ontology" / "cli" / "shared.py"
 
 # Importable from a bare checkout as well as from an installed venv.
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -170,6 +173,29 @@ def _is_behind(pinned: str, latest: str) -> bool:
         return pinned != latest
 
 
+_FALLBACK_RE = re.compile(r'^(_REFMODELS_FALLBACK_TAG = ")(v[^"]+)(")', re.MULTILINE)
+
+
+def raise_fallback_tag(latest: str) -> str | None:
+    """Raise ``_REFMODELS_FALLBACK_TAG`` to *latest* when it is lower; return the old tag.
+
+    The daily bump used to move only the pin, so its own verification step then failed on
+    the fallback test every day and no bump PR was ever opened (pinned v1.35.2 while the
+    reference models reached v1.41.0). The two move together now.
+    """
+    with FALLBACK_SOURCE.open("r", encoding="utf-8", newline="") as fh:
+        text = fh.read()
+    match = _FALLBACK_RE.search(text)
+    if match is None:
+        raise ValueError(f"no _REFMODELS_FALLBACK_TAG assignment in {FALLBACK_SOURCE}")
+    current = match.group(2)
+    if not _is_behind(current, latest):
+        return None
+    with FALLBACK_SOURCE.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(_FALLBACK_RE.sub(rf"\g<1>{latest}\g<3>", text, count=1))
+    return current
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check the reference-models pin.")
     parser.add_argument("--check", action="store_true", help="Exit 1 if the pin is behind.")
@@ -211,6 +237,9 @@ def main(argv: list[str] | None = None) -> int:
     version = _tag_to_version(latest)
     _write_pyproject(_PIN_RE.sub(rf"\g<1>{tag}\g<3>{version}\g<5>", text))
     print(f"  ✎ pyproject.toml → {latest}")
+    previous_fallback = raise_fallback_tag(latest)
+    if previous_fallback is not None:
+        print(f"  ✎ _REFMODELS_FALLBACK_TAG {previous_fallback} → {latest}")
     lock = subprocess.run(["uv", "lock"], cwd=REPO_ROOT, capture_output=True, text=True)
     if lock.returncode != 0:
         print(f"✗ `uv lock` failed:\n{lock.stderr.strip()}")
