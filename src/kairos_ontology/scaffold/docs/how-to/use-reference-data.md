@@ -216,8 +216,11 @@ ROA,3
 AIR,4
 ```
 
-In the crosswalk's seed docs, declare which reference seed its codes come from, with
-dbt's own `relationships` test. Name the codes you leave unmapped on purpose:
+In the crosswalk's seed docs, declare which list its codes come from, with dbt's own
+`relationships` test. Point the test at **the list as Silver sees it**: the contracted
+model from step 2, which unions the shipped seed with your extension seed. A test on the
+generated seed alone fails at build as soon as a crosswalk maps to a local code. Name the
+codes you leave unmapped on purpose:
 
 ```yaml
 # integration/transforms/dbt/seeds/crosswalks/tms_transport_mode_rec19_map.yml
@@ -228,14 +231,20 @@ seeds:
     columns:
       - name: rec19_code
         data_tests:
-          - relationships: {to: "ref('transport_mode_code')", field: code}
+          - relationships: {to: "ref('int_reference__transport_mode_code')", field: code}
 ```
 
 `validate-dbt-contracts` reads that test and checks every code in the column against the
-reference seed, before anything is built:
+list, before anything is built. It reads a union model through the seeds it selects, and
+a seed target together with its `<list>_local` extension:
 - **A typo** such as `l` for `1` is an error (`dbt-contract.crosswalk-unknown-code`), with
   its line number.
 - **An empty cell** is a code left unmapped on purpose, and is allowed.
+- **A local code behind a test on the generated seed** is a warning
+  (`dbt-contract.crosswalk-targets-shipped-only`): the code is valid, but dbt's test would
+  fail. Point the test at the union model.
+- **A model that reads a source or another model** can't be read offline, so the lint
+  leaves it to dbt.
 - **dbt runs the same test after the build,** so a later edit can't slip through.
 
 In the contracted model for the record that carries the code, **left-join** the

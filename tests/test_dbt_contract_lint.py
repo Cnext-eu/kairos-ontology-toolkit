@@ -683,6 +683,89 @@ def test_a_target_that_is_a_model_is_left_to_dbt(tmp_path: Path) -> None:
     assert not _findings(report, "dbt-contract.crosswalk-unresolved")
 
 
+# --- the governed list is shipped plus local (#1156) -----------------------------------------
+
+
+def _local_seed(hub: Path, rows: str, header: str = "code,name") -> None:
+    (_seeds_dir(hub) / "transport_mode_code_local.csv").write_text(
+        f"{header}\n{rows}", encoding="utf-8"
+    )
+
+
+_UNION_MODEL = (
+    "-- the list as Silver sees it: shipped plus local\n"
+    "select code, name from {{ ref('transport_mode_code') }}\n"
+    "union all\n"
+    "select code, name from {{ ref('transport_mode_code_local') }}\n"
+)
+
+
+def test_a_code_in_the_local_extension_is_known_but_the_seed_target_is_flagged(
+    tmp_path: Path,
+) -> None:
+    hub = _crosswalk_hub(tmp_path, "SEA,1\nPIP,7\n")
+    _local_seed(hub, "7,Pipeline\n")
+
+    report = run_dbt_contract_lint(hub)
+
+    assert not _findings(report, "dbt-contract.crosswalk-unknown-code")
+    [finding] = _findings(report, "dbt-contract.crosswalk-targets-shipped-only")
+    assert finding.severity == "warning"
+    assert "'7' (line 3)" in finding.message
+    assert "transport_mode_code_local" in finding.message
+    assert report.passed is True
+
+
+def test_a_code_in_neither_seed_is_still_an_error(tmp_path: Path) -> None:
+    hub = _crosswalk_hub(tmp_path, "SEA,1\nPIP,8\n")
+    _local_seed(hub, "7,Pipeline\n")
+
+    [finding] = _findings(run_dbt_contract_lint(hub), "dbt-contract.crosswalk-unknown-code")
+
+    assert "'8' (line 3)" in finding.message
+    assert "transport_mode_code.code + transport_mode_code_local.code" in finding.message
+
+
+def test_a_local_extension_lacking_the_field_is_a_warning(tmp_path: Path) -> None:
+    hub = _crosswalk_hub(tmp_path, "SEA,1\n")
+    _local_seed(hub, "7,Pipeline\n", header="mode,name")
+
+    [finding] = _findings(run_dbt_contract_lint(hub), "dbt-contract.crosswalk-unresolved")
+
+    assert "transport_mode_code_local.csv has no column 'code'" in finding.message
+
+
+def test_a_union_model_target_is_read_through_its_seeds(tmp_path: Path) -> None:
+    test = {"relationships": {"to": "ref('int_reference__transport_mode_code')", "field": "code"}}
+    hub = _crosswalk_hub(tmp_path, "SEA,1\nPIP,7\nROA,3\n", test)
+    _local_seed(hub, "7,Pipeline\n")
+    (_models_dir(hub) / "int_reference__transport_mode_code.sql").write_text(
+        _UNION_MODEL, encoding="utf-8"
+    )
+
+    report = run_dbt_contract_lint(hub)
+
+    [finding] = _findings(report, "dbt-contract.crosswalk-unknown-code")
+    assert "'3' (line 4)" in finding.message
+    assert "'7'" not in finding.message
+    assert not _findings(report, "dbt-contract.crosswalk-targets-shipped-only")
+
+
+def test_a_model_reading_a_source_or_renaming_the_field_is_left_to_dbt(tmp_path: Path) -> None:
+    test = {"relationships": {"to": "ref('int_reference__transport_mode_code')", "field": "code"}}
+    hub = _crosswalk_hub(tmp_path, "SEA,anything\n", test)
+    model = _models_dir(hub) / "int_reference__transport_mode_code.sql"
+    for sql in (
+        _UNION_MODEL + "union all\nselect code, name from {{ source('tms', 'mode') }}\n",
+        "select mode as code from {{ ref('transport_mode_code_local') }}\n",
+    ):
+        _local_seed(hub, "7,Pipeline\n", header="mode,name")
+        model.write_text(sql, encoding="utf-8")
+        report = run_dbt_contract_lint(hub)
+        assert not _findings(report, "dbt-contract.crosswalk-unknown-code")
+        assert not _findings(report, "dbt-contract.crosswalk-unresolved")
+
+
 # ---------------------------------------------------------------------------------------------
 # Seeds in subfolders (#1145): dbt names a seed by its file name, whatever its folder
 # ---------------------------------------------------------------------------------------------

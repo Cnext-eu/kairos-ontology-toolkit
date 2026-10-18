@@ -155,6 +155,18 @@ the list's rows live.**
 
   Chained with `export-reference-list --check`, the crosswalk is checked against the
   shipped individuals without the lint loading the ontology.
+
+  **#1156 amendment.** The governed list is shipped plus local, so a crosswalk targets the
+  list as Silver sees it: the contracted model that unions the generated seed with its
+  `<list>_local` extension (for example `int_reference__transport_mode_code`). The lint now
+  reads both forms offline:
+  - A seed target is read together with its `<target>_local` sibling. A code that exists
+    only in the extension passes the code check. It is reported as
+    `dbt-contract.crosswalk-targets-shipped-only` (a warning), because dbt's test against
+    the generated seed alone fails at build.
+  - A model target that reads nothing but seeds, the shape of a union model, is read
+    through those seeds. A model that reads a source, another model, or seeds without the
+    target field is still left to dbt.
 - No compiled output changes. Hubs that bound reference tables under the v5 names keep
   them.
 
