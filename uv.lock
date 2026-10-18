@@ -707,10 +707,10 @@ wheels = [
 
 [[package]]
 name = "kairos-ontology-referencemodels"
-version = "1.41.0"
-source = { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.41.0/kairos_ontology_referencemodels-1.41.0-py3-none-any.whl" }
+version = "1.41.1"
+source = { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.41.1/kairos_ontology_referencemodels-1.41.1-py3-none-any.whl" }
 wheels = [
-    { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.41.0/kairos_ontology_referencemodels-1.41.0-py3-none-any.whl", hash = "sha256:3846bd6bb86782fc33262f6ab07570882528e93ce57c16f6f988f7ed23d62632" },
+    { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.41.1/kairos_ontology_referencemodels-1.41.1-py3-none-any.whl", hash = "sha256:f19b81ddc2a70c6229c8ea27e83a50f50f65751276298afa601492a4931ef9e7" },
 ]
 
 [package.metadata]
@@ -854,7 +854,7 @@ provides-extras = ["azure", "business-doc", "documents", "flatfile", "foundry", 
 azure = [{ name = "azure-identity", specifier = ">=1.15.0,<2.0.0" }]
 business-doc = [{ name = "python-docx", specifier = ">=1.1.0,<2.0.0" }]
 dev = [
-    { name = "kairos-ontology-referencemodels", url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.41.0/kairos_ontology_referencemodels-1.41.0-py3-none-any.whl" },
+    { name = "kairos-ontology-referencemodels", url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.41.1/kairos_ontology_referencemodels-1.41.1-py3-none-any.whl" },
     { name = "pytest", specifier = ">=9.0.3,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.0,<2.0" },
     { name = "pytest-cov", specifier = ">=4.1.0" },

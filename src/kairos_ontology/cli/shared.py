@@ -607,7 +607,7 @@ _REFMODELS_REPO = "Cnext-eu/kairos-ontology-referencemodels"
 # Kept at or above the reference-models version this toolkit is tested against — see
 # `tests/test_scaffold_refmodels_pin.py`, which fails when the two drift apart, so a
 # degraded scaffold still lands on a bundle the toolkit has actually seen.
-_REFMODELS_FALLBACK_TAG = "v1.41.0"
+_REFMODELS_FALLBACK_TAG = "v1.41.1"
 
 
 def _resolve_scaffold_refmodels_pin(version_tag: str | None = None) -> tuple[str, str]:
