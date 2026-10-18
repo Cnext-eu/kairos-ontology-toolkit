@@ -593,7 +593,7 @@ def _seed_findings(transforms_dir: Path, hub_root: Path) -> list[DbtContractFind
         _crosswalk_findings(
             seed_entries,
             {path.stem: path for path in reversed(seed_paths)},
-            set(model_stems),
+            model_stems,
             hub_root,
         )
     )
@@ -632,13 +632,38 @@ def _relationships_tests(column: dict) -> list[dict]:
     return found
 
 
+#: The suffix of a reference list's hub-owned extension seed (DD-257): ``<list>_local``.
+_LOCAL_SEED_SUFFIX = "_local"
+
+
+def _model_reference_seeds(model_path: Path, seed_paths: dict[str, Path]) -> list[str] | None:
+    """The seeds a model reads, when it reads nothing but seeds; ``None`` otherwise.
+
+    A hub serves a reference list as Silver sees it, shipped plus local, through a model
+    such as ``int_reference__transport_mode_code`` that unions the generated seed with its
+    ``_local`` sibling (DD-257). Such a model can be read offline through the seeds it
+    ``ref()``\\s. A model that reads a source or another model cannot, and is left to dbt.
+    """
+    from .compiler.dbt_source import extract_refs, extract_sources
+
+    try:
+        text = model_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    refs = extract_refs(text)
+    sources = extract_sources(text)
+    if not refs or sources.pairs or sources.unparsed or not refs <= set(seed_paths):
+        return None
+    return sorted(refs)
+
+
 def _crosswalk_findings(
     seed_entries: list[tuple[Path, dict]],
     seed_paths: dict[str, Path],
-    model_stems: set[str],
+    model_paths: dict[str, Path],
     hub_root: Path,
 ) -> list[DbtContractFinding]:
-    """Check crosswalk seeds against the reference seed their ``relationships`` test names.
+    """Check crosswalk seeds against the reference list their ``relationships`` test names.
 
     A crosswalk maps one source system's codes to a reference list's codes (DD-257). Its
     docs declare the target the dbt way, so dbt checks it at build time too::
@@ -646,12 +671,18 @@ def _crosswalk_findings(
         columns:
           - name: rec19_code
             data_tests:
-              - relationships: {to: "ref('transport_mode_code')", field: code}
+              - relationships: {to: "ref('int_reference__transport_mode_code')", field: code}
 
-    When the target is an authored seed, every non-empty value must occur in that seed's
-    *field* column. An empty cell is a code left unmapped on purpose, which dbt's
-    ``relationships`` test also ignores. A target that is a model cannot be read offline,
-    so it is left to dbt.
+    Every non-empty value must occur in the list's *field* column. An empty cell is a code
+    left unmapped on purpose, which dbt's ``relationships`` test also ignores. The list is
+    read offline (#1156):
+
+    - a target that is an authored seed is read with its ``<target>_local`` extension seed,
+      since the governed list is shipped plus local. A code found only in the extension
+      passes, but dbt's test against the generated seed alone would fail at build, so it is
+      reported as ``crosswalk-targets-shipped-only``;
+    - a target that is a model is read through the seeds it ``ref()``\\s when it reads
+      nothing but seeds, the shape of a list's union model. Any other model is left to dbt.
     """
     findings: list[DbtContractFinding] = []
     for docs_path, entry in seed_entries:
@@ -668,28 +699,41 @@ def _crosswalk_findings(
                     continue
                 target = match.group(1)
                 where = f"{name}.{column['name']} → {target}.{target_field}"
-                if target not in seed_paths:
-                    if target not in model_stems:
-                        findings.append(
-                            DbtContractFinding(
-                                code="dbt-contract.crosswalk-unresolved",
-                                severity=SEVERITY_WARNING,
-                                message=(
-                                    f"{where}: the relationships test names {target!r}, which "
-                                    "is no authored seed or model, so dbt cannot resolve it"
-                                ),
-                                path=_relative(docs_path, hub_root),
-                                model=name,
-                            )
+                local = f"{target}{_LOCAL_SEED_SUFFIX}"
+                if target in seed_paths:
+                    list_seeds = [target] + ([local] if local in seed_paths else [])
+                elif target in model_paths:
+                    list_seeds = _model_reference_seeds(model_paths[target], seed_paths)
+                    if list_seeds is None:
+                        continue
+                else:
+                    findings.append(
+                        DbtContractFinding(
+                            code="dbt-contract.crosswalk-unresolved",
+                            severity=SEVERITY_WARNING,
+                            message=(
+                                f"{where}: the relationships test names {target!r}, which "
+                                "is no authored seed or model, so dbt cannot resolve it"
+                            ),
+                            path=_relative(docs_path, hub_root),
+                            model=name,
                         )
+                    )
                     continue
                 values = _seed_column_values(seed_paths[name], column["name"])
-                allowed = _seed_column_values(seed_paths[target], target_field)
-                if values is None or allowed is None:
+                allowed_by_seed = {
+                    seed: _seed_column_values(seed_paths[seed], target_field)
+                    for seed in list_seeds
+                }
+                lacking = [seed for seed, rows in allowed_by_seed.items() if rows is None]
+                if lacking and target not in seed_paths:
+                    # A model may rename the column it reads; only dbt can check it then.
+                    continue
+                if values is None or lacking:
                     missing = (
                         f"{name}.csv has no column {column['name']!r}"
                         if values is None
-                        else (f"{target}.csv has no column {target_field!r}")
+                        else f"{lacking[0]}.csv has no column {target_field!r}"
                     )
                     findings.append(
                         DbtContractFinding(
@@ -701,17 +745,20 @@ def _crosswalk_findings(
                         )
                     )
                     continue
-                known = {value for _, value in allowed}
+                known_by_seed = {
+                    seed: {value for _, value in rows or []}
+                    for seed, rows in allowed_by_seed.items()
+                }
+                known = set().union(*known_by_seed.values())
+                read = " + ".join(f"{seed}.{target_field}" for seed in list_seeds)
                 unknown = [(line, value) for line, value in values if value and value not in known]
                 if unknown:
-                    shown = ", ".join(f"{value!r} (line {line})" for line, value in unknown[:5])
-                    more = f" and {len(unknown) - 5} more" if len(unknown) > 5 else ""
                     findings.append(
                         DbtContractFinding(
                             code="dbt-contract.crosswalk-unknown-code",
                             severity=SEVERITY_ERROR,
                             message=(
-                                f"{where}: {shown}{more} not found in {target}.{target_field}. A code "
+                                f"{where}: {_shown_codes(unknown)} not found in {read}. A code "
                                 "the crosswalk maps to must exist in the reference list; leave "
                                 "the cell empty for a code that is unmapped on purpose"
                             ),
@@ -719,7 +766,37 @@ def _crosswalk_findings(
                             model=name,
                         )
                     )
+                local_only = [
+                    (line, value)
+                    for line, value in values
+                    if value
+                    and target in seed_paths
+                    and value not in known_by_seed[target]
+                    and value in known_by_seed.get(local, set())
+                ]
+                if local_only:
+                    findings.append(
+                        DbtContractFinding(
+                            code="dbt-contract.crosswalk-targets-shipped-only",
+                            severity=SEVERITY_WARNING,
+                            message=(
+                                f"{where}: {_shown_codes(local_only)} exist only in {local}, "
+                                f"so dbt's relationships test against ref('{target}') fails at "
+                                "build. Point the test at the model that unions the list with "
+                                f"its extension (such as int_reference__{target}), the list as Silver "
+                                "sees it"
+                            ),
+                            path=_relative(docs_path, hub_root),
+                            model=name,
+                        )
+                    )
     return findings
+
+
+def _shown_codes(rows: list[tuple[int, str]]) -> str:
+    """At most five ``'code' (line n)`` mentions, with a count of the rest."""
+    shown = ", ".join(f"{value!r} (line {line})" for line, value in rows[:5])
+    return shown + (f" and {len(rows) - 5} more" if len(rows) > 5 else "")
 
 
 def run_dbt_contract_lint(
