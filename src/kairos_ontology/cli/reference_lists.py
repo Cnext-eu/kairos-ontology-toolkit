@@ -85,7 +85,6 @@ def _export_one(
     from ..core.projections.dbt.capabilities import physical_canonical_type
     from ..core.projections.dbt.policy_specs import CanonicalTypeKind, CanonicalTypeSpec
     from ..core.reference_lists import (
-        COLUMNS,
         ReferenceListError,
         collect_reference_list,
         column_lengths,
@@ -158,10 +157,15 @@ def _export_one(
     docs_path.write_bytes(docs_text.encode("utf-8"))
     click.echo(
         f"✅ Wrote {_rel(csv_path, hub)} ({len(reference.members)} rows; columns "
-        f"{', '.join(COLUMNS)}) and its docs."
+        f"{', '.join(reference.columns)}) and its docs."
     )
     for item in reference.lists:
         click.echo(f"   {item.name}: snapshot {item.version or 'unversioned'}")
+    deprecated = sum(item.deprecated for item in reference.members)
+    if deprecated:
+        click.echo(
+            f"   {deprecated} deprecated (withdrawn) code(s) kept as rows with deprecated=true."
+        )
     if reference.skipped:
         click.echo(
             f"   ⚠️ Skipped {len(reference.skipped)} member(s) with no code, "
@@ -227,9 +231,10 @@ def export_reference_list_cmd(
 
     CLASS_IRI is the list class (unece:TransportModeCodeList) or your governed class that
     lists subclass (ref:TransportModeCode). One row per member, keyed on (code_list, code),
-    with the upstream IRI as a column. The generated seed docs record the class and domain,
-    each list's snapshot version and source, and type every column as text so codes such
-    as 02 keep their leading zero.
+    with the upstream IRI as a column. Each row also carries its list's snapshot version and
+    source, whether the code is deprecated, and one column per datatype property the
+    members carry (DD-258). The generated seed docs record the class and domain, describe
+    every column, and type every column as text so codes such as 02 keep their leading zero.
 
     Only lists the reference models ship with members (kind 1, DD-257) can be exported.
     Local extension rows go in a separate <name>_local seed, which this command never

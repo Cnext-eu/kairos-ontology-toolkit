@@ -28,8 +28,9 @@ carry it, and you may set it on your own list.
   carries the standard's code as an attribute.
 
 **Where a list ships twice, bind the one the reference models name.** Countries:
-`unlcdv:Country`, not the OMG-LCC copy. Currencies: `unece:CurrencyCodeList`, not the
-IATA copy.
+`unlcdv:Country`, not the OMG-LCC copy. Currencies: `iso4217:CurrencyCode`, taken from
+SIX, the ISO 4217 maintenance agency. Don't use the UN/CEFACT copy (`unece:CurrencyCodeList`),
+which lags ISO and doesn't mark withdrawn codes, or the IATA copy (DD-258).
 
 Nothing appears in Silver until you bind it. A list you never bind, such as Rec 20's 1,828
 units, costs nothing.
@@ -58,15 +59,27 @@ governed class, every list that subclasses it is collected. The command writes:
 
 ```text
 # integration/transforms/dbt/seeds/transport_mode_code.csv
-code_list,code,name,iri
-TransportModeCodeList,0,Transport mode not specified,https://vocabulary.uncefact.org/TransportModeCodeList#0
-TransportModeCodeList,1,Maritime transport,https://vocabulary.uncefact.org/TransportModeCodeList#1
+code_list,code,name,iri,list_version,list_source,deprecated
+TransportModeCodeList,0,Transport mode not specified,https://vocabulary.uncefact.org/TransportModeCodeList#0,2026-10-17,https://vocabulary.uncefact.org/,false
 …
 ```
 
+**What a row carries (DD-258).** After `code_list`, `code`, `name` and `iri`, every row has:
+- **`list_version` and `list_source`.** These are its list's `owl:versionInfo` and
+  `dcterms:source`. Bind `list_version` when your class has a version property, such as a
+  code-list version that Gold shows. Never type the snapshot date into SQL: the next
+  refresh changes the seed, but nothing would change the SQL.
+- **`deprecated`.** It is `true` for a code the standard has withdrawn. The row stays,
+  because older facts still point at it. Filter on it in a model that offers codes for new
+  data, not in the governed list.
+- **One column per fact the members carry.** Each `owl:DatatypeProperty` on the members
+  becomes a column named after the property in snake_case. ISO 4217, for example, gives
+  `numeric_code`, `minor_unit`, `withdrawal_date` and `is_fund`. Several values share one
+  cell, sorted and separated by ` | `. A member without the fact leaves its cell empty.
+
 It also writes `transport_mode_code.yml`, the seed docs:
-- **Snapshot and source.** Each list's version (`owl:versionInfo`) and `dcterms:source`
-  are recorded.
+- **Column docs.** Every column is described. A fact column names the property it came
+  from.
 - **Text types.** Every column is typed as text for your hub's adapter, so a code such as
   `02` keeps its leading zero.
 - **Generated marker.** The command refuses to overwrite a seed it did not generate
@@ -147,10 +160,16 @@ which the European Commission and others code `XK`.
 3. **Union the two in the contracted model** and say where each row came from:
 
    ```sql
-   select code_list, code, name, iri, 'shipped' as origin from {{ ref('country') }}
+   select code_list, code, name, iri, list_version, deprecated, 'shipped' as origin
+   from {{ ref('country') }}
    union all
-   select code_list, code, name, null as iri, 'hub' as origin from {{ ref('country_local') }}
+   select code_list, code, name, null as iri, null as list_version, 'false' as deprecated,
+       'hub' as origin
+   from {{ ref('country_local') }}
    ```
+
+   Name the columns. A reference-models upgrade can add a fact column to the shipped seed,
+   and a `select *` union then fails on the column count.
 
 The binding's `unique` rule on `code` fails if a later snapshot ships a code you already
 added locally. That failure is what you want: decide then whether to retire the local row.
@@ -166,8 +185,10 @@ itself.
 
 ### Extra columns
 
-When you need an attribute the standard does not carry, such as a TEU factor per
-container type, keep it in a sibling seed keyed on the code. Join it in the contracted
+First check the shipped seed's columns: a fact the reference models state, such as
+ISO 4217's numeric code or minor unit, is already there and refreshes with the list. When
+you need an attribute the standard does not carry, such as a TEU factor per container
+type, keep it in a sibling seed keyed on the code. Join it in the contracted
 model. Refreshing the shipped rows then never wipes it.
 
 ```text
