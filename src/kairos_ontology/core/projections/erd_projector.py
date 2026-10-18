@@ -132,6 +132,12 @@ def _declared_classes(local_graph: Optional[Graph], closure: Graph) -> set[URIRe
     which is what keeps a domain-scoped diagram domain-scoped. The class test is applied
     against the *closure*, because the domain file may attach an annotation without
     repeating ``a owl:Class``.
+
+    A subject the file only *relates* is not declared either (#1148): binding a shipped
+    list takes ``unece:TransportModeCodeList rdfs:subClassOf :TransportModeCode``, which
+    names the imported class as a subject, yet says nothing about it the reference model
+    does not own. A subject counts when the file states something other than
+    :data:`_USE_AXIOMS` about it -- a type, a label, a comment.
     """
     if local_graph is None:
         return set()
@@ -139,8 +145,14 @@ def _declared_classes(local_graph: Optional[Graph], closure: Graph) -> set[URIRe
     return {
         subject
         for subject in set(local_graph.subjects(None, None))
-        if isinstance(subject, URIRef) and subject in typed
+        if isinstance(subject, URIRef)
+        and subject in typed
+        and any(p not in _USE_AXIOMS for p in local_graph.predicates(subject, None))
     }
+
+
+#: Predicates that relate a class to another without declaring it (#1148).
+_USE_AXIOMS = frozenset({RDFS.subClassOf, OWL.equivalentClass, OWL.disjointWith})
 
 
 def _collect_classes(

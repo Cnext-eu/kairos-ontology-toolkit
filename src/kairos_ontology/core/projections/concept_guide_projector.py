@@ -117,6 +117,8 @@ def render_concept_guide(
         return _label(graph, cls)
 
     def canonical(cls: URIRef) -> str:
+        if cls in base.class_curie:
+            return f"`{base.class_curie[cls]}`"
         return f"`{base.class_domain.get(cls, 'hub')}:{extract_local_name(str(cls))}`"
 
     lines = [
