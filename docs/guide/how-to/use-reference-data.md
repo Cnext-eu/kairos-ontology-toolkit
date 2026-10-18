@@ -45,44 +45,36 @@ ref:TransportModeCode a owl:Class .
 unece:TransportModeCodeList rdfs:subClassOf ref:TransportModeCode .
 ```
 
-Copy the members into a seed. Until the toolkit generates it (#1126), export them from the
-resolved closure. Don't copy them out of the `.ttl` by hand: reading serialised RDF as text
-is what DD-103 rules out, and the closure is what your hub actually imports.
+Write the members into a seed with `export-reference-list`. It reads the resolved closure,
+so it sees exactly what your hub imports. Never copy members out of the `.ttl` by hand:
+reading serialised RDF as text is what DD-103 rules out.
 
-```python
-# export_list.py <ontology.ttl> <catalog-v001.xml> <list class IRI> <out.csv>
-import csv
-import sys
-from pathlib import Path
-
-from rdflib import URIRef
-
-from kairos_ontology import load_ontology
-
-ontology, catalog, list_iri, out = sys.argv[1:5]
-graph = load_ontology(Path(ontology), catalog_path=Path(catalog)).graph
-rows = graph.query(
-    "SELECT ?code ?name ?iri WHERE { ?iri a ?list ; rdf:value ?code . "
-    "OPTIONAL { ?iri rdfs:label ?name } } ORDER BY ?code",
-    initBindings={"list": URIRef(list_iri)},
-)
-with open(out, "w", newline="", encoding="utf-8") as handle:
-    writer = csv.writer(handle)
-    writer.writerow(["code", "name", "iri"])
-    writer.writerows([str(code), str(name or ""), str(iri)] for code, name, iri in rows)
+```bash
+kairos-ontology export-reference-list ref:TransportModeCode --domain reference-data
 ```
 
-Run it on your reference-data domain ontology with the hub's catalog. Record the snapshot
-(`owl:versionInfo`) and `dcterms:source` in the seed docs, and re-run it after each
-reference-models upgrade so the change shows up as a diff in the hub PR:
+Pass the list class (`unece:TransportModeCodeList`) or your governed class. With your
+governed class, every list that subclasses it is collected. The command writes:
 
 ```text
 # integration/transforms/dbt/seeds/transport_mode_code.csv
-code,name,iri
-1,Maritime transport,https://vocabulary.uncefact.org/TransportModeCodeList#1
-3,Road transport,https://vocabulary.uncefact.org/TransportModeCodeList#3
-4,Air transport,https://vocabulary.uncefact.org/TransportModeCodeList#4
+code_list,code,name,iri
+TransportModeCodeList,0,Transport mode not specified,https://vocabulary.uncefact.org/TransportModeCodeList#0
+TransportModeCodeList,1,Maritime transport,https://vocabulary.uncefact.org/TransportModeCodeList#1
+…
 ```
+
+It also writes `transport_mode_code.yml`, the seed docs:
+- **Snapshot and source.** Each list's version (`owl:versionInfo`) and `dcterms:source`
+  are recorded.
+- **Text types.** Every column is typed as text for your hub's adapter, so a code such as
+  `02` keeps its leading zero.
+- **Generated marker.** The command refuses to overwrite a seed it did not generate
+  (`--force` overrides), and never touches `<name>_local`.
+- **Keeping current.** After each reference-models upgrade, re-run it. The change then
+  shows up as a diff in the hub PR. `--check` writes nothing and exits 1 when the seed is
+  stale.
+- **No members, no seed.** A list with no members (kind 2 or 3) is refused.
 
 Read it from a contracted model
 ([Write a contracted dbt model](write-a-contracted-dbt-model.md)) and bind the model.
@@ -144,17 +136,17 @@ which the European Commission and others code `XK`.
    individual in your hub ontology:
 
    ```text
-   # integration/transforms/dbt/seeds/country_code_local.csv
-   code,name
-   XK,Kosovo
+   # integration/transforms/dbt/seeds/country_local.csv
+   code_list,code,name
+   Country,XK,Kosovo
    ```
 
 3. **Union the two in the contracted model** and say where each row came from:
 
    ```sql
-   select code, name, 'iso' as origin from {{ ref('country_code') }}
+   select code_list, code, name, iri, 'shipped' as origin from {{ ref('country') }}
    union all
-   select code, name, 'hub' as origin from {{ ref('country_code_local') }}
+   select code_list, code, name, null as iri, 'hub' as origin from {{ ref('country_local') }}
    ```
 
 The binding's `unique` rule on `code` fails if a later snapshot ships a code you already

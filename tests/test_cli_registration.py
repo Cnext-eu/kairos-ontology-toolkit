@@ -57,6 +57,7 @@ RETAINED_COMMANDS = {
     "init-dataplatform",
     "inverse-scan",
     "list-class-properties",
+    "export-reference-list",
     "list-patterns",
     "logs",
     "hook",

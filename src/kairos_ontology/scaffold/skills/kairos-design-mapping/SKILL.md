@@ -182,7 +182,7 @@ union costs nothing at query time.
 list is one of three kinds:
 
 - **shipped** by the reference models as individuals (UNECE Rec 19/20/21,
-  ISO 3166): a seed exported from the closure, a contracted model, a binding;
+  ISO 3166): a seed from `export-reference-list`, a contracted model, a binding;
 - **hub-loaded** (UN/LOCODE locations): a source import and a binding;
 - **client- or system-owned** (a TMS master; ISO 6346 codes, which cannot ship):
   a binding to the source table.
