@@ -245,6 +245,24 @@ def test_owl_imports_triple_does_not_count_as_using_the_module(tmp_path: Path) -
     assert [d.term_uri for d in check_unused_imports(scan_hub_ontologies(tmp_path))] == [module]
 
 
+def test_a_module_used_through_terms_outside_its_namespace_counts(tmp_path: Path) -> None:
+    """#1148: the code-list module's IRI is not its terms' namespace."""
+    module = "https://www.kairosflow.ai/ont/uncefact/code-lists"
+    term = "https://vocabulary.uncefact.org/TransportModeCodeList"
+    path = _write_domain(tmp_path, "party", classes=("Party",), imports=(module,))
+    path.write_text(
+        path.read_text(encoding="utf-8") + f"\n<{term}> rdfs:subClassOf :Party .\n",
+        encoding="utf-8",
+    )
+    ontologies = scan_hub_ontologies(tmp_path)
+
+    assert [d.term_uri for d in check_unused_imports(ontologies)] == [module]
+    declared = {"party": {module: frozenset({term})}}
+    assert check_unused_imports(ontologies, declared) == []
+    other = {"party": {module: frozenset({"https://vocabulary.uncefact.org/Other"})}}
+    assert [d.term_uri for d in check_unused_imports(ontologies, other)] == [module]
+
+
 def test_collapsed_address_value_object_is_flagged(tmp_path: Path) -> None:
     _write_domain(
         tmp_path,

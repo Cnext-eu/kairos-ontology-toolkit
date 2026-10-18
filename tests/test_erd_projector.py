@@ -490,6 +490,20 @@ class TestReDeclaredImportedClasses:
 
         assert REF.TransportDocument not in _collect_classes(closure, NS, local)
 
+    def test_a_class_the_file_only_relates_stays_external(self):
+        """#1148: `unece:X rdfs:subClassOf :Y` names the imported class as a subject, but
+        states nothing the reference model does not own; it is not re-declared."""
+        closure, local = self._closure_and_local()
+        local.add((REF.TransportModeCodeList, RDFS.subClassOf, REF.Consignment))
+        closure.add((REF.TransportModeCodeList, RDFS.subClassOf, REF.Consignment))
+        closure.add((REF.TransportModeCodeList, RDF.type, OWL.Class))
+
+        from kairos_ontology.core.projections.erd_projector import _collect_classes
+
+        assert REF.TransportModeCodeList not in _collect_classes(closure, NS, local)
+        local.add((REF.TransportModeCodeList, RDFS.label, Literal("Transport mode")))
+        assert REF.TransportModeCodeList in _collect_classes(closure, NS, local)
+
     def test_local_graph_is_optional_and_changes_nothing_for_namespace_local_domains(self):
         graph = _base_graph()
         assert generate_erd_artifacts(graph, NS, "order") == generate_erd_artifacts(

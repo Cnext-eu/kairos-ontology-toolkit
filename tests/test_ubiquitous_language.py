@@ -346,3 +346,50 @@ class TestProjectorWiring:
         text = (ddd / UBIQUITOUS_LANGUAGE_NAME).read_text(encoding="utf-8")
         assert "domain-invoice" in text and "context-" not in text
         assert (ddd / CONCEPT_GUIDE_NAME).read_text(encoding="utf-8").startswith("# Concept guide")
+
+
+class TestImportedClassesUsedAsAxiomSubjects:
+    """#1148: binding a shipped list takes `unece:X rdfs:subClassOf :Y`. The imported class
+    is a subject in the hub file, yet the hub does not own it."""
+
+    REF = "https://hub.example/ont/reference-data"
+    LOCAL = textwrap.dedent(
+        """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix ref: <https://hub.example/ont/reference-data#> .
+        @prefix unece: <https://vocabulary.uncefact.org/> .
+        @prefix iso: <https://ref.example/iso4217#> .
+        <https://hub.example/ont/reference-data> a owl:Ontology .
+        ref:TransportModeCode a owl:Class ; rdfs:label "Transport mode code" .
+        ref:CurrencyCode a owl:Class ; rdfs:label "Currency code" .
+        unece:TransportModeCodeList rdfs:subClassOf ref:TransportModeCode .
+        iso:Currency rdfs:label "ISO 4217 currency" ; rdfs:subClassOf ref:CurrencyCode .
+        """
+    )
+    IMPORTED = textwrap.dedent(
+        """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        <https://vocabulary.uncefact.org/TransportModeCodeList> a owl:Class ;
+            rdfs:label "TransportModeCodeList" .
+        <https://ref.example/iso4217#Currency> a owl:Class .
+        """
+    )
+
+    def _guide(self) -> str:
+        local = _graph(self.LOCAL)
+        closure = _graph(self.LOCAL + self.IMPORTED)
+        domain = ContextDomain(name="reference-data", graph=closure, local_graph=local)
+        return render_concept_guide(build_language_model([domain], hub_name="hub"))
+
+    def test_an_axiom_subject_is_not_a_hub_concept(self):
+        guide = self._guide()
+        assert "TransportModeCodeList" not in guide
+        assert "`reference-data:TransportModeCode`" in guide
+
+    def test_a_re_declared_imported_class_keeps_its_own_prefix(self):
+        """#805 still counts a class the file labels; the guide must not mint its name."""
+        guide = self._guide()
+        assert "`iso:Currency`" in guide
+        assert "reference-data:Currency`" not in guide

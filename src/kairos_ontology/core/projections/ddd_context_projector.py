@@ -133,6 +133,10 @@ class _Model:
     silver: dict[URIRef, str]
     unresolved: list[str] = field(default_factory=list)
     dispositions: dict[URIRef, str] = field(default_factory=dict)
+    #: The CURIE of a declared class outside its domain's namespace (#1148). Such a class
+    #: is a reference-model class the domain file re-declares (#805); prefixing it with
+    #: the domain name would mint a hub term that does not exist.
+    class_curie: dict[URIRef, str] = field(default_factory=dict)
 
     def by_context(self) -> dict[URIRef, list[URIRef]]:
         grouped: dict[URIRef, list[URIRef]] = {ctx: [] for ctx in self.contexts}
@@ -213,6 +217,32 @@ def _hub_declared(
         for cls in sorted(declared, key=str):
             class_domain.setdefault(cls, domain.name)
     return classes, properties, class_domain
+
+
+def _foreign_curies(domains: list[ContextDomain], class_domain: dict) -> dict[URIRef, str]:
+    """``{class: CURIE}`` for each declared class outside its domain's own namespace.
+
+    The namespace is the domain file's ``owl:Ontology`` IRI. The CURIE uses the file's
+    own ``@prefix`` for that namespace, or the full IRI when the file binds none.
+    """
+    by_name = {domain.name: domain for domain in domains}
+    curies: dict[URIRef, str] = {}
+    for cls, name in class_domain.items():
+        domain = by_name.get(name)
+        local = domain.local_graph if domain is not None else None
+        if local is None:
+            continue
+        ontology = next(iter(local.subjects(RDF.type, OWL.Ontology)), None)
+        if ontology is None:
+            continue
+        own = str(ontology).rstrip("#/")
+        if str(cls).startswith((own + "#", own + "/")):
+            continue
+        try:
+            curies[cls] = local.namespace_manager.curie(str(cls), generate=False)
+        except (KeyError, ValueError):
+            curies[cls] = f"<{cls}>"
+    return curies
 
 
 def _resolve_class_token(domain: Optional[ContextDomain], token: str) -> Optional[str]:
@@ -358,6 +388,7 @@ def _collect(
         silver=silver,
         unresolved=unresolved,
         dispositions=_dispositions(hub_root),
+        class_curie=_foreign_curies(domains, class_domain),
     )
 
 

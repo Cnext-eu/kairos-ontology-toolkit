@@ -164,6 +164,10 @@ class DomainOntology:
     anchored_classes: frozenset[str] = frozenset()
     anchored_properties: frozenset[str] = frozenset()
     referenced_external: frozenset[str] = frozenset()
+    #: Full IRIs of every external term the file names, in any position (#1148). A module's
+    #: IRI need not be its terms' namespace, so :attr:`referenced_external` alone cannot
+    #: say whether an import is used; these are matched against what the module declares.
+    external_terms: frozenset[str] = frozenset()
     property_domains: dict[str, tuple[str, ...]] = field(default_factory=dict)
     #: ``(subject_local_name, predicate_local_name, target_uri)`` for every external term
     #: this file names via subClassOf / subPropertyOf / equivalentClass / domain / range.
@@ -485,8 +489,8 @@ def scan_domain_ontology(
         "http://www.w3.org/2001/XMLSchema#",
         "http://www.w3.org/2004/02/skos/core#",
     )
-    referenced_external = {
-        _namespace_of(str(node)).rstrip("#/")
+    external_terms = {
+        str(node)
         for subject, predicate, obj in graph
         if predicate != OWL.imports
         for node in (subject, predicate, obj)
@@ -495,6 +499,7 @@ def scan_domain_ontology(
         and str(node).startswith("http")
         and not str(node).startswith(_VOCAB_PREFIXES)
     }
+    referenced_external = {_namespace_of(node).rstrip("#/") for node in external_terms}
 
     # Full URIs of external terms this file names in a structural position, as
     # ``(subject_local_name, predicate_local_name, target_uri)``. ``referenced_external``
@@ -568,6 +573,7 @@ def scan_domain_ontology(
         anchored_classes=frozenset(anchored_classes),
         anchored_properties=frozenset(anchored_properties),
         referenced_external=frozenset(referenced_external),
+        external_terms=frozenset(external_terms),
         external_term_refs=frozenset(external_term_refs),
         property_domains=property_domains,
         property_labels=property_labels,
@@ -831,8 +837,15 @@ def check_reference_model_shadowing(
 
 def check_unused_imports(
     ontologies: dict[str, DomainOntology],
+    closure_declared: Optional[dict[str, dict[str, frozenset[str]]]] = None,
 ) -> list[IntegrityDiagnostic]:
     """Flag an ``owl:imports`` no term in the file references.
+
+    A module counts as used when the file names a term in its namespace, or -- with
+    *closure_declared*, each domain's ``{module IRI: terms its document declares}`` --
+    a term the module's document declares. The second matters for a module whose IRI is
+    not its terms' namespace: ``https://www.kairosflow.ai/ont/uncefact/code-lists``
+    declares ``https://vocabulary.uncefact.org/TransportModeCodeList`` (#1148).
 
     Distinct from ``surplus_managed_import``, which asks whether the *blueprint*
     requires the module. This asks whether the *file* uses it. A domain can satisfy
@@ -847,8 +860,11 @@ def check_unused_imports(
         # scaffold is exactly the noise that teaches people to skip the warning list.
         if not onto.classes and not onto.properties:
             continue
+        declared = (closure_declared or {}).get(domain, {})
         for module in onto.imports:
             if module in onto.referenced_external:
+                continue
+            if onto.external_terms & declared.get(module, frozenset()):
                 continue
             diagnostics.append(
                 IntegrityDiagnostic(
@@ -1088,6 +1104,8 @@ class ClosureView:
 
     modules: frozenset[str]
     terms: Any  # closure_lookup.ClosureTermIndex
+    #: ``{module IRI: subjects its own document types}`` (#1148).
+    declared: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 _CLOSURE_TERMS_CACHE: dict[str, Any] = {}
@@ -1126,8 +1144,27 @@ def _closure_views(
         if terms is None and loaded.semantic_index is not None:
             terms = terms_from_index(loaded.semantic_index)
             _CLOSURE_TERMS_CACHE[loaded.closure_hash] = terms
-        views[domain] = ClosureView(modules=modules, terms=terms)
+        views[domain] = ClosureView(
+            modules=modules, terms=terms, declared=_declared_by_module(loaded)
+        )
     return views
+
+
+def _declared_by_module(loaded: Any) -> dict[str, frozenset[str]]:
+    """``{module IRI: typed subjects in its own document}`` for each imported source."""
+    declared: dict[str, frozenset[str]] = {}
+    for source in getattr(loaded, "sources", ()) or ():
+        entry = source.manifest
+        module = (entry.import_uri or entry.ontology_iri or "").rstrip("#/")
+        if entry.import_depth == 0 or not module:
+            continue
+        terms = frozenset(
+            str(subject)
+            for subject in source.graph.subjects(RDF.type, None)
+            if isinstance(subject, URIRef)
+        )
+        declared[module] = declared.get(module, frozenset()) | terms
+    return declared
 
 
 def _closure_imports(
@@ -1425,7 +1462,11 @@ def audit_ontology_integrity(
                 ontologies, {d: v.terms for d, v in views.items() if v.terms is not None}
             )
         )
-    diagnostics.extend(check_unused_imports(ontologies))
+    diagnostics.extend(
+        check_unused_imports(
+            ontologies, {d: v.declared for d, v in views.items()} if views is not None else None
+        )
+    )
     diagnostics.extend(check_collapsed_value_objects(ontologies))
     diagnostics.extend(check_unanchored_classes(ontologies))
     diagnostics.extend(check_external_terms_resolve(ontologies, module_terms))
