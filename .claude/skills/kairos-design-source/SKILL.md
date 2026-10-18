@@ -178,6 +178,14 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     choice for "in scope, not modelled yet". And a family whose `coherent` flag is
     `false` should be split into its member names rather than ruled on as a unit.
 
+    A table whose rows another binding now supplies is not a column decision. A shipped
+    reference list replacing an imported copy is one example; an old system's table after a
+    migration is another. Record it once, at table grain:
+    `kairos-ontology source-disposition set --system <s> --table <t> --disposition
+    superseded --superseded-by <binding metadata.name> --rationale "..."` (DD-259). It
+    decides the table's columns, survives a re-import, and fails the audit if that
+    binding disappears (`validate`).
+
     Three things on the sheet are evidence to read before deciding, not decisions: an
     entry carrying `bi_demand` names a Power BI model built on the column (#942); one
     carrying `read_by` names a dbt model an EntityBinding selects that already reads it,

@@ -7,8 +7,9 @@ gate, whatever the decision said. On one real hub, 40 table-grain `deferred` rec
 retired 1,643 columns and the gate never fired once — the ontology came out large and
 the silver layer far narrower than the source system.
 
-The cascade is right for exactly two values. `deferred` means "in scope, not modelled
-yet", which is the state the gate exists to keep raising; `bound` and
+The cascade is right for three values: `not-business-data`, `blueprint-gap` and, since
+DD-259, `superseded`, whose replacing binding the audit checks. `deferred` means "in
+scope, not modelled yet", which is the state the gate exists to keep raising; `bound` and
 `registered-extension` assert the table *is* being modelled, which is when the gate
 matters most.
 """

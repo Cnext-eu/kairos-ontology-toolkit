@@ -36,9 +36,10 @@ from .bound_columns import (
 from .sibling_columns import Sibling, column_profiles, detect_sibling, sinks
 from .source_disposition import column_decision, load_dispositions, load_source_tables
 
-#: How a decided gap column is summarised per domain. ``ruled_out`` groups the two
-#: dispositions that take a column out of Silver for good.
-RULED_OUT = frozenset({"not-business-data", "blueprint-gap"})
+#: How a decided gap column is summarised per domain. ``ruled_out`` groups the
+#: dispositions that take a column out of this table's path to Silver for good: not
+#: business data, a blueprint gap, or superseded by another binding (DD-259).
+RULED_OUT = frozenset({"not-business-data", "blueprint-gap", "superseded"})
 
 NO_DOMAIN = ""
 

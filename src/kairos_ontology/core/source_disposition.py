@@ -50,10 +50,11 @@ DISPOSITIONS_RELPATH = analysis_paths.ANALYSIS_RELPATH / LEGACY_LEDGER_FILENAME
 #: them (#881).
 #:
 #: A table-grain decision used to retire every gap column in that table from the DD-169
-#: gate, whatever the decision said. That reasoning holds for exactly two values:
-#: ``not-business-data`` (the table is not business data, so neither are its columns) and
+#: gate, whatever the decision said. That reasoning holds for three values:
+#: ``not-business-data`` (the table is not business data, so neither are its columns),
 #: ``blueprint-gap`` (a claim about the reference model, which is a claim about what the
-#: columns needed).
+#: columns needed) and ``superseded`` (DD-259: another binding now supplies what the
+#: columns held, and the audit checks that binding exists).
 #:
 #: It does not hold for the rest, and the omissions were the damaging ones:
 #:
@@ -68,7 +69,9 @@ DISPOSITIONS_RELPATH = analysis_paths.ANALYSIS_RELPATH / LEGACY_LEDGER_FILENAME
 #:
 #: On one real hub, 40 table-grain ``deferred`` records retired 1,643 columns and the
 #: gate never fired once.
-CASCADING_DISPOSITIONS: frozenset[str] = frozenset({"not-business-data", "blueprint-gap"})
+CASCADING_DISPOSITIONS: frozenset[str] = frozenset(
+    {"not-business-data", "blueprint-gap", "superseded"}
+)
 
 #: Table-grain dispositions that mean "do not generate a binding for this table" (#918).
 #:
@@ -82,7 +85,7 @@ CASCADING_DISPOSITIONS: frozenset[str] = frozenset({"not-business-data", "bluepr
 #: ``deferred`` is here and not there, because "in scope, not modelled yet" is a reason to
 #: skip generation and is not a reason to stop asking about the columns.
 NON_GENERATING_DISPOSITIONS: frozenset[str] = frozenset(
-    {"not-business-data", "blueprint-gap", "deferred"}
+    {"not-business-data", "blueprint-gap", "deferred", "superseded"}
 )
 
 #: The closed set of answers. Each is a decision someone can defend in review.
@@ -123,10 +126,41 @@ DISPOSITIONS: dict[str, str] = {
         "Real business data the accelerator blueprint has no domain for — a reference-model "
         "defect to file upstream rather than a hub-side modelling choice."
     ),
+    # DD-259, #1136: table grain only, with `superseded_by` naming the binding that now
+    # supplies the rows. The table may still be loaded (the dataplatform's loader goes
+    # later); nothing binds it. A cascade the audit can check, unlike a free-text reason:
+    # a `superseded_by` that names no binding is a blocking error.
+    "superseded": (
+        "Business data another source now supplies: the EntityBinding named in "
+        "superseded_by binds what this table held, such as a shipped reference list "
+        "replacing an imported copy. Table grain only."
+    ),
 }
 
 #: Dispositions a human (or an attributed agent) must justify in prose.
-_REQUIRES_RATIONALE = frozenset({"deferred", "not-business-data", "blueprint-gap"})
+_REQUIRES_RATIONALE = frozenset({"deferred", "not-business-data", "blueprint-gap", "superseded"})
+
+
+def load_binding_names(bindings_dir: Path) -> dict[str, Path]:
+    """``{metadata.name: file}`` for every EntityBinding under *bindings_dir*.
+
+    A ``superseded`` row names its replacement by binding name, which is what the hub
+    authors and what ``compile --explain`` prints. A binding without a name is skipped:
+    the compiler reports it.
+    """
+    names: dict[str, Path] = {}
+    if not Path(bindings_dir).is_dir():
+        return names
+    for path in sorted(Path(bindings_dir).glob("*.yaml")):
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception:  # defensive: a malformed binding is the compiler's problem
+            continue
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        name = metadata.get("name") if isinstance(metadata, dict) else None
+        if isinstance(name, str) and name.strip():
+            names.setdefault(name.strip(), path)
+    return names
 
 _ROW_COUNT_RE = re.compile(r"kairos-bronze:rowCount\s+(\d+)")
 _TABLE_NAME_RE = re.compile(r'kairos-bronze:tableName\s+"((?:[^"\\]|\\.)*)"')
@@ -713,6 +747,7 @@ def audit_source_dispositions(
 
     bound = load_bound_relations(hub_root / "integration" / "bindings", hub_root)
     recorded = load_dispositions(hub_root)
+    binding_names: dict[str, Path] | None = None  # read only when a row needs it
 
     for (system, table), row_count in sorted(tables.items()):
         key = (system, table)
@@ -766,6 +801,32 @@ def audit_source_dispositions(
                     )
                 )
                 continue
+            if disposition == "superseded":
+                replacement = str(entry.get("superseded_by") or "").strip()
+                if binding_names is None:
+                    binding_names = load_binding_names(hub_root / "integration" / "bindings")
+                if replacement not in binding_names:
+                    report.diagnostics.append(
+                        DispositionDiagnostic(
+                            level="error",
+                            code="disposition.superseded-by-unknown-binding",
+                            message=(
+                                f"{system}.{table} is recorded as 'superseded' by "
+                                f"{replacement or '(nothing)'}, but no EntityBinding in "
+                                "integration/bindings/ has that metadata.name. Its columns "
+                                "are cleared from the DD-169 gate on that claim."
+                            ),
+                            system=system,
+                            table=table,
+                            remediation=(
+                                "Name the binding that now supplies these rows with "
+                                f"'kairos-ontology source-disposition set --system {system} "
+                                f"--table {table} --disposition superseded --superseded-by "
+                                "<binding>', or clear the row if nothing replaces the table."
+                            ),
+                        )
+                    )
+                    continue
             if disposition in _REQUIRES_RATIONALE and not str(entry.get("rationale") or "").strip():
                 report.diagnostics.append(
                     DispositionDiagnostic(
@@ -877,6 +938,8 @@ class DispositionInput:
     evidence: tuple[str, ...] = ()
     column: str = ""
     proposed_property: dict[str, str] | None = None
+    #: The ``metadata.name`` of the EntityBinding that replaces the table (``superseded``).
+    superseded_by: str = ""
 
 
 def _utc_today() -> str:
@@ -903,6 +966,19 @@ def _ledger_entry(decision: DispositionInput) -> dict[str, Any]:
             "is accepted: it confirms a dbt model's evidence from the decision sheet, "
             "DD-250; a column a binding names outright needs no row either.)"
         )
+    if decision.disposition == "superseded":
+        if decision.column:
+            raise ValueError(
+                "'superseded' is a table-grain decision: a table is replaced, not one of its "
+                "columns. Drop --column, or decide the column with another disposition."
+            )
+        if not decision.superseded_by.strip():
+            raise ValueError(
+                "'superseded' needs --superseded-by: the metadata.name of the EntityBinding "
+                "that now supplies this table's rows (DD-259)."
+            )
+    elif decision.superseded_by.strip():
+        raise ValueError("--superseded-by goes only with the 'superseded' disposition.")
     if decision.disposition in _REQUIRES_RATIONALE and not decision.rationale.strip():
         raise ValueError(f"Disposition {decision.disposition!r} requires a rationale.")
     if not decision.system.strip():
@@ -916,6 +992,7 @@ def _ledger_entry(decision: DispositionInput) -> dict[str, Any]:
         # decided not to model in one place.
         **({"column": decision.column} if decision.column else {}),
         "disposition": decision.disposition,
+        **({"superseded_by": decision.superseded_by.strip()} if decision.superseded_by else {}),
         "rationale": decision.rationale,
         "decided_by": decision.decided_by,
         # DD-251: the day it was decided, so a backlog can be read by age. Rows written
@@ -953,9 +1030,11 @@ def record_dispositions(
     table's other columns, so a run recording 224 column dispositions kept about one
     per table.
     """
+    decisions = list(decisions)
     entries = [_ledger_entry(decision) for decision in decisions]
     if not entries:
         return []
+    _check_supersessions(hub_root, decisions)
     split_legacy_ledger(hub_root)
     by_system: dict[str, list[dict[str, Any]]] = {}
     for entry in entries:
@@ -973,6 +1052,36 @@ def record_dispositions(
     return written
 
 
+def _check_supersessions(hub_root: Path, decisions: list[DispositionInput]) -> None:
+    """Refuse a ``superseded`` row the hub's bindings contradict (DD-259).
+
+    The named binding must exist, and the table must not still be bound: a table that a
+    binding reads reaches Silver, so it has not been replaced. Checked before anything is
+    written, like every other validation of a batch.
+    """
+    superseding = [d for d in decisions if d.disposition == "superseded"]
+    if not superseding:
+        return
+    bindings_dir = Path(hub_root) / "integration" / "bindings"
+    names = load_binding_names(bindings_dir)
+    bound = load_bound_relations(bindings_dir, Path(hub_root))
+    for decision in superseding:
+        replacement = decision.superseded_by.strip()
+        if replacement not in names:
+            known = ", ".join(sorted(names)[:8]) or "none"
+            raise ValueError(
+                f"No EntityBinding is named {replacement!r} (metadata.name). Name the binding "
+                f"that now supplies {decision.system}.{decision.table}'s rows; bindings found: "
+                f"{known}."
+            )
+        if (decision.system, decision.table) in bound:
+            raise ValueError(
+                f"{decision.system}.{decision.table} is still read by a binding in "
+                "integration/bindings/, so it reaches Silver and has not been replaced. Move "
+                f"that binding to its replacement ({replacement}) first."
+            )
+
+
 def record_disposition(
     *,
     hub_root: Path,
@@ -984,6 +1093,7 @@ def record_disposition(
     evidence: tuple[str, ...] = (),
     column: str = "",
     proposed_property: dict[str, str] | None = None,
+    superseded_by: str = "",
 ) -> Path:
     """Write or replace one disposition, returning the system's ledger path.
 
@@ -1008,6 +1118,7 @@ def record_disposition(
                 evidence=tuple(evidence),
                 column=column,
                 proposed_property=proposed_property,
+                superseded_by=superseded_by,
             )
         ],
     )

@@ -321,5 +321,6 @@ during cleanup.
 | [DD-256](decisions/dd-256-a-promotion-is-one-workflow-run-that-carries-one-commit-and-its-hub-release-through-every.md) | A promotion is one workflow run that carries one commit and its hub release through every environment | Accepted | 2026-10-17 |
 | [DD-257](decisions/dd-257-a-reference-list-is-shipped-loaded-by-the-hub-or-owned-by-a-source-and-its-extensions.md) | A reference list is shipped, loaded by the hub, or owned by a source, and its extensions live with its rows | Accepted | 2026-10-18 |
 | [DD-258](decisions/dd-258-a-shipped-reference-lists-seed-carries-every-fact-its-members-state.md) | A shipped reference list's seed carries every fact its members state | Accepted | 2026-10-18 |
+| [DD-259](decisions/dd-259-a-source-table-another-binding-replaced-is-superseded-and-the-audit-checks-the-replacement.md) | A source table another binding replaced is `superseded`, and the audit checks the replacement | Accepted | 2026-10-18 |
 
 ---
