@@ -142,9 +142,10 @@ CSV is the wrong loop, it is a source, not a seed: import it and bind it normall
 - **A list the reference models ship as individuals** (UNECE, ISO 3166): export
   its members from the resolved closure with `load_ontology`. Never copy them out
   of the `.ttl`. Record the snapshot and `dcterms:source` in the seed docs.
-- **Local extension rows** go in a sibling `<list>_local` seed. The model unions
-  them in with an `origin` column, and their codes come from the standard's
-  user-assigned range.
+- **Local extension rows** go in a sibling `<list>_local` seed, not into the
+  ontology. The model unions them in with an `origin` column. Their codes come
+  from the standard's user-assigned range when it has one; the binding's
+  `unique` check catches a later release that reuses one.
 - **Hub-owned attributes** go in a sibling seed joined on the code.
 - **Crosswalks** (`<source>_<list>_map`) are left-joined, and the codes they leave
   unmapped on purpose are named in their docs.

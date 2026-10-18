@@ -10,20 +10,26 @@ Decide that first; everything else follows from it ([DD-257](https://github.com/
 
 | Kind | Rows come from | Examples | You author |
 |---|---|---|---|
-| **1. Shipped list** | the reference models, as individuals of the list class | UNECE Rec 19/20/21, Incoterms, currencies, ISO 3166 countries and subdivisions | a seed copied from the shipped members, a contracted model, a binding |
-| **2. Hub-loaded standard** | the standard's own release, or your licensed copy | UN/LOCODE locations (too large to ship), ISO 6346 container size/type codes (licence) | a source import and a binding |
-| **3. Source-owned list** | your own source systems | a TMS container-type master, internal status codes | a binding to the source table |
+| **1. Shipped standard list** | the reference models, as individuals of the list class | UNECE Rec 19/20/21, Incoterms, currencies, party roles, ISO 3166 countries and subdivisions | a seed exported from the shipped members, a contracted model, a binding |
+| **2. Hub-loaded standard list** | the standard's own release | UN/LOCODE locations (too large to ship) | a source import and a binding |
+| **3. Client- or system-owned list** | your own source systems | a TMS container-type master, internal status codes, ISO 6346 container size/type codes | a binding to the source table |
 
-The reference models' module READMEs list every shipped list with its code count (for
-UN/CEFACT: `authoritative-ontologies/UNCEFACT/README.md`, "Contents"), and say which lists
-are deliberately not shipped. In the graph:
-- **Kind 1:** the list class carries `kairos-ext:isReferenceData true` and has members.
-- **Kind 2:** the class carries `isReferenceData true`, has no members, and its
-  `dcterms:source` says where to load from.
-- **Kind 3:** a list the reference models do not mention, or ship only as an empty governed
-  class (such as `PartyRoleCode`), unless you adopt a standard for it.
+The kind depends on where the class is defined and whether it has members. The
+`kairos-ext:isReferenceData` annotation does not decide it: several shipped lists don't
+carry it, and you may set it on your own list.
+- **Kind 1:** the list has members in your closure. The export script in step 2 prints
+  them.
+- **Kind 2:** the class is defined under the reference models' `authoritative-ontologies/`
+  but has no members. The export script writes only the header row. The module README
+  says where to load from (for UN/LOCODE: `authoritative-ontologies/UNCEFACT/README.md`,
+  "UN/LOCODE locations: load in the hub").
+- **Kind 3:** everything else, such as a derived module's empty shell (`PartyRoleCode`) or
+  your own class. When a standard exists but can't be shipped (ISO 6346), your list
+  carries the standard's code as an attribute.
 
-The export script in step 2 writes only the header row for a list with no members.
+**Where a list ships twice, bind the one the reference models name.** Countries:
+`unlcdv:Country`, not the OMG-LCC copy. Currencies: `unece:CurrencyCodeList`, not the
+IATA copy.
 
 Nothing appears in Silver until you bind it. A list you never bind, such as Rec 20's 1,828
 units, costs nothing.
@@ -31,8 +37,8 @@ units, costs nothing.
 ## 2. Kind 1: bind a shipped list
 
 Take the shared list into your governed class. The subclass runs from the standard's list
-to your class, so your class can hold extensions without making them members of the
-standard:
+to your class: your class means "the standard's codes plus our extensions", and an
+extension never becomes a member of the standard's list:
 
 ```turtle
 ref:TransportModeCode a owl:Class .
@@ -125,20 +131,17 @@ Extensions live where the rest of the list's rows live.
 Example: a country your sources use that ISO 3166-1 does not list yet, such as Kosovo,
 which the European Commission and others code `XK`.
 
-1. **Take the code from the user-assigned range.** ISO 3166-1 reserves AA, QM–QZ, XA–XZ
-   and ZZ for local use, so a later ISO release can never give your code to another
-   country.
-2. **Declare the member (kind 1 only).** In your hub ontology, make it an individual of
-   *your* governed class, never of the standard's list:
+1. **Take the code from the user-assigned range, if the standard has one.** ISO 3166-1
+   reserves AA, QM–QZ, XA–XZ and ZZ for local use, so a later ISO release can never give
+   your code to another country. Most lists reserve nothing:
+   - Rec 19 uses every code from 0 to 9;
+   - ISO 4217's X-codes are mostly assigned;
+   - Rec 20, Rec 21 and UN/LOCODE have no reserved range.
 
-   ```turtle
-   ref:country-XK a owl:NamedIndividual, ref:Country ;
-       rdf:value "XK" ;
-       rdfs:label "Kosovo" ;
-       rdfs:comment "User-assigned ISO 3166-1 code, pending an official assignment."@en .
-   ```
-
-3. **Add the row to an extension seed** next to the shipped one:
+   For those, pick a code the standard doesn't use today, and rely on the `origin`
+   column and the `unique` rule below.
+2. **Add the row to an extension seed** next to the shipped one. It is a row, not an
+   individual in your hub ontology:
 
    ```text
    # integration/transforms/dbt/seeds/country_code_local.csv
@@ -146,7 +149,7 @@ which the European Commission and others code `XK`.
    XK,Kosovo
    ```
 
-4. **Union the two in the contracted model** and say where each row came from:
+3. **Union the two in the contracted model** and say where each row came from:
 
    ```sql
    select code, name, 'iso' as origin from {{ ref('country_code') }}
@@ -162,8 +165,9 @@ added locally. That failure is what you want: decide then whether to retire the 
   redefines a shipped one.
 - **Deprecate a retired extension; don't delete it.** Facts already point at it.
 
-For a kind 2 list, steps 1, 3 and 4 apply. Skip step 2, because the rows are not
-individuals. For a kind 3 list, add the code in the source system's list itself.
+The same steps apply to a kind 2 list: union the extension seed with the loaded source.
+For a kind 3 list, the list is your own, so add the code in the source system's list
+itself.
 
 ### Extra columns
 
@@ -246,14 +250,16 @@ relationships:
   system](import-a-source-system.md)) and bind it, keyed on the 5-character code. Join to
   the shipped countries, subdivisions and functions (kind 1). The reference models'
   UNCEFACT README lists the suggested columns.
-- **Kind 2, ISO 6346.** No class ships, because of the licence. Take the rows from your own
-  licensed copy, or from a TMS master that already carries the code. Store the code in the
-  ISO 6346 property the reference models provide.
 - **Kind 3, a TMS master.** Bind the source table. Key on the source's code, scoped by
   source if two systems keep their own lists. When a second system will add its list,
   start from `int_merged__<entity>`
   ([Add a second source to a class](add-a-second-source-to-a-class.md)). Where a standard
   exists, keep its code as an attribute and crosswalk to it as in step 4.
+- **Kind 3, ISO 6346 container size/type codes.** No list ships, because ISO publishes no
+  free-reuse statement. Your equipment-type list, usually the TMS master, carries the code
+  as an attribute. Map it to the ISO 6346 property the reference models provide: BSP
+  `commercial:equipmentSizeType`, DCSA `equipment:isoEquipmentCode`, or MMT
+  `equipment:equipmentSizeType`.
 
 ## 6. Never drop a row on a reference join
 
@@ -266,7 +272,8 @@ code to an explicit local "unknown" member.
 - [ ] Kind decided, and recorded in a decision record when it is not obvious.
 - [ ] Bound through a contracted model or source; keyed on the code, not the IRI.
 - [ ] Snapshot version and `dcterms:source` in the seed docs (kind 1).
-- [ ] Extensions use a user-assigned code range, union in with an `origin` column, and
-      never override a shipped row.
+- [ ] Extensions are seed rows, not individuals. They take a user-assigned code where
+      the standard reserves a range, are unioned in with an `origin` column, and never
+      override a shipped row.
 - [ ] Every crosswalk left-joins, keeps the raw value, and documents its deliberate gaps.
 - [ ] No inner join to a reference list in a fact or master model.

@@ -183,13 +183,16 @@ list is one of three kinds:
 
 - **shipped** by the reference models as individuals (UNECE Rec 19/20/21,
   ISO 3166): a seed exported from the closure, a contracted model, a binding;
-- **hub-loaded** (UN/LOCODE locations by volume, ISO 6346 by licence): a source
-  import and a binding;
-- **source-owned** (a TMS master): a binding to the source table.
+- **hub-loaded** (UN/LOCODE locations): a source import and a binding;
+- **client- or system-owned** (a TMS master; ISO 6346 codes, which cannot ship):
+  a binding to the source table.
 
-Key the binding on the code, never the upstream IRI. Local extensions live
-where the list's rows live, use the standard's user-assigned code range, and
-never override a shipped row. A source-to-standard crosswalk is a hub seed
+The kind follows from where the class is defined and whether it has members,
+never from `isReferenceData`. Bind `unlcdv:Country` and
+`unece:CurrencyCodeList` rather than their duplicates. Key the binding on the
+code, never the upstream IRI. Local extensions are seed rows, not individuals.
+They are unioned in with an `origin` column, use a user-assigned code where the
+standard reserves a range, and never override a shipped row. A source-to-standard crosswalk is a hub seed
 that a contracted model left-joins: keep the raw source value as a property
 and link the governed code through a relationship with `missingParent: null`.
 `isReferenceData` does not add a `ref_` prefix in v5; the model is named after

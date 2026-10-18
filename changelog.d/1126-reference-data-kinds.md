@@ -1,8 +1,13 @@
 ### Documentation
 - **New how-to: Use reference data and code lists.** A code list is one of three kinds:
   - shipped by the reference models as individuals (UNECE Rec 19/20/21, ISO 3166);
-  - loaded by the hub (UN/LOCODE locations, ISO 6346 container codes);
-  - owned by a source system (a TMS master).
+  - loaded by the hub (UN/LOCODE locations);
+  - owned by a client or source system (a TMS master; ISO 6346 container codes, which
+    cannot be shipped).
+
+  This matches the reference models from 1.41.0. The kind follows from where the class is
+  defined and whether it has members, not from `isReferenceData`. Local extensions are
+  seed rows unioned in with an `origin` column, not ontology individuals.
 
   Each kind reaches Silver through an ordinary binding, keyed on the code. The guide has
   worked examples for:
