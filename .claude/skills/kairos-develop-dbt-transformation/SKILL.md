@@ -129,9 +129,15 @@ these as a dbt **seed** instead of inventing a source vocabulary for data nobody
 extracts:
 
 ```text
-integration/transforms/dbt/seeds/<name>.csv        # the data
-integration/transforms/dbt/seeds/<name>.yml        # optional column docs
+integration/transforms/dbt/seeds/<kind>/<name>.csv   # the data
+integration/transforms/dbt/seeds/<kind>/<name>.yml   # optional column docs
 ```
+
+`<kind>` says who edits the seed (DD-260): `reference/` for lists `export-reference-list`
+generates (never edited), `extensions/` for `<list>_local` rows and hub-owned attributes,
+`crosswalks/` for `<source>_<list>_map` code maps, and `hub-lists/` for the hub's own code
+lists. After moving seeds between folders, run `compile --all --emit --confirm-emit`, which
+retires the old published paths for every domain at once.
 
 Author a seed when the data is **small, static, hand-maintained, and belongs in
 version control** — a maintainer edits it in a pull request, not a pipeline. If
@@ -178,8 +184,9 @@ Worked examples: the how-to `use-reference-data.md`.
 
 Rules that matter while authoring:
 
-- **The file stem is the dbt resource name.** `seeds/country_codes.csv` is reached
-  by `{{ ref('country_codes') }}` from any authored model — a seed is a `ref()`
+- **The file stem is the dbt resource name**, whatever the folder.
+  `seeds/hub-lists/event_category.csv` is reached by `{{ ref('event_category') }}` from
+  any authored model — a seed is a `ref()`
   target exactly like a model is, and needs no `source()` declaration.
 - **The stem must not collide with any model stem**, authored or generated. dbt
   resolves `ref()` in one resource namespace; a collision is a hard failure in the

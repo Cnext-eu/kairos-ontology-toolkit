@@ -847,12 +847,32 @@ def _reconciled_dbt_dependencies(
             current_content[dependency.path] = dependency.content
         states[result.domain] = current_entries
 
+    # #1153: a file moved to another folder (the DD-260 seed layout) keeps its model name
+    # and changes its path. A pending domain's state still records the old path; in a
+    # whole-hub run that domain re-emits too, so its entry for the moved name is retired
+    # here rather than claiming the name a second time. The old path then leaves the
+    # artifacts and is removed as an owned file.
+    current_paths_by_model = {
+        entry["model_name"].casefold(): entry["path"]
+        for entry in states.get(result.domain, ())
+        if entry["model_name"]
+    }
+
+    def _moved_by_this_run(entry: dict[str, str]) -> bool:
+        model_name = entry["model_name"]
+        if not model_name or entry["path"] in current_content:
+            return False
+        current_path = current_paths_by_model.get(model_name.casefold())
+        return current_path is not None and current_path != entry["path"]
+
     artifacts: dict[str, str] = {}
     selected_paths: dict[str, tuple[str, str]] = {}
     selected_models: dict[str, str] = {}
     generated_models = _existing_generated_model_paths(result, target)
     for domain in sorted(states):
         entries = states[domain]
+        if domain != result.domain and domain in pending_domains:
+            entries = [entry for entry in entries if not _moved_by_this_run(entry)]
         artifacts[_dependency_state_name(domain)] = _dependency_state_text(domain, entries)
         for entry in sorted(entries, key=lambda item: item["path"]):
             path = entry["path"]
@@ -881,7 +901,9 @@ def _reconciled_dbt_dependencies(
                 if previous_model is not None and previous_model != path:
                     raise ArtifactCollisionError(
                         f"contracted dbt model name {model_name!r} resolves to both "
-                        f"{previous_model!r} and {path!r}"
+                        f"{previous_model!r} and {path!r}. If the file moved to another "
+                        "folder, run `kairos-ontology compile --all --emit --confirm-emit`: "
+                        "a whole-hub emit retires the old path for every domain at once"
                     )
                 if generated_model is not None:
                     raise ArtifactCollisionError(
