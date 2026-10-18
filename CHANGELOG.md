@@ -5,9 +5,34 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.28.0** is the latest GA release (2026-10-18). A minor release
-> about reference data (#1126, DD-257). A code list is one of three kinds: shipped by the
-> reference models as individuals, loaded by the hub, or owned by a source system.
+> **Release status.** **5.29.0** is the latest GA release (2026-10-18). A minor release
+> that follows 5.28.0's reference data through a real hub (#1136, #1137):
+>
+> - **Generated reference-list seeds carry what the reference models say about each code**
+>   (DD-258): `list_version`, `list_source`, `deprecated` (withdrawn codes stay rows), and
+>   one column per datatype property of the members. For ISO 4217, those are
+>   `numeric_code`, `minor_unit`, `withdrawal_date` and `is_fund`.
+> - **Currencies bind `iso4217:CurrencyCode`**, ISO 4217 from SIX, which reference models
+>   1.42.0 ship. Don't use `unece:CurrencyCodeList`, which lags ISO.
+> - **`superseded`** (DD-259) records a source table another binding replaced, such as an
+>   imported copy of a list the reference models now ship. It names that binding, and
+>   `validate` fails if the binding disappears.
+> - **The toolkit is tested against reference models 1.42.0.**
+>
+> **What to expect on the first run after upgrading from 5.28.0.** On a hub that generated
+> reference seeds, `export-reference-list --all --check` (in `pr-validate`) reports every
+> seed as stale. Run `kairos-ontology export-reference-list --all` and commit; `update
+> --upgrade` already prints it first. A contracted model that unions a `_local` seed with
+> `select *` fails on the new columns: name the columns. Moving currencies to the SIX list
+> means `update-refmodels --version v1.42.0` (or `update --upgrade`), then
+> `export-reference-list iso4217:CurrencyCode` and a binding change. That is a hub
+> decision, not something the upgrade does. Dataplatforms see no change. Compiled output
+> is unchanged until a hub binds the new columns.
+>
+> **Upgrading from 5.27.3?** 5.28.0's first-run notes still apply on top of the above. It
+> was a minor release about reference data (#1126, DD-257). A code list is one of three
+> kinds: shipped by the reference models as individuals, loaded by the hub, or owned by a
+> source system.
 >
 > - **`export-reference-list`** writes a shipped list (UNECE Rec 19/20/21, ISO 3166 …) as a
 >   dbt seed keyed on `(code_list, code)`. Its docs record the snapshot and type every
@@ -322,6 +347,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.29.0] — 2026-10-18
+
+### Added
+- **`superseded`: a source table another binding replaced (DD-259, #1136).** Move a
+  list's binding from an imported table to a shipped reference list's seed, and the old
+  table keeps business data that nothing binds. The DD-169 gate then failed, and no
+  disposition described the table truthfully. Hubs retired such tables by hand across
+  nine files, and an operational system's next import restored them.
+  - **Recording it.** `kairos-ontology source-disposition set --system <s> --table <t>
+    --disposition superseded --superseded-by <binding metadata.name> --rationale "..."`
+    decides the table and its columns, and stops `generate-bindings` from drafting a
+    binding for it.
+  - **Checks.** The command refuses a binding name that doesn't exist, and a table a
+    binding still reads. `validate` fails with
+    `disposition.superseded-by-unknown-binding` if the replacing binding later disappears.
+  - **Docs.** The how-to *Use reference data and code lists* has a new section, "Replace a
+    list you used to load from a source".
+
+### Changed
+- **A generated reference-list seed now carries its list's version and source, whether
+  each code is withdrawn, and every fact the members state (DD-258, #1137).**
+  `export-reference-list` used to write `code_list, code, name, iri` and nothing else. A
+  hub had nowhere to read a list's version from, so it typed a snapshot date into SQL that
+  no refresh would ever update. Withdrawn codes also came through as ordinary rows: on ISO
+  4217 from SIX (reference models 1.42.0), that is 129 of 307.
+  - **New columns.** Every row now has `list_version`, `list_source` and `deprecated`, then
+    one column per datatype property of the members. For ISO 4217 those are
+    `numeric_code`, `minor_unit`, `withdrawal_date` and `is_fund`.
+  - **Withdrawn codes.** They stay rows, marked `deprecated=true`.
+  - **Upgrading.** Every generated seed reads as stale until you run
+    `kairos-ontology export-reference-list --all`, and `pr-validate`'s `--all --check`
+    fails until you do. A contracted model that unions a `_local` seed with `select *`
+    fails on the column count: name the columns.
+  - **Currencies.** Bind them to `iso4217:CurrencyCode` (SIX), not
+    `unece:CurrencyCodeList`, which lags ISO.
+
+### Notes
+- **The toolkit is tested against reference models 1.42.0**, which add ISO 4217 from SIX
+  (`iso4217:CurrencyCode`: 178 current and 129 withdrawn codes). A hub's own pin moves
+  only with `update --upgrade` or `update-refmodels`.
 
 ## [5.28.0] — 2026-10-18
 
