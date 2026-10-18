@@ -3746,7 +3746,8 @@ def _alignment_covers_table(hub_root, system: str, table: str) -> bool:
     "--column",
     default="",
     help="Decide one column rather than the whole table. A table-grain decision covers "
-    "the table's columns only for 'not-business-data' and 'blueprint-gap' (#881).",
+    "the table's columns only for 'not-business-data', 'blueprint-gap' and 'superseded' "
+    "(#881, DD-259).",
 )
 @click.option(
     "--all-tables",
@@ -3760,12 +3761,21 @@ def _alignment_covers_table(hub_root, system: str, table: str) -> bool:
     "--disposition",
     required=True,
     type=click.Choice(sorted(_DISPOSITION_CHOICES())),
-    help="What the hub decided to do with this table. A TABLE-grain 'not-business-data' "
-    "or 'blueprint-gap' also retires every gap column in that table from the DD-169 "
-    "pre-binding gate: the table is not business data, or the reference model is "
-    "missing what its columns need. Any other table-grain value -- 'deferred', 'bound', "
-    "'registered-extension' -- decides the table only; the gate keeps raising its gap "
-    "columns until each is decided with --column or draft-gap-decisions (#881).",
+    help="What the hub decided to do with this table. A TABLE-grain 'not-business-data', "
+    "'blueprint-gap' or 'superseded' also retires every gap column in that table from the "
+    "DD-169 pre-binding gate: the table is not business data, the reference model is "
+    "missing what its columns need, or another binding (--superseded-by) now supplies its "
+    "rows. Any other table-grain value -- 'deferred', 'bound', 'registered-extension' -- "
+    "decides the table only; the gate keeps raising its gap columns until each is decided "
+    "with --column or draft-gap-decisions (#881).",
+)
+@click.option(
+    "--superseded-by",
+    default="",
+    help="With --disposition superseded: the metadata.name of the EntityBinding that now "
+    "supplies this table's rows, such as the binding of a shipped reference list that "
+    "replaces an imported copy. It must exist, and no binding may still read the table "
+    "(DD-259).",
 )
 @click.option("--rationale", default="", help="Why. Required for a non-obvious disposition.")
 @click.option(
@@ -3786,6 +3796,7 @@ def source_disposition_set_cmd(
     column: str,
     all_tables: bool,
     disposition: str,
+    superseded_by: str,
     rationale: str,
     decided_by: str,
     evidence: tuple[str, ...],
@@ -3797,6 +3808,13 @@ def source_disposition_set_cmd(
       kairos-ontology source-disposition set --system qargo --table comments \\
         --disposition not-business-data \\
         --rationale "Generic notes table; no claim-specific columns (3,149 rows)."
+
+    \b
+    A table another binding replaced (DD-259):
+      kairos-ontology source-disposition set --system reference_data \\
+        --table transport_mode --disposition superseded \\
+        --superseded-by reference-data-transport-mode-code \\
+        --rationale "Rec 19 now comes from the shipped list's seed."
     """
     from ..core.hub_utils import find_hub_root
     from ..core.source_disposition import DispositionInput, record_dispositions
@@ -3837,6 +3855,7 @@ def source_disposition_set_cmd(
                     rationale=rationale,
                     decided_by=decided_by,
                     evidence=evidence,
+                    superseded_by=superseded_by,
                 )
                 for target_system, target_table in targets
             ],

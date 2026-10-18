@@ -302,14 +302,55 @@ A fact or master model must not `inner join` a reference list. An unknown code t
 silently removes the record. Left-join instead, and let the link stay empty, or map the
 code to an explicit local "unknown" member.
 
+## 7. Replace a list you used to load from a source
+
+Perhaps you bound a list before the reference models shipped it, from a Bronze table you
+imported (Rec 19 parsed from the UNECE document) or from an operational system's copy
+(a TMS Incoterms table). Once you move the binding to the shipped list's seed, nothing
+binds the old table any more. Its columns still hold business data, so the DD-169 gate
+reports them:
+
+```text
+✗ 1 source column(s) in 'reference-data' carry real business data with no canonical home
+  and no recorded decision:
+    reference_data.transport_mode.name (varchar(8000)) [no-reference-property]
+```
+
+Record that another binding replaced the table (DD-259):
+
+```bash
+kairos-ontology source-disposition set --system reference_data --table transport_mode \
+  --disposition superseded --superseded-by reference-data-transport-mode-code \
+  --rationale "Rec 19 now comes from the shipped list's seed."
+```
+
+- **`--superseded-by` is a binding's `metadata.name`.** The command refuses a name no
+  binding has, and a table a binding still reads, since that table still reaches Silver.
+  Move the binding first.
+- **The table's columns are decided with it.** `generate-bindings` drafts no binding for
+  it.
+- **The decision survives a re-import.** The source system's next `import-source` brings
+  the table back into the vocabulary, and the ledger row still answers for it. Don't
+  delete the vocabulary, samples and `_analysis` entries by hand: for an operational
+  system, the next import restores them anyway.
+- **The audit keeps checking.** If you delete or rename the replacing binding later,
+  `validate` fails with `disposition.superseded-by-unknown-binding`
+  until the row names a binding again.
+
+The same disposition fits any table another binding replaced, such as an old system's
+table after a migration.
+
 ## Checklist
 
 - [ ] Kind decided, and recorded in a decision record when it is not obvious.
 - [ ] Bound through a contracted model or source; keyed on the code, not the IRI.
-- [ ] Snapshot version and `dcterms:source` in the seed docs (kind 1).
+- [ ] A list version a class needs is bound from the seed's `list_version`, never
+      typed into SQL (kind 1).
 - [ ] Extensions are seed rows, not individuals. They take a user-assigned code where
       the standard reserves a range, are unioned in with an `origin` column, and never
       override a shipped row.
 - [ ] Every crosswalk left-joins, keeps the raw value, documents its deliberate gaps, and
       declares its target with a `relationships` test.
 - [ ] No inner join to a reference list in a fact or master model.
+- [ ] A table the list replaced is recorded `superseded`, naming the binding that
+      replaced it.

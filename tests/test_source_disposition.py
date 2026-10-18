@@ -230,8 +230,9 @@ def test_small_unbound_table_warns_but_does_not_block(tmp_path: Path) -> None:
 
 #: `bound` is excluded because it is no longer recordable at table grain (#881): the
 #: DD-164 audit reads it from integration/bindings/ before it consults the ledger, so a
-#: row claiming it was a statement no binding had to back.
-_RECORDABLE_AT_TABLE_GRAIN = sorted(set(DISPOSITIONS) - {"bound"})
+#: row claiming it was a statement no binding had to back. `superseded` needs a binding to
+#: name and has its own tests (tests/test_superseded_disposition.py, DD-259).
+_RECORDABLE_AT_TABLE_GRAIN = sorted(set(DISPOSITIONS) - {"bound", "superseded"})
 
 
 @pytest.mark.parametrize("disposition", _RECORDABLE_AT_TABLE_GRAIN)

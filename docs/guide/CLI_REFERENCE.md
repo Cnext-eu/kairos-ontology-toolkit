@@ -1828,7 +1828,7 @@ kairos-ontology source-disposition list [OPTIONS]
 
 ## source-disposition set
 
-Record one table's disposition in the hub ledger.  Example: kairos-ontology source-disposition set --system qargo --table comments \ --disposition not-business-data \ --rationale "Generic notes table; no claim-specific columns (3,149 rows)."
+Record one table's disposition in the hub ledger.  Example: kairos-ontology source-disposition set --system qargo --table comments \ --disposition not-business-data \ --rationale "Generic notes table; no claim-specific columns (3,149 rows)."  A table another binding replaced (DD-259): kairos-ontology source-disposition set --system reference_data \ --table transport_mode --disposition superseded \ --superseded-by reference-data-transport-mode-code \ --rationale "Rec 19 now comes from the shipped list's seed."
 
 ```
 kairos-ontology source-disposition set [OPTIONS]
@@ -1838,9 +1838,10 @@ kairos-ontology source-disposition set [OPTIONS]
 |---|---|---|
 | `--system` | **required** | Source system the table belongs to. |
 | `--table` | **required** | Physical table name (source.relation's suffix). |
-| `--column` | `` | Decide one column rather than the whole table. A table-grain decision covers the table's columns only for 'not-business-data' and 'blueprint-gap' (#881). |
+| `--column` | `` | Decide one column rather than the whole table. A table-grain decision covers the table's columns only for 'not-business-data', 'blueprint-gap' and 'superseded' (#881, DD-259). |
 | `--all-tables` |  | With --column: record the same decision for every table where that column is an undecided gap. The same column name recurs because the same business fact does, so it is one decision, not N. |
-| `--disposition` | **required** | What the hub decided to do with this table. A TABLE-grain 'not-business-data' or 'blueprint-gap' also retires every gap column in that table from the DD-169 pre-binding gate: the table is not business data, or the reference model is missing what its columns need. Any other table-grain value -- 'deferred', 'bound', 'registered-extension' -- decides the table only; the gate keeps raising its gap columns until each is decided with --column or draft-gap-decisions (#881). |
+| `--disposition` | **required** | What the hub decided to do with this table. A TABLE-grain 'not-business-data', 'blueprint-gap' or 'superseded' also retires every gap column in that table from the DD-169 pre-binding gate: the table is not business data, the reference model is missing what its columns need, or another binding (--superseded-by) now supplies its rows. Any other table-grain value -- 'deferred', 'bound', 'registered-extension' -- decides the table only; the gate keeps raising its gap columns until each is decided with --column or draft-gap-decisions (#881). |
+| `--superseded-by` | `` | With --disposition superseded: the metadata.name of the EntityBinding that now supplies this table's rows, such as the binding of a shipped reference list that replaces an imported copy. It must exist, and no binding may still read the table (DD-259). |
 | `--rationale` | `` | Why. Required for a non-obvious disposition. |
 | `--decided-by` | `user` | Who made this call, so a reviewer can weight it. |
 | `--evidence` | `Sentinel.UNSET` | Supporting evidence locator (row counts, a report, a column list). Repeatable. |
