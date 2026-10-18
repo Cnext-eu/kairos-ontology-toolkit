@@ -5,24 +5,39 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.30.0** is the latest GA release (2026-10-18). A minor release
-> for Gold products (#1142):
+> **Release status.** **5.31.0** is the latest GA release (2026-10-18). A minor release
+> that follows the reference-list work through a real hub (#1145, #1147, #1148):
 >
-> - **`semantic-model.dimension-key-without-dimension`** reports a fact key whose target
->   class a domain of the product binds in Silver but no Gold table carries, typically a
->   governed code list such as currency or transport mode. `compile --check` and `emit-gold`
->   report it as a warning. Add the dimension, remove the key with `goldExcludeColumn`, or
->   record a `practiceException` on the column.
-> - **`goldExcludeColumn` can remove a key whose target is not in the product**, which
->   failed before with `gold.relationship-column-not-emitted`.
+> - **New generated seeds go to `seeds/reference/`** (DD-260), unless the hub already keeps
+>   them at the seeds root. `export-reference-list` regenerates a seed in whatever folder it
+>   is in, and two seeds of one name in different folders are an error.
+> - **A source table no domain reads leaves the published `_<system>__sources.yml`.** The
+>   shared source catalogs could only grow; they are now rebuilt from what each domain
+>   contributes (`.kairos-compile-sources.<domain>.json`), so a `superseded` table's loader
+>   can be retired.
+> - **A table-grain `superseded` outranks the table's column rows** in the gap gate, the
+>   deferred backlog and `next`. `source-disposition clear --column-grain-only` withdraws
+>   the leftovers.
+> - **An imported class the hub only relates is not a hub concept.** The concept guide, the
+>   ubiquitous language and the domain ERD no longer list `unece:TransportModeCodeList
+>   rdfs:subClassOf :TransportModeCode` as a hub class, and `validate` no longer reports the
+>   UN/CEFACT code-list import as unused.
 >
-> **What to expect on the first run after upgrading from 5.29.0.** A product whose fact keys
-> point at a bound class without a Gold table shows new `gold.dimension-key-without-dimension`
-> warnings, and the `gold.unresolved-relationship` warning no longer lists those keys. Nothing
-> blocks, and emitted Gold and dbt bytes are unchanged until the hub acts on a finding.
-> Dataplatforms see no change.
+> **What to expect on the first run after upgrading from 5.30.0.** `compile --all --emit`
+> writes one `.kairos-compile-sources.<domain>.json` per domain and, once every domain has
+> one, drops source tables no model reads from the catalogs; commit the result. The
+> dataplatform PR that bumps to that hub package must delete the physical bindings of the
+> dropped tables, or `validate-source-bindings` reports them as `unknown`. Regenerate
+> `project --target erd --target ddd`: imported list classes leave the concept guide and the
+> domain ERD, and a ubiquitous-language IRI the collision had suffixed (for example
+> `terms:CurrencyCode_reference_data`) loses the suffix. `validate` may show new
+> `disposition.column-rows-under-superseded-table` warnings. Nothing blocks.
 >
-> **Upgrading from 5.28.0?** 5.29.0's first-run notes apply as well. Generated
+> **Upgrading from 5.29.0?** 5.30.0's first-run notes apply as well: a Gold product whose
+> fact keys point at a bound class without a Gold table shows new
+> `gold.dimension-key-without-dimension` warnings (#1142). Nothing blocks.
+>
+> **Upgrading from 5.28.0?** 5.29.0's and 5.30.0's first-run notes apply as well. Generated
 > reference-list seeds gained `list_version`, `list_source`, `deprecated` and the members'
 > datatype facts (DD-258), so on a hub that generated seeds `export-reference-list --all
 > --check` reports every seed as stale: run `kairos-ontology export-reference-list --all` and
@@ -348,6 +363,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.31.0] — 2026-10-18
+
+### Changed
+- **A new generated seed goes to `seeds/reference/` (DD-260).** `export-reference-list`
+  writes there unless the hub already keeps generated seeds at the seeds root, so an
+  existing hub does not split. `--dir` chooses another folder. To adopt the layout, move
+  each generated seed's `.csv` and `.yml` to `seeds/reference/`; `--all` follows them.
+
+### Fixed
+- **`export-reference-list` regenerates a seed in the folder it is in.** It used to write
+  and compare every generated seed at the seeds root. A seed moved to a subfolder then
+  failed `--all --check` in `pr-validate`, and `--all` wrote a second copy at the root.
+  Both `--all` and the single-class form now find the seed by name anywhere under
+  `seeds/`, and refuse a name found in more than one folder.
+- **Two seeds of one name in different folders are an error.** dbt names a seed by its
+  file name, whatever its folder, and refuses a project with two of them. The bundle only
+  compared paths, so it emitted both. `validate-dbt-contracts` now reports
+  `dbt-contract.seed-duplicate-name`, and `compile --emit` fails on it. Seed lint findings
+  name the seed's real path instead of `seeds/<name>.csv`.
+- **A source table no domain reads any more leaves the published `_<system>__sources.yml`.**
+  `compile --emit` unioned each shared source catalog with the file already on disk, so a
+  table could be added but never removed: a deleted binding, a move to `dbtModel`, a renamed
+  table or a `superseded` one stayed declared. The dataplatform's `validate-source-bindings`
+  then kept demanding a physical binding for it, so the old loader could not be retired. Each
+  domain now records what it contributes (`.kairos-compile-sources.<domain>.json` in the
+  emitted project), and once every domain has a record the shared catalogs are rebuilt from
+  them; a catalog nothing contributes to is removed. A target emitted before this change has
+  no records, so it keeps the old union until every domain has re-emitted once, which
+  `compile --all --emit` does in one run. In the dataplatform, delete the physical binding of
+  a table the hub stops declaring in the same PR that bumps the package, or
+  `validate-source-bindings` reports it as `unknown`.
+- **A table-grain `superseded` outranks the table's column rows.** Column rows recorded
+  before the table was superseded, such as a `deferred` waiting for a property or a `bound`
+  through a dbt chain since removed, still counted: a deferred column stayed in
+  `alignment-report`'s backlog and in `next`. The gap gate, the deferred backlog and `next`
+  now read the table row for every column of a superseded table. `validate` warns about the
+  leftover rows (`disposition.column-rows-under-superseded-table`), and
+  `source-disposition clear --system S --table T --column-grain-only` withdraws them while
+  keeping the table's own row.
+- **An imported class the hub only relates is no longer shown as a hub concept.** Binding a
+  shipped list takes an axiom such as `unece:TransportModeCodeList rdfs:subClassOf
+  :TransportModeCode`, which names the imported class as a subject in the hub file. The
+  concept guide, the ubiquitous language and the domain ERD counted every such subject as
+  declared by the hub. The guide listed the class as `hub-local` under a minted
+  `<domain>:` name, and the ERD drew it as a local class with every inherited attribute.
+  A subject now counts only when the file states something about it other than
+  `rdfs:subClassOf`, `owl:equivalentClass` or `owl:disjointWith`, such as a type or a label.
+  A reference class the file re-declares with a label still counts (#805), and the concept
+  guide now shows it under its own prefix (for example `iso4217:CurrencyCode`), not the
+  domain's.
+
+  Regenerate the DDD and ERD projections after upgrading. A hub class whose local name
+  collided with such an imported class loses the domain suffix the collision forced on its
+  ubiquitous-language IRI: `terms:CurrencyCode_reference_data` becomes `terms:CurrencyCode`.
+- **`validate` no longer reports an import as unused when the hub uses it through its
+  terms.** The check compared each term's namespace with the `owl:imports` IRI, but a
+  module's IRI need not be its terms' namespace:
+  `https://www.kairosflow.ai/ont/uncefact/code-lists` declares
+  `https://vocabulary.uncefact.org/TransportModeCodeList`. An import now also counts as
+  used when the file names a term that the module's document declares, read from the
+  resolved import closure.
+
+### Documentation
+- **Organise the seeds folder by kind.** The how-to *Use reference data and code lists*
+  gains a section on keeping generated seeds, extensions, crosswalks and hub-owned lists in
+  their own folders, with a `CODEOWNERS` example, and why a prefix per kind would break
+  every `ref()`.
 
 ## [5.30.0] — 2026-10-18
 
