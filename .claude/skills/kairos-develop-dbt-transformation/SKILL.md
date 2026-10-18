@@ -139,9 +139,14 @@ the data comes out of a real system, or changes often enough that a human editin
 CSV is the wrong loop, it is a source, not a seed: import it and bind it normally.
 
 **Code-list seeds (DD-257).**
-- **A list the reference models ship as individuals** (UNECE, ISO 3166): export
-  its members from the resolved closure with `load_ontology`. Never copy them out
-  of the `.ttl`. Record the snapshot and `dcterms:source` in the seed docs.
+- **A list the reference models ship as individuals** (UNECE, ISO 3166):
+  generate the seed with `kairos-ontology export-reference-list <class>
+  --domain <domain>`. Never copy members out of the `.ttl`.
+  - The seed is keyed on `(code_list, code)`, with the upstream IRI as a column.
+  - Its generated docs carry the snapshot and `dcterms:source`, and type every
+    column as text.
+  - Never edit the generated seed. Re-run the command after a reference-models
+    upgrade; `--check` reports drift.
 - **Local extension rows** go in a sibling `<list>_local` seed, not into the
   ontology. The model unions them in with an `origin` column. Their codes come
   from the standard's user-assigned range when it has one; the binding's

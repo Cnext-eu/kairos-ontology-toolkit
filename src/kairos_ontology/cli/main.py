@@ -104,6 +104,7 @@ from .sources import (
     list_patterns_cmd,
 )
 from .class_disposition import class_disposition_group
+from .reference_lists import export_reference_list_cmd
 from .inspection import (
     resolve_ontology_cmd,
     show_class_inventory_cmd,
@@ -458,6 +459,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(resolve_ontology_cmd)
     group.add_command(show_class_inventory_cmd)
     group.add_command(list_class_properties_cmd)
+    group.add_command(export_reference_list_cmd)
     group.add_command(fit_report_cmd)
     group.add_command(inverse_scan_cmd)
     group.add_command(propose_relationships_cmd)

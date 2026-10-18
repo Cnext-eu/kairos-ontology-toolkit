@@ -2,7 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-10-18
-**Affects:** `scaffold/kairos-ext.ttl` (`isReferenceData` comment), the
+**Affects:** `core/reference_lists.py` and `cli/reference_lists.py`
+(`export-reference-list`), `scaffold/kairos-ext.ttl` (`isReferenceData` comment), the
 `kairos-design-mapping` and `kairos-develop-dbt-transformation` skills, the how-to
 [Use reference data and code lists](../../guide/how-to/use-reference-data.md)
 **Issue:** #1126. The reference models state the same three kinds from 1.41.0
@@ -70,8 +71,8 @@ the list's rows live.**
 2. **Every kind is bound.** Compile never emits a reference table that no binding asks for.
    A hub that does not bind Rec 20 never gets its 1,828 rows.
    - **Kind 1:** a seed under `integration/transforms/dbt/seeds/`, read by a contracted
-     model, bound to the hub's governed class. Until #1126 P2 generates it, the seed is
-     exported from the resolved closure.
+     model, bound to the hub's governed class. `export-reference-list` generates the
+     seed from the resolved closure.
    - **Kind 2:** a source relation bound like any other source.
    - **Kind 3:** the source's table, bound like any other source. Use
      `int_merged__<entity>` when a second system will add its own list.
@@ -123,9 +124,17 @@ the list's rows live.**
 
 ### Consequences
 
-- The toolkit has no generator yet. A hub exports a kind-1 list into its seed with the
-  how-to's `load_ontology` script, and re-runs it after each reference-models upgrade so
-  the change shows up as a diff. #1126 P2 replaces the script with a command.
+- **`kairos-ontology export-reference-list` writes a kind-1 list's seed** (#1126 P2):
+  - It reads the members from the resolved closure and keys them on `(code_list, code)`.
+  - It writes seed docs that record each list's snapshot and source and type every column
+    as the adapter's text type.
+  - It refuses to overwrite a seed it did not generate, and refuses a class with no
+    members.
+  - A hub re-runs it after each reference-models upgrade, so the change shows up as a diff;
+    `--check` reports drift without writing.
+  - It never writes `<name>_local`, so extensions survive a refresh.
+  - It writes no binding: the binding maps seed columns onto the hub's own properties,
+    which only the hub knows.
 - A crosswalk's target codes are not yet checked against the shipped individuals. A typo
   becomes a null link. #1126 P3 adds that check.
 - No compiled output changes. Hubs that bound reference tables under the v5 names keep
