@@ -3945,6 +3945,13 @@ def source_disposition_list_cmd(output_format: str) -> None:
     help="Only table-grain entries, e.g. every table-grain 'deferred' recorded before #881.",
 )
 @click.option(
+    "--column-grain-only",
+    is_flag=True,
+    default=False,
+    help="Only column-grain entries, keeping the table's own row: e.g. the column rows "
+    "left under a table recorded 'superseded' (#1147).",
+)
+@click.option(
     "--disposition",
     default=None,
     type=click.Choice(sorted(_DISPOSITION_CHOICES())),
@@ -3961,6 +3968,7 @@ def source_disposition_clear_cmd(
     table: str | None,
     column: str | None,
     table_grain_only: bool,
+    column_grain_only: bool,
     disposition: str | None,
     decided_by: str | None,
     dry_run: bool,
@@ -3971,12 +3979,16 @@ def source_disposition_clear_cmd(
 
     if table and not system:
         raise click.ClickException("--table needs --system.")
-    if column is not None and table_grain_only:
-        raise click.ClickException("--column and --table-grain-only are mutually exclusive.")
-    if not any((system, column is not None, table_grain_only, disposition, decided_by)):
+    if sum((column is not None, table_grain_only, column_grain_only)) > 1:
         raise click.ClickException(
-            "Give at least one of --system, --column, --table-grain-only, --disposition, "
-            "--decided-by."
+            "--column, --table-grain-only and --column-grain-only are mutually exclusive."
+        )
+    if not any(
+        (system, column is not None, table_grain_only, column_grain_only, disposition, decided_by)
+    ):
+        raise click.ClickException(
+            "Give at least one of --system, --column, --table-grain-only, --column-grain-only, "
+            "--disposition, --decided-by."
         )
     hub_root = find_hub_root(Path.cwd(), require_model=False)
     if hub_root is None:
@@ -3997,6 +4009,7 @@ def source_disposition_clear_cmd(
         disposition=disposition,
         decided_by=decided_by,
         dry_run=dry_run,
+        column_grain_only=column_grain_only,
     )
     verb = "would remove" if dry_run else "removed"
     click.echo(f"✓ {verb} {outcome['removed']} entr(y/ies), {outcome['kept']} kept")

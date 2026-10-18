@@ -534,6 +534,120 @@ def test_sequential_emits_union_and_preserve_other_domain_source_tables(tmp_path
     assert "customers" in catalog
 
 
+def _move_billing_to_crm_customers(hub: Path) -> None:
+    binding = hub / "integration" / "bindings" / "region.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8")
+        .replace("relation: crm.countries", "relation: crm.customers")
+        .replace("columns: [code]", "columns: [customer_id]")
+        .replace("sourceKey: [code]", "sourceKey: [customer_id]")
+        .replace("expression: code", "expression: customer_id")
+        .replace("expression: country_name", "expression: customer_name"),
+        encoding="utf-8",
+    )
+
+
+def _emit(runner: CliRunner, domain: str) -> None:
+    result = runner.invoke(cli, ["compile", domain, "--emit", "--confirm-emit"])
+    assert result.exit_code == 0, result.output
+
+
+def test_a_table_no_domain_reads_any_more_leaves_the_shared_catalog(tmp_path, monkeypatch):
+    """#1147: the shared catalog is rebuilt from each domain's record, not only unioned."""
+    hub = _hub(tmp_path / "hub")
+    _add_crm_countries_table(hub)
+    _add_billing_domain_on_crm_countries(hub)
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    _emit(runner, "party")
+    _emit(runner, "billing")
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    catalog_path = target / "models" / "silver" / "_crm__sources.yml"
+    assert "countries" in catalog_path.read_text(encoding="utf-8")
+
+    _move_billing_to_crm_customers(hub)
+    _emit(runner, "billing")
+
+    catalog = catalog_path.read_text(encoding="utf-8")
+    assert "countries" not in catalog
+    assert "customers" in catalog
+    assert (target / ".kairos-compile-sources.billing.json").is_file()
+    assert (target / ".kairos-compile-sources.party.json").is_file()
+
+
+def test_a_catalog_no_domain_contributes_to_is_removed(tmp_path, monkeypatch):
+    hub = _hub(tmp_path / "hub")
+    _add_crm_countries_table(hub)
+    _add_billing_domain_on_crm_countries(hub)
+    erp = hub / "integration" / "sources" / "erp"
+    erp.mkdir(parents=True)
+    crm_vocabulary = hub / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
+    (erp / "erp.vocabulary.ttl").write_text(
+        crm_vocabulary.read_text(encoding="utf-8")
+        .replace("example.test/source#", "example.test/erp#")
+        .replace('rdfs:label "crm"', 'rdfs:label "erp"'),
+        encoding="utf-8",
+    )
+    binding = hub / "integration" / "bindings" / "region.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace("crm.countries", "erp.countries"),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    _emit(runner, "party")
+    _emit(runner, "billing")
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    erp_catalog = target / "models" / "silver" / "_erp__sources.yml"
+    assert erp_catalog.is_file()
+
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace("erp.countries", "crm.countries"),
+        encoding="utf-8",
+    )
+    _emit(runner, "billing")
+
+    assert not erp_catalog.exists()
+    assert "countries" in (target / "models" / "silver" / "_crm__sources.yml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_without_every_domains_record_the_catalog_is_still_unioned(tmp_path, monkeypatch):
+    """A target emitted before #1147 has no records: nothing is dropped until it has all."""
+    hub = _hub(tmp_path / "hub")
+    _add_crm_countries_table(hub)
+    _add_billing_domain_on_crm_countries(hub)
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    _emit(runner, "party")
+    _emit(runner, "billing")
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    catalog_path = target / "models" / "silver" / "_crm__sources.yml"
+    (target / ".kairos-compile-sources.party.json").unlink()
+
+    _move_billing_to_crm_customers(hub)
+    _emit(runner, "billing")
+    assert "countries" in catalog_path.read_text(encoding="utf-8"), "no record, no drop"
+
+    _emit(runner, "party")
+    assert "countries" not in catalog_path.read_text(encoding="utf-8")
+
+
+def test_a_malformed_source_record_fails_the_emit_closed(tmp_path, monkeypatch):
+    hub = _hub(tmp_path / "hub")
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    _emit(runner, "party")
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    (target / ".kairos-compile-sources.party.json").write_text("{not json", encoding="utf-8")
+
+    result = runner.invoke(cli, ["compile", "party", "--emit", "--confirm-emit"])
+
+    assert result.exit_code != 0
+    assert "malformed source catalog record" in result.output
+
+
 def test_emit_fails_closed_on_conflicting_shared_source_metadata(tmp_path, monkeypatch):
     """#584: the shared-catalog union must not let one domain's stale vocabulary win."""
     hub = _hub(tmp_path / "hub")
