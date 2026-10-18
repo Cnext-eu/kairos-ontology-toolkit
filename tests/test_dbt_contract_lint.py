@@ -681,3 +681,55 @@ def test_a_target_that_is_a_model_is_left_to_dbt(tmp_path: Path) -> None:
     report = run_dbt_contract_lint(hub)
     assert not _findings(report, "dbt-contract.crosswalk-unknown-code")
     assert not _findings(report, "dbt-contract.crosswalk-unresolved")
+
+
+# ---------------------------------------------------------------------------------------------
+# Seeds in subfolders (#1145): dbt names a seed by its file name, whatever its folder
+# ---------------------------------------------------------------------------------------------
+
+
+def test_two_seeds_of_one_name_in_different_folders_are_an_error(tmp_path: Path) -> None:
+    seeds = _seeds_dir(tmp_path)
+    (seeds / "reference").mkdir()
+    (seeds / "currency_code.csv").write_text("code\nEUR\n", encoding="utf-8")
+    (seeds / "reference" / "currency_code.csv").write_text("code\nEUR\n", encoding="utf-8")
+
+    report = run_dbt_contract_lint(tmp_path)
+
+    [finding] = _findings(report, "dbt-contract.seed-duplicate-name")
+    assert finding.severity == "error"
+    assert finding.model == "currency_code"
+    assert "seeds/currency_code.csv" in finding.message
+    assert "seeds/reference/currency_code.csv" in finding.message
+    assert report.passed is False
+
+
+def test_seeds_in_subfolders_lint_clean_and_report_their_real_path(tmp_path: Path) -> None:
+    hub = _crosswalk_hub(tmp_path, "SEA,1\nAIR,9\n")
+    seeds = _seeds_dir(hub)
+    for folder, names in (("reference", ["transport_mode_code"]),
+                          ("crosswalks", ["tms_transport_mode_rec19_map"])):
+        (seeds / folder).mkdir()
+        for name in names:
+            for suffix in (".csv", ".yml"):
+                if (seeds / f"{name}{suffix}").is_file():
+                    (seeds / f"{name}{suffix}").rename(seeds / folder / f"{name}{suffix}")
+
+    report = run_dbt_contract_lint(hub)
+
+    assert not _findings(report, "dbt-contract.seed-duplicate-name")
+    assert not _findings(report, "dbt-contract.seed-docs-unmatched")
+    [finding] = _findings(report, "dbt-contract.crosswalk-unknown-code")
+    assert finding.path.endswith("seeds/crosswalks/tms_transport_mode_rec19_map.csv")
+
+
+def test_a_seed_model_collision_reports_the_seed_in_its_folder(tmp_path: Path) -> None:
+    hub = tmp_path
+    _write(hub, _contract("int_customer"))
+    (_seeds_dir(hub) / "lists").mkdir()
+    (_seeds_dir(hub) / "lists" / "int_customer.csv").write_text("id\n1\n", encoding="utf-8")
+
+    report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
+
+    [finding] = _findings(report, "dbt-contract.seed-model-collision")
+    assert finding.path.endswith("seeds/lists/int_customer.csv")

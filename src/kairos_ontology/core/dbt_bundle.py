@@ -274,13 +274,21 @@ def assemble_dbt_bundle(
                 f"first declared in {sql_models[path.stem]}"
             )
         sql_models[path.stem] = path
-    # Authored seeds, indexed by the dbt resource name their stem declares. Duplicates are
-    # already rejected by the case-insensitive artifact-path check above.
-    seed_csv_keys = {
-        PurePosixPath(key).stem: key
-        for key in available_artifacts
-        if PurePosixPath(key).parts[:1] == ("seeds",) and PurePosixPath(key).suffix == ".csv"
-    }
+    # Authored seeds, indexed by the dbt resource name their stem declares. The path check
+    # above does not catch two seeds of one name in different subfolders (#1145), and dbt
+    # cannot parse a project that has them.
+    seed_csv_keys: dict[str, str] = {}
+    for key in available_artifacts:
+        posix = PurePosixPath(key)
+        if posix.parts[:1] != ("seeds",) or posix.suffix != ".csv":
+            continue
+        if posix.stem in seed_csv_keys:
+            raise DbtContractError(
+                f"{key}: duplicate dbt seed name {posix.stem!r}; first declared in "
+                f"{seed_csv_keys[posix.stem]}. dbt names a seed by its file name, whatever "
+                "its folder"
+            )
+        seed_csv_keys[posix.stem] = key
     seed_properties_keys = {
         PurePosixPath(key).stem: key
         for key in available_artifacts

@@ -58,7 +58,7 @@ Pass the list class (`unece:TransportModeCodeList`) or your governed class. With
 governed class, every list that subclasses it is collected. The command writes:
 
 ```text
-# integration/transforms/dbt/seeds/transport_mode_code.csv
+# integration/transforms/dbt/seeds/reference/transport_mode_code.csv
 code_list,code,name,iri,list_version,list_source,deprecated
 TransportModeCodeList,0,Transport mode not specified,https://vocabulary.uncefact.org/TransportModeCodeList#0,2026-10-17,https://vocabulary.uncefact.org/,false
 …
@@ -90,6 +90,10 @@ It also writes `transport_mode_code.yml`, the seed docs:
     and the change shows up as a diff in the hub PR.
   - `--all --check` writes nothing and fails when a seed is stale. The hub's
     `pr-validate` workflow runs it, so a forgotten regeneration fails the PR.
+- **Where it goes (DD-260).** A new seed goes to `seeds/reference/`, or to the seeds
+  root when your hub already keeps generated seeds there. `--dir` chooses another
+  folder. A seed that exists is always regenerated in its own folder, wherever you
+  moved it.
 - **No members, no seed.** A list with no members (kind 2 or 3) is refused.
 
 Read it from a contracted model
@@ -148,11 +152,11 @@ which the European Commission and others code `XK`.
 
    For those, pick a code the standard doesn't use today, and rely on the `origin`
    column and the `unique` rule below.
-2. **Add the row to an extension seed** next to the shipped one. It is a row, not an
-   individual in your hub ontology:
+2. **Add the row to an extension seed** named after the shipped one, in
+   `seeds/extensions/` (step 8). It is a row, not an individual in your hub ontology:
 
    ```text
-   # integration/transforms/dbt/seeds/country_local.csv
+   # integration/transforms/dbt/seeds/extensions/country_local.csv
    code_list,code,name
    Country,XK,Kosovo
    ```
@@ -192,7 +196,7 @@ type, keep it in a sibling seed keyed on the code. Join it in the contracted
 model. Refreshing the shipped rows then never wipes it.
 
 ```text
-# integration/transforms/dbt/seeds/container_type_teu.csv
+# integration/transforms/dbt/seeds/extensions/container_type_teu.csv
 code,teu_factor
 22G1,1
 42G1,2
@@ -205,7 +209,7 @@ Source systems use their own codes (`SEA`, `AIR`). Map them to the list's codes 
 hub seed per source and list:
 
 ```text
-# integration/transforms/dbt/seeds/tms_transport_mode_rec19_map.csv
+# integration/transforms/dbt/seeds/crosswalks/tms_transport_mode_rec19_map.csv
 source_mode_code,rec19_code
 SEA,1
 ROA,3
@@ -216,7 +220,7 @@ In the crosswalk's seed docs, declare which reference seed its codes come from, 
 dbt's own `relationships` test. Name the codes you leave unmapped on purpose:
 
 ```yaml
-# integration/transforms/dbt/seeds/tms_transport_mode_rec19_map.yml
+# integration/transforms/dbt/seeds/crosswalks/tms_transport_mode_rec19_map.yml
 version: 2
 seeds:
   - name: tms_transport_mode_rec19_map
@@ -340,6 +344,39 @@ kairos-ontology source-disposition set --system reference_data --table transport
 The same disposition fits any table another binding replaced, such as an old system's
 table after a migration.
 
+## 8. Organise the seeds folder
+
+Four kinds of seed sit under `integration/transforms/dbt/seeds/`, each owned by someone
+different. Keep each kind in its own folder, so a reviewer sees which files must never be
+edited by hand:
+
+| Folder | Holds | Who edits |
+|---|---|---|
+| `reference/` | Seeds `export-reference-list` generated | nobody: regenerate with `--all` |
+| `extensions/` | `<list>_local` rows and `<list>_<attribute>` columns (step 3) | data steward |
+| `crosswalks/` | `<source>_<list>_map` (step 4) | data engineer |
+| `hub-lists/` | Code lists the hub owns, with no standard behind them | business owner |
+
+- **Only `reference/` is a toolkit convention.** `export-reference-list` writes a new seed
+  there. The other three are a recommendation: nothing checks them.
+- **dbt names a seed by its file name, not its folder.** `ref('transport_mode_code')`
+  works wherever the file sits, so moving a seed changes no SQL. Two seeds with one name
+  in different folders are an error (`dbt-contract.seed-duplicate-name`).
+- **Move a seed with its docs.** Move `<name>.csv` and `<name>.yml` together.
+  `export-reference-list --all` then regenerates the seed in its new folder.
+- **Don't prefix the names by kind.** A prefix renames the dbt resource, and every
+  `ref()` and `relationships` test that names it breaks.
+
+Folders let `CODEOWNERS` route each kind to its owner:
+
+```text
+# .github/CODEOWNERS
+/integration/transforms/dbt/seeds/reference/    @your-org/data-platform
+/integration/transforms/dbt/seeds/extensions/   @your-org/data-stewards
+/integration/transforms/dbt/seeds/crosswalks/   @your-org/data-engineering
+/integration/transforms/dbt/seeds/hub-lists/    @your-org/business-owners
+```
+
 ## Checklist
 
 - [ ] Kind decided, and recorded in a decision record when it is not obvious.
@@ -354,3 +391,4 @@ table after a migration.
 - [ ] No inner join to a reference list in a fact or master model.
 - [ ] A table the list replaced is recorded `superseded`, naming the binding that
       replaced it.
+- [ ] Generated seeds sit in `seeds/reference/`, apart from the seeds people edit.

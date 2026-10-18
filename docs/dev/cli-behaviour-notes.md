@@ -267,6 +267,7 @@ the same `findings` list:
 | `dbt-contract.seed-docs-unmatched` | warning | A `seeds/<name>.yml` lists a `seeds[].name` matching no authored seed CSV stem — a typo or stale docs after a rename. |
 | `dbt-contract.seed-unreadable` | warning | A seed CSV cannot be read or is not UTF-8 (the classic cp1252 Excel export), or its header row is empty. |
 | `dbt-contract.seed-model-collision` | error | A seed stem collides with an authored model stem. |
+| `dbt-contract.seed-duplicate-name` | error | Two seed CSVs in different folders share a stem, so dbt sees two seeds of one name (#1145). |
 
 The collision is an **error**, not a warning, unlike the other two: dbt resolves `ref()` in a
 single resource namespace, so two resources with one name make the generated project fail to

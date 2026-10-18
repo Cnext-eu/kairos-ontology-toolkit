@@ -179,31 +179,33 @@ def _export(*args: str):
 
 
 _SEEDS = Path("integration") / "transforms" / "dbt" / "seeds"
+#: Where a new generated seed goes in a hub with none at the seeds root (DD-260).
+_REF = _SEEDS / "reference"
 
 
 class TestCli:
     def test_writes_the_seed_and_typed_docs(self, hub):
         result = _export("std:ModeList")
         assert result.exit_code == 0, result.output
-        csv_text = (hub / _SEEDS / "mode_list.csv").read_text(encoding="utf-8")
+        csv_text = (hub / _REF / "mode_list.csv").read_text(encoding="utf-8")
         assert (
             csv_text.splitlines()[1]
             == "ModeList,02,Rail transport,https://example.org/std/ModeList-02,"
             "2026-10-17,https://example.org/std/,false"
         )
-        docs = yaml.safe_load((hub / _SEEDS / "mode_list.yml").read_text(encoding="utf-8"))
+        docs = yaml.safe_load((hub / _REF / "mode_list.yml").read_text(encoding="utf-8"))
         assert docs["seeds"][0]["config"]["column_types"]["code"] == "VARCHAR(16)"
         assert "Skipped 1 member" in result.output
 
     def test_the_adapter_option_picks_its_text_type(self, hub):
         assert _export("std:ModeList", "--adapter", "databricks").exit_code == 0
-        docs = yaml.safe_load((hub / _SEEDS / "mode_list.yml").read_text(encoding="utf-8"))
+        docs = yaml.safe_load((hub / _REF / "mode_list.yml").read_text(encoding="utf-8"))
         assert set(docs["seeds"][0]["config"]["column_types"].values()) == {"STRING"}
 
     def test_check_passes_when_current_and_fails_on_drift(self, hub):
         assert _export("std:ModeList").exit_code == 0
         assert _export("std:ModeList", "--check").exit_code == 0
-        path = hub / _SEEDS / "mode_list.csv"
+        path = hub / _REF / "mode_list.csv"
         path.write_text(
             path.read_text(encoding="utf-8").replace("Rail transport", "Rail"), encoding="utf-8"
         )
@@ -236,7 +238,7 @@ class TestCli:
 
     def test_the_seed_name_can_be_chosen(self, hub):
         assert _export("ref:TransportModeCode", "--name", "transport_mode").exit_code == 0
-        assert (hub / _SEEDS / "transport_mode.csv").is_file()
+        assert (hub / _REF / "transport_mode.csv").is_file()
 
     def test_an_unknown_prefix_is_a_usage_error(self, hub):
         result = _export("nope:ModeList")
@@ -249,7 +251,7 @@ class TestAll:
 
     def test_the_header_records_class_and_domain(self, hub):
         assert _export("std:ModeList").exit_code == 0
-        text = (hub / _SEEDS / "mode_list.yml").read_text(encoding="utf-8")
+        text = (hub / _REF / "mode_list.yml").read_text(encoding="utf-8")
         assert read_origin(text) == {
             "class": "https://example.org/std/ModeList",
             "domain": "reference-data",
@@ -264,7 +266,7 @@ class TestAll:
 
     def test_check_all_fails_on_a_stale_seed_and_says_how_to_fix_it(self, hub):
         assert _export("std:ModeList").exit_code == 0
-        path = hub / _SEEDS / "mode_list.csv"
+        path = hub / _REF / "mode_list.csv"
         path.write_text(path.read_text(encoding="utf-8").replace(",1,", ",9,"), encoding="utf-8")
         result = _all("--check")
         assert result.exit_code == 1
@@ -273,7 +275,7 @@ class TestAll:
 
     def test_all_regenerates_a_stale_seed(self, hub):
         assert _export("std:ModeList").exit_code == 0
-        path = hub / _SEEDS / "mode_list.csv"
+        path = hub / _REF / "mode_list.csv"
         original = path.read_text(encoding="utf-8")
         path.write_text("code_list,code,name,iri\n", encoding="utf-8")
         assert _all().exit_code == 0
@@ -461,7 +463,7 @@ class TestMemberFacts:
 class TestCliFacts:
     def test_check_flags_a_seed_from_before_the_fact_columns(self, hub):
         assert _export("std:ModeList").exit_code == 0
-        path = hub / _SEEDS / "mode_list.csv"
+        path = hub / _REF / "mode_list.csv"
         rows = path.read_text(encoding="utf-8").splitlines()
         path.write_text(
             "\n".join(",".join(row.split(",")[:4]) for row in rows) + "\n", encoding="utf-8"
@@ -481,3 +483,74 @@ class TestCliFacts:
         assert result.exit_code == 0, result.output
         assert "1 deprecated (withdrawn) code(s)" in result.output
         assert "numeric_code" in result.output
+
+
+class TestSeedFolders:
+    """A generated seed is regenerated where it lives; a new one goes to reference/ (#1145)."""
+
+    def test_a_hub_with_generated_seeds_at_the_root_keeps_them_there(self, hub):
+        assert _export("std:ModeList", "--dir", ".").exit_code == 0
+        assert (hub / _SEEDS / "mode_list.csv").is_file()
+        assert _export("ref:TransportModeCode", "--name", "transport_mode").exit_code == 0
+        assert (hub / _SEEDS / "transport_mode.csv").is_file()
+        assert not (hub / _REF).exists()
+
+    def test_dir_places_a_new_seed(self, hub):
+        assert _export("std:ModeList", "--dir", "codes/unece").exit_code == 0
+        assert (hub / _SEEDS / "codes" / "unece" / "mode_list.csv").is_file()
+        assert (hub / _SEEDS / "codes" / "unece" / "mode_list.yml").is_file()
+
+    def test_an_existing_seed_is_regenerated_in_its_folder(self, hub):
+        assert _export("std:ModeList", "--dir", "codes").exit_code == 0
+        path = hub / _SEEDS / "codes" / "mode_list.csv"
+        original = path.read_text(encoding="utf-8")
+        path.write_text("code_list,code,name,iri\n", encoding="utf-8")
+        assert _export("std:ModeList", "--check").exit_code == 1
+        assert _export("std:ModeList").exit_code == 0
+        assert path.read_text(encoding="utf-8") == original
+        assert not (hub / _SEEDS / "mode_list.csv").exists()
+        assert not (hub / _REF).exists()
+
+    def test_all_checks_and_regenerates_a_seed_in_a_subfolder(self, hub):
+        assert _export("std:ModeList").exit_code == 0
+        path = hub / _REF / "mode_list.csv"
+        original = path.read_text(encoding="utf-8")
+        result = _all("--check")
+        assert result.exit_code == 0, result.output
+        assert "seeds/reference/mode_list.csv matches the closure" in result.output
+        path.write_text("code_list,code,name,iri\n", encoding="utf-8")
+        assert _all("--check").exit_code == 1
+        assert _all().exit_code == 0
+        assert path.read_text(encoding="utf-8") == original
+        assert sorted(p.name for p in (hub / _SEEDS).rglob("*.csv")) == ["mode_list.csv"]
+
+    def test_dir_that_disagrees_with_an_existing_seed_is_refused(self, hub):
+        assert _export("std:ModeList").exit_code == 0
+        result = _export("std:ModeList", "--dir", "elsewhere")
+        assert result.exit_code == 1
+        assert "already lives in integration/transforms/dbt/seeds/reference" in result.output
+        assert not (hub / _SEEDS / "elsewhere").exists()
+
+    def test_dir_must_stay_under_the_seeds_directory(self, hub):
+        result = _export("std:ModeList", "--dir", "../models")
+        assert result.exit_code == 2
+        assert "folder under the seeds directory" in result.output
+
+    def test_a_seed_in_two_folders_is_refused(self, hub):
+        assert _export("std:ModeList").exit_code == 0
+        copy = hub / _SEEDS / "other"
+        copy.mkdir()
+        for suffix in (".csv", ".yml"):
+            source = hub / _REF / f"mode_list{suffix}"
+            (copy / source.name).write_bytes(source.read_bytes())
+        result = _export("std:ModeList")
+        assert result.exit_code == 1
+        assert "more than one folder" in result.output
+        result = _all("--check")
+        assert result.exit_code == 1
+        assert "generated in more than one folder" in result.output
+
+    def test_all_refuses_dir(self, hub):
+        result = CliRunner().invoke(cli, ["export-reference-list", "--all", "--dir", "x"])
+        assert result.exit_code == 2
+        assert "--dir" in result.output

@@ -41,7 +41,8 @@ admits them. Their reference lives with the command, in
 Adding one here would make `test_documented_codes_are_all_still_real` fail, since no
 construction site for it exists under `core/compiler/`. As of #586 stage (b) that family
 includes the seed findings `dbt-contract.seed-docs-unmatched` (warning),
-`dbt-contract.seed-unreadable` (warning), and `dbt-contract.seed-model-collision` (error).
+`dbt-contract.seed-unreadable` (warning), `dbt-contract.seed-model-collision` (error), and
+`dbt-contract.seed-duplicate-name` (error, #1145).
 The compiler's own seed codes — `dbt-source.dependency-ambiguous` and
 `dbt-source.dependency-unresolved` — *are* catalogued, under `dbt_source.py` below.
 

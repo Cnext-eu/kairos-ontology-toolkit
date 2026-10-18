@@ -153,7 +153,13 @@ CSV is the wrong loop, it is a source, not a seed: import it and bind it normall
     `export-reference-list --all`, which regenerates every generated seed from
     the class and domain its docs record. `pr-validate` runs `--all --check`
     and fails on a stale seed.
-- **Local extension rows** go in a sibling `<list>_local` seed, not into the
+  - A new seed goes to `seeds/reference/` (DD-260); an existing one is
+    regenerated in whatever folder it is in.
+- **Seed folders by kind:** `reference/` (generated), `extensions/`,
+  `crosswalks/`, `hub-lists/`. dbt names a seed by its file name, so a folder
+  never changes a `ref()`; never prefix names by kind, and never give two seeds
+  one name (`dbt-contract.seed-duplicate-name`).
+- **Local extension rows** go in a `<list>_local` seed, not into the
   ontology. The model unions them in with an `origin` column. Their codes come
   from the standard's user-assigned range when it has one; the binding's
   `unique` check catches a later release that reuses one.
