@@ -23,6 +23,8 @@ Leaf module: no :mod:`kairos_ontology.cli` imports, so it stays unit-testable wi
 
 from __future__ import annotations
 
+import csv
+import io
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -503,6 +505,7 @@ def _seed_findings(transforms_dir: Path, hub_root: Path) -> list[DbtContractFind
         )
 
     # --- seed docs YAML naming a seed that does not exist (warning) ------------------------
+    seed_entries: list[tuple[Path, dict]] = []
     if seeds_dir.is_dir():
         docs_paths = sorted(
             path
@@ -523,15 +526,13 @@ def _seed_findings(transforms_dir: Path, hub_root: Path) -> list[DbtContractFind
                     )
                 )
                 continue
-            declared = (
-                [
-                    entry.get("name")
-                    for entry in document.get("seeds", [])
-                    if isinstance(entry, dict)
-                ]
+            entries = (
+                [entry for entry in document.get("seeds") or [] if isinstance(entry, dict)]
                 if isinstance(document, dict)
                 else []
             )
+            seed_entries.extend((path, entry) for entry in entries)
+            declared = [entry.get("name") for entry in entries]
             unmatched = sorted(
                 str(name)
                 for name in declared
@@ -563,6 +564,140 @@ def _seed_findings(transforms_dir: Path, hub_root: Path) -> list[DbtContractFind
                         path=_relative(path, hub_root),
                     )
                 )
+
+    # --- crosswalk seeds against the reference seed they map to (ERROR, DD-257) ----------
+    findings.extend(
+        _crosswalk_findings(
+            seeds_dir,
+            seed_entries,
+            {path.stem: path for path in reversed(seed_paths)},
+            set(model_stems),
+            hub_root,
+        )
+    )
+    return findings
+
+
+#: ``ref('name')`` / ``ref("name")`` as a dbt ``relationships`` test's ``to:`` value.
+_REF_CALL = re.compile(r"""^\s*ref\(\s*['"]([^'"]+)['"]\s*\)\s*$""")
+
+
+def _seed_column_values(path: Path, column: str) -> list[tuple[int, str]] | None:
+    """``(line, value)`` for every row of *column* in a seed CSV; ``None`` when absent."""
+    try:
+        reader = csv.DictReader(io.StringIO(path.read_text(encoding="utf-8")))
+        if reader.fieldnames is None or column not in reader.fieldnames:
+            return None
+        return [(index + 2, (row.get(column) or "")) for index, row in enumerate(reader)]
+    except (OSError, UnicodeError, csv.Error):
+        return None
+
+
+def _relationships_tests(column: dict) -> list[dict]:
+    """The ``relationships`` tests on a seed column, in either dbt spelling.
+
+    dbt reads ``data_tests:`` (and the older ``tests:``); the test's arguments sit directly
+    under ``relationships:`` or, from dbt 1.10, under ``relationships: {arguments: ...}``.
+    """
+    found = []
+    for key in ("data_tests", "tests"):
+        for test in column.get(key) or []:
+            if isinstance(test, dict) and isinstance(test.get("relationships"), dict):
+                args = test["relationships"]
+                if isinstance(args.get("arguments"), dict):
+                    args = args["arguments"]
+                found.append(args)
+    return found
+
+
+def _crosswalk_findings(
+    seeds_dir: Path,
+    seed_entries: list[tuple[Path, dict]],
+    seed_paths: dict[str, Path],
+    model_stems: set[str],
+    hub_root: Path,
+) -> list[DbtContractFinding]:
+    """Check crosswalk seeds against the reference seed their ``relationships`` test names.
+
+    A crosswalk maps one source system's codes to a reference list's codes (DD-257). Its
+    docs declare the target the dbt way, so dbt checks it at build time too::
+
+        columns:
+          - name: rec19_code
+            data_tests:
+              - relationships: {to: "ref('transport_mode_code')", field: code}
+
+    When the target is an authored seed, every non-empty value must occur in that seed's
+    *field* column. An empty cell is a code left unmapped on purpose, which dbt's
+    ``relationships`` test also ignores. A target that is a model cannot be read offline,
+    so it is left to dbt.
+    """
+    findings: list[DbtContractFinding] = []
+    for docs_path, entry in seed_entries:
+        name = entry.get("name")
+        if not isinstance(name, str) or name not in seed_paths:
+            continue
+        for column in entry.get("columns") or []:
+            if not isinstance(column, dict) or not isinstance(column.get("name"), str):
+                continue
+            for args in _relationships_tests(column):
+                match = _REF_CALL.match(str(args.get("to") or ""))
+                target_field = args.get("field")
+                if match is None or not isinstance(target_field, str):
+                    continue
+                target = match.group(1)
+                where = f"{name}.{column['name']} → {target}.{target_field}"
+                if target not in seed_paths:
+                    if target not in model_stems:
+                        findings.append(
+                            DbtContractFinding(
+                                code="dbt-contract.crosswalk-unresolved",
+                                severity=SEVERITY_WARNING,
+                                message=(
+                                    f"{where}: the relationships test names {target!r}, which "
+                                    "is no authored seed or model, so dbt cannot resolve it"
+                                ),
+                                path=_relative(docs_path, hub_root),
+                                model=name,
+                            )
+                        )
+                    continue
+                values = _seed_column_values(seed_paths[name], column["name"])
+                allowed = _seed_column_values(seed_paths[target], target_field)
+                if values is None or allowed is None:
+                    missing = (
+                        f"{name}.csv has no column {column['name']!r}"
+                        if values is None
+                        else (f"{target}.csv has no column {target_field!r}")
+                    )
+                    findings.append(
+                        DbtContractFinding(
+                            code="dbt-contract.crosswalk-unresolved",
+                            severity=SEVERITY_WARNING,
+                            message=f"{where}: {missing}, so the crosswalk cannot be checked",
+                            path=_relative(docs_path, hub_root),
+                            model=name,
+                        )
+                    )
+                    continue
+                known = {value for _, value in allowed}
+                unknown = [(line, value) for line, value in values if value and value not in known]
+                if unknown:
+                    shown = ", ".join(f"{value!r} (line {line})" for line, value in unknown[:5])
+                    more = f" and {len(unknown) - 5} more" if len(unknown) > 5 else ""
+                    findings.append(
+                        DbtContractFinding(
+                            code="dbt-contract.crosswalk-unknown-code",
+                            severity=SEVERITY_ERROR,
+                            message=(
+                                f"{where}: {shown}{more} not found in {target}.{target_field}. A code "
+                                "the crosswalk maps to must exist in the reference list; leave "
+                                "the cell empty for a code that is unmapped on purpose"
+                            ),
+                            path=_relative(seeds_dir / f"{name}.csv", hub_root),
+                            model=name,
+                        )
+                    )
     return findings
 
 

@@ -154,6 +154,11 @@ CSV is the wrong loop, it is a source, not a seed: import it and bind it normall
 - **Hub-owned attributes** go in a sibling seed joined on the code.
 - **Crosswalks** (`<source>_<list>_map`) are left-joined, and the codes they leave
   unmapped on purpose are named in their docs.
+  - In the seed docs, put a dbt `relationships` test on the target column
+    (`to: "ref('<reference seed>')"`, `field: code`).
+  - `validate-dbt-contracts` then rejects a code the reference seed lacks
+    (`dbt-contract.crosswalk-unknown-code`).
+  - An empty cell means unmapped on purpose.
 - **Never inner-join a fact or master model to a reference list.** An unknown
   code then drops the row.
 

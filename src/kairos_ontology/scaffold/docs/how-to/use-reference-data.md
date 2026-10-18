@@ -188,8 +188,27 @@ ROA,3
 AIR,4
 ```
 
-Name the codes you leave unmapped on purpose in the seed's column docs, for example
-"COU (courier) and blank are not mapped, so their link stays empty".
+In the crosswalk's seed docs, declare which reference seed its codes come from, with
+dbt's own `relationships` test. Name the codes you leave unmapped on purpose:
+
+```yaml
+# integration/transforms/dbt/seeds/tms_transport_mode_rec19_map.yml
+version: 2
+seeds:
+  - name: tms_transport_mode_rec19_map
+    description: "TMS transport mode → UNECE Rec 19. COU (courier) and blank are not mapped, so their link stays empty."
+    columns:
+      - name: rec19_code
+        data_tests:
+          - relationships: {to: "ref('transport_mode_code')", field: code}
+```
+
+`validate-dbt-contracts` reads that test and checks every code in the column against the
+reference seed, before anything is built:
+- **A typo** such as `l` for `1` is an error (`dbt-contract.crosswalk-unknown-code`), with
+  its line number.
+- **An empty cell** is a code left unmapped on purpose, and is allowed.
+- **dbt runs the same test after the build,** so a later edit can't slip through.
 
 In the contracted model for the record that carries the code, **left-join** the
 crosswalk, and keep the raw value:
@@ -267,5 +286,6 @@ code to an explicit local "unknown" member.
 - [ ] Extensions are seed rows, not individuals. They take a user-assigned code where
       the standard reserves a range, are unioned in with an `origin` column, and never
       override a shipped row.
-- [ ] Every crosswalk left-joins, keeps the raw value, and documents its deliberate gaps.
+- [ ] Every crosswalk left-joins, keeps the raw value, documents its deliberate gaps, and
+      declares its target with a `relationships` test.
 - [ ] No inner join to a reference list in a fact or master model.

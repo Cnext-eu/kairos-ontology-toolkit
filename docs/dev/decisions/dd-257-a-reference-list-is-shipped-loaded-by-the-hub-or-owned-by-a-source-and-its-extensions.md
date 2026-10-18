@@ -3,7 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-10-18
 **Affects:** `core/reference_lists.py` and `cli/reference_lists.py`
-(`export-reference-list`), `scaffold/kairos-ext.ttl` (`isReferenceData` comment), the
+(`export-reference-list`), `core/dbt_contract_lint.py` (crosswalk check),
+`scaffold/kairos-ext.ttl` (`isReferenceData` comment), the
 `kairos-design-mapping` and `kairos-develop-dbt-transformation` skills, the how-to
 [Use reference data and code lists](../../guide/how-to/use-reference-data.md)
 **Issue:** #1126. The reference models state the same three kinds from 1.41.0
@@ -135,8 +136,16 @@ the list's rows live.**
   - It never writes `<name>_local`, so extensions survive a refresh.
   - It writes no binding: the binding maps seed columns onto the hub's own properties,
     which only the hub knows.
-- A crosswalk's target codes are not yet checked against the shipped individuals. A typo
-  becomes a null link. #1126 P3 adds that check.
+- **`validate-dbt-contracts` checks crosswalk seeds** (#1126 P3):
+  - A crosswalk declares its target with dbt's own `relationships` test in its seed docs.
+  - When that target is an authored seed, every non-empty code must occur in it, or the
+    lint reports `dbt-contract.crosswalk-unknown-code` (an error).
+  - An empty cell is a code left unmapped on purpose.
+  - A target that names no seed or model is a warning.
+  - A target that is a model is left to dbt, which runs the same test after the build.
+
+  Chained with `export-reference-list --check`, the crosswalk is checked against the
+  shipped individuals without the lint loading the ontology.
 - No compiled output changes. Hubs that bound reference tables under the v5 names keep
   them.
 

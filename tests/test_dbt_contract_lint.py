@@ -599,3 +599,85 @@ def test_a_staging_model_that_joins_is_warned_and_a_comment_is_not_a_join(
 
     joins = [f.model for f in report.findings if f.code == "dbt-contract.staging-model-joins"]
     assert joins == ["stg_tms__address"]
+
+
+# ---------------------------------------------------------------------------------------------
+# Crosswalk seeds against the reference seed they map to (#1126 P3, DD-257)
+# ---------------------------------------------------------------------------------------------
+
+
+def _crosswalk_hub(tmp_path: Path, crosswalk_rows: str, test: dict | None = None) -> Path:
+    seeds = _seeds_dir(tmp_path)
+    (seeds / "transport_mode_code.csv").write_text(
+        "code_list,code,name,iri\n"
+        "TransportModeCodeList,1,Maritime transport,https://example.org/m#1\n"
+        "TransportModeCodeList,4,Air transport,https://example.org/m#4\n",
+        encoding="utf-8",
+    )
+    (seeds / "tms_transport_mode_rec19_map.csv").write_text(
+        "source_mode_code,rec19_code\n" + crosswalk_rows, encoding="utf-8"
+    )
+    relationship = test or {"relationships": {"to": "ref('transport_mode_code')", "field": "code"}}
+    docs = {
+        "version": 2,
+        "seeds": [
+            {
+                "name": "tms_transport_mode_rec19_map",
+                "columns": [{"name": "rec19_code", "data_tests": [relationship]}],
+            }
+        ],
+    }
+    (seeds / "tms_transport_mode_rec19_map.yml").write_text(yaml.safe_dump(docs), encoding="utf-8")
+    return tmp_path
+
+
+def _findings(report, code: str) -> list:
+    return [finding for finding in report.findings if finding.code == code]
+
+
+def test_a_crosswalk_whose_codes_all_exist_is_clean(tmp_path: Path) -> None:
+    hub = _crosswalk_hub(tmp_path, "SEA,1\nAIR,4\nCOU,\n")
+    report = run_dbt_contract_lint(hub)
+    assert not _findings(report, "dbt-contract.crosswalk-unknown-code")
+    assert not _findings(report, "dbt-contract.crosswalk-unresolved")
+
+
+def test_a_crosswalk_code_missing_from_the_reference_seed_is_an_error(tmp_path: Path) -> None:
+    hub = _crosswalk_hub(tmp_path, "SEA,1\nAIR,l\nROA,3\n")
+    [finding] = _findings(run_dbt_contract_lint(hub), "dbt-contract.crosswalk-unknown-code")
+    assert finding.severity == "error"
+    assert "'l' (line 3)" in finding.message
+    assert "'3' (line 4)" in finding.message
+    assert "transport_mode_code.code" in finding.message
+    assert finding.path.endswith("tms_transport_mode_rec19_map.csv")
+
+
+def test_the_dbt_1_10_arguments_spelling_is_read_too(tmp_path: Path) -> None:
+    test = {"relationships": {"arguments": {"to": 'ref("transport_mode_code")', "field": "code"}}}
+    hub = _crosswalk_hub(tmp_path, "SEA,9\n", test)
+    assert _findings(run_dbt_contract_lint(hub), "dbt-contract.crosswalk-unknown-code")
+
+
+def test_a_target_that_names_nothing_is_a_warning(tmp_path: Path) -> None:
+    test = {"relationships": {"to": "ref('transport_mode')", "field": "code"}}
+    hub = _crosswalk_hub(tmp_path, "SEA,1\n", test)
+    [finding] = _findings(run_dbt_contract_lint(hub), "dbt-contract.crosswalk-unresolved")
+    assert finding.severity == "warning"
+    assert "no authored seed or model" in finding.message
+
+
+def test_a_target_field_the_reference_seed_lacks_is_a_warning(tmp_path: Path) -> None:
+    test = {"relationships": {"to": "ref('transport_mode_code')", "field": "rec19"}}
+    hub = _crosswalk_hub(tmp_path, "SEA,1\n", test)
+    [finding] = _findings(run_dbt_contract_lint(hub), "dbt-contract.crosswalk-unresolved")
+    assert "transport_mode_code.csv has no column 'rec19'" in finding.message
+
+
+def test_a_target_that_is_a_model_is_left_to_dbt(tmp_path: Path) -> None:
+    test = {"relationships": {"to": "ref('int_customer')", "field": "code"}}
+    hub = _crosswalk_hub(tmp_path, "SEA,anything\n", test)
+    models = _models_dir(hub)
+    (models / "int_customer.sql").write_text("select 1 as code\n", encoding="utf-8")
+    report = run_dbt_contract_lint(hub)
+    assert not _findings(report, "dbt-contract.crosswalk-unknown-code")
+    assert not _findings(report, "dbt-contract.crosswalk-unresolved")
