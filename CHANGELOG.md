@@ -5,34 +5,35 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.29.0** is the latest GA release (2026-10-18). A minor release
-> that follows 5.28.0's reference data through a real hub (#1136, #1137):
+> **Release status.** **5.30.0** is the latest GA release (2026-10-18). A minor release
+> for Gold products (#1142):
 >
-> - **Generated reference-list seeds carry what the reference models say about each code**
->   (DD-258): `list_version`, `list_source`, `deprecated` (withdrawn codes stay rows), and
->   one column per datatype property of the members. For ISO 4217, those are
->   `numeric_code`, `minor_unit`, `withdrawal_date` and `is_fund`.
-> - **Currencies bind `iso4217:CurrencyCode`**, ISO 4217 from SIX, which reference models
->   1.42.0 ship. Don't use `unece:CurrencyCodeList`, which lags ISO.
-> - **`superseded`** (DD-259) records a source table another binding replaced, such as an
->   imported copy of a list the reference models now ship. It names that binding, and
->   `validate` fails if the binding disappears.
-> - **The toolkit is tested against reference models 1.42.0.**
+> - **`semantic-model.dimension-key-without-dimension`** reports a fact key whose target
+>   class a domain of the product binds in Silver but no Gold table carries, typically a
+>   governed code list such as currency or transport mode. `compile --check` and `emit-gold`
+>   report it as a warning. Add the dimension, remove the key with `goldExcludeColumn`, or
+>   record a `practiceException` on the column.
+> - **`goldExcludeColumn` can remove a key whose target is not in the product**, which
+>   failed before with `gold.relationship-column-not-emitted`.
 >
-> **What to expect on the first run after upgrading from 5.28.0.** On a hub that generated
-> reference seeds, `export-reference-list --all --check` (in `pr-validate`) reports every
-> seed as stale. Run `kairos-ontology export-reference-list --all` and commit; `update
-> --upgrade` already prints it first. A contracted model that unions a `_local` seed with
-> `select *` fails on the new columns: name the columns. Moving currencies to the SIX list
-> means `update-refmodels --version v1.42.0` (or `update --upgrade`), then
-> `export-reference-list iso4217:CurrencyCode` and a binding change. That is a hub
-> decision, not something the upgrade does. Dataplatforms see no change. Compiled output
-> is unchanged until a hub binds the new columns.
+> **What to expect on the first run after upgrading from 5.29.0.** A product whose fact keys
+> point at a bound class without a Gold table shows new `gold.dimension-key-without-dimension`
+> warnings, and the `gold.unresolved-relationship` warning no longer lists those keys. Nothing
+> blocks, and emitted Gold and dbt bytes are unchanged until the hub acts on a finding.
+> Dataplatforms see no change.
 >
-> **Upgrading from 5.27.3?** 5.28.0's first-run notes still apply on top of the above. It
-> was a minor release about reference data (#1126, DD-257). A code list is one of three
-> kinds: shipped by the reference models as individuals, loaded by the hub, or owned by a
-> source system.
+> **Upgrading from 5.28.0?** 5.29.0's first-run notes apply as well. Generated
+> reference-list seeds gained `list_version`, `list_source`, `deprecated` and the members'
+> datatype facts (DD-258), so on a hub that generated seeds `export-reference-list --all
+> --check` reports every seed as stale: run `kairos-ontology export-reference-list --all` and
+> commit. A contracted model that unions a `_local` seed with `select *` fails on the new
+> columns: name the columns. Currencies can bind `iso4217:CurrencyCode` from reference models
+> 1.42.0, and `superseded` (DD-259) records a source table another binding replaced.
+>
+> **Upgrading from 5.27.3?** 5.28.0's and 5.29.0's first-run notes still apply on top of the
+> above. 5.28.0 was a minor release about reference data (#1126, DD-257). A code list is
+> one of three kinds: shipped by the reference models as individuals, loaded by the hub, or
+> owned by a source system.
 >
 > - **`export-reference-list`** writes a shipped list (UNECE Rec 19/20/21, ISO 3166 …) as a
 >   dbt seed keyed on `(code_list, code)`. Its docs record the snapshot and type every
@@ -347,6 +348,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGELOG.md edit in a PR that does not bump __version__.
 -->
 ## [Unreleased]
+
+## [5.30.0] — 2026-10-18
+
+### Added
+- **Gold flags a fact key whose class is bound but has no dimension (#1142).** A foreign key
+  whose target class a domain of the product binds in Silver, but which no Gold table
+  carries, used to be listed with every other dead column under `unresolved_relationships`,
+  and the advice there ("add the owning domain to the product") did not apply: the domain was
+  already there. It is now the practice `semantic-model.dimension-key-without-dimension`
+  (`gold.dimension-key-without-dimension`, a warning), reported by `compile --check` and
+  `emit-gold`. Resolve it by adding the dimension with `kairos-ext:goldTableName`, removing
+  the key with `kairos-ext:goldExcludeColumn`, or recording a `kairos-ext:practiceException`
+  on the column. In a product without the target's domain, such an exception is deferred
+  rather than reported unused, so a shared domain can carry it. The product report's
+  `unresolved_relationships` is unchanged, and `emit-gold`'s unresolved-relationship warning
+  now lists only keys whose owning domain is missing.
+
+### Fixed
+- **`goldExcludeColumn` can remove a foreign key whose target is not in the product (#1142).**
+  It failed with `gold.relationship-column-not-emitted`, and `goldExcludeRelationship` needs
+  a target table, so a dead key could not be removed at all.
 
 ## [5.29.0] — 2026-10-18
 
