@@ -44,6 +44,7 @@ CONFORMED = "semantic-model.conformed-dimension"
 CONNECTED = "semantic-model.connected-tables"
 ONE_PROCESS = "semantic-model.product-is-one-process"
 NAME_ROLE = "semantic-model.table-name-matches-role"
+DIMENSION_KEY = "semantic-model.dimension-key-without-dimension"
 
 #: Practice -> the diagnostic code that reports it.
 CODES = {
@@ -62,6 +63,7 @@ CODES = {
     CONNECTED: "gold.unconnected-table",
     ONE_PROCESS: "gold.product-spans-processes",
     NAME_ROLE: "gold.table-name-role",
+    DIMENSION_KEY: "gold.dimension-key-without-dimension",
 }
 
 #: ``USERELATIONSHIP(a[x], b[y])``, either argument order, table optionally quoted.
@@ -197,6 +199,10 @@ def _is_activated(item: GoldRelationshipSpec, activated) -> bool:
     )
 
 
+def _local_name(uri: str) -> str:
+    return re.split(r"[#/]", uri)[-1] or uri
+
+
 def _excuse(practice_id: str, kind: str, target: str) -> str:
     return (
         f'or record kairos-ext:practiceException "{practice_id} on {kind}'
@@ -210,6 +216,8 @@ def check_model_shape(
     relationships: tuple[GoldRelationshipSpec, ...],
     exceptions: tuple[BpaIgnore, ...],
     *,
+    dimension_keys: tuple[tuple[str, str, str, str], ...] = (),
+    absent_keys: tuple[tuple[str, str, str, str], ...] = (),
     measures: tuple[GoldMeasureSpec, ...] = (),
     calendar_table: str = "",
 ) -> tuple[GoldAdvisory, ...]:
@@ -217,6 +225,13 @@ def check_model_shape(
 
     *calendar_table* names the calendar dimension when the product emits one
     (``dim_date``); it is not among *tables*.
+
+    *dimension_keys* and *absent_keys* are the product's dead foreign keys, each
+    ``(property_uri, source_table, column, target_class)``, split by whether a domain of
+    the product binds the target class (#1142). Only the first breaks
+    ``dimension-key-without-dimension``. An exception to it on a key of the second kind
+    is deferred, not unused: a shared domain's exception is read by every product it is
+    in, and in a product without the target's domain the question does not arise.
     """
     role = {table.name: table.role for table in tables}
     if calendar_table:
@@ -578,6 +593,36 @@ def check_model_shape(
                 "none cannot be analysed together. Split the product, or conform a dimension,"
             ),
         )
+
+    # --- Dead dimension keys (#1142) ---------------------------------------------------
+    roles: dict[tuple[str, str], int] = {}
+    for _property, source_table, _column, target_class in dimension_keys:
+        roles[(source_table, target_class)] = roles.get((source_table, target_class), 0) + 1
+    for _property, source_table, column, target_class in dimension_keys:
+        name = _local_name(target_class)
+        role_note = (
+            f" {source_table} references {name} in {roles[(source_table, target_class)]} "
+            f"roles, so the dimension also raises {ROLE_PLAYING}."
+            if roles[(source_table, target_class)] > 1
+            else ""
+        )
+        report(
+            DIMENSION_KEY,
+            "column",
+            f"{source_table}.{column}",
+            by_name[source_table].resource_uri if source_table in by_name else "",
+            (
+                f"{source_table}.{column} is a key to {name}, which a domain of this product "
+                "binds in Silver but no Gold table carries, so nothing joins it and reports "
+                f"slice on raw codes instead of a conformed dimension.{role_note} Add the "
+                f"dimension (kairos-ext:goldTableName on {name}), remove the key "
+                f'(kairos-ext:goldExcludeColumn "{source_table}.{column}"),'
+            ),
+        )
+    for _property, source_table, column, _target in absent_keys:
+        key = (DIMENSION_KEY, "column", f"{source_table}.{column}".casefold())
+        if key in excused:
+            used.add(key)
 
     # --- Naming ------------------------------------------------------------------------
     for table in tables:

@@ -251,6 +251,12 @@ class DimensionalGoldSpec:
     #: decision (add the owning domain to the product, or accept the column), and before
     #: #744 this vanished silently, which is how a cross-domain product lost half its star.
     unresolved_relationships: tuple[tuple[str, str, str], ...] = ()
+    #: The entries of ``unresolved_relationships`` whose target class a domain of this
+    #: product binds in Silver, each ``(property_uri, source_table, column,
+    #: target_class)``: the owning domain is here, but no Gold table carries the class,
+    #: so adding the domain is not the fix (#1142). Reported as the practice
+    #: ``semantic-model.dimension-key-without-dimension``.
+    dimension_keys: tuple[tuple[str, str, str, str], ...] = ()
     #: ``(bridge_name, endpoint_uri)`` for each bridge endpoint that is not a Gold
     #: table of *this* shaping. A bridge may legitimately span two domains, so on a
     #: single-domain `compile --check` the other endpoint is simply not in scope --

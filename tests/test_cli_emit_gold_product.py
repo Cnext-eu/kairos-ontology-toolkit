@@ -158,14 +158,18 @@ def test_moving_a_domain_into_a_product_retires_its_old_model(tmp_path, monkeypa
 
 
 def test_the_dangling_relationship_is_reported_to_the_operator(tmp_path, monkeypatch):
-    """`party:Country` is materialized but no domain authors a Gold table for it."""
+    """`party:Country` is materialized but no domain authors a Gold table for it.
+
+    `party` is in the product, so adding the owning domain is not the fix: the key is
+    reported as the shape practice, not as an unresolved relationship (#1142).
+    """
     hub = _hub(tmp_path)
 
     result = _emit(hub, "invoicing", monkeypatch)
 
     assert result.exit_code == 0, result.output
-    assert "no target table in this product" in result.output
-    assert "dim_customer -> https://example.test/ontology/party#Country" in result.output
+    assert "gold.dimension-key-without-dimension: dim_customer.country_sk" in result.output
+    assert "no target table in this product" not in result.output
 
 
 def test_repeated_product_emit_is_idempotent(tmp_path, monkeypatch):

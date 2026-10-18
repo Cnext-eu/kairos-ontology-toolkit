@@ -31,6 +31,7 @@ from kairos_ontology.core.projections.dbt.gold_shape import _sole
 from kairos_ontology.core.projections.dbt.gold_specs import GoldContractError
 from kairos_ontology.core.projections.medallion_gold_projector import (
     generate_gold_from_compile_plans,
+    plan_gold_from_compile_plans,
 )
 
 _PRODUCT_HUB = Path(__file__).parent / "scenarios" / "v5-product-hub"
@@ -475,3 +476,90 @@ class TestIdenticalCalendarsAreOne:
             (self._member("billing", None), self._member("party", cal))
         )
         assert policy.gold.calendar is cal and contributors == ()
+
+
+def _plan(hub: Path, product: GoldProductConfig):
+    plans = [build_compile_plan(hub, domain) for domain in product.domains]
+    logical, _physical = plan_gold_from_compile_plans(plans, product)
+    return logical
+
+
+def _exception(practice_on: str) -> str:
+    return (
+        '  kairos-ext:practiceException "semantic-model.dimension-key-without-dimension on '
+        f'column {practice_on}: reported on the raw code by design" ;\n'
+    )
+
+
+_DIMENSION_KEY = "gold.dimension-key-without-dimension"
+
+
+class TestDimensionKeyWithoutDimension:
+    """#1142: the owning domain is in the product, but its class has no Gold table."""
+
+    def test_a_bound_class_without_a_table_is_a_shape_finding(self, tmp_path):
+        # `party:Country` is bound by `party`, which is in the product: adding the domain
+        # is not the fix, so this is the practice, not just an unresolved relationship.
+        logical = _plan(_hub(tmp_path), _INVOICING)
+        findings = [message for code, message, _ in logical.advisories if code == _DIMENSION_KEY]
+        assert len(findings) == 1
+        assert findings[0].startswith("dim_customer.country_sk is a key to Country")
+        assert "goldExcludeColumn" in findings[0]
+        assert "on column dim_customer.country_sk" in findings[0]
+        assert [item[1:3] for item in logical.dimension_keys] == [("dim_customer", "country_sk")]
+
+    def test_the_product_report_keeps_listing_the_dead_column(self, tmp_path):
+        """Unchanged bytes: the report lists every dead column, whatever its cause."""
+        unresolved = _report(_emit(_hub(tmp_path), _INVOICING))["unresolved_relationships"]
+        assert [item["source_table"] for item in unresolved] == ["dim_customer"]
+
+    def test_an_exception_on_the_column_excuses_it(self, tmp_path):
+        hub = _hub(tmp_path, party_extra=_exception("dim_customer.country_sk"))
+        logical = _plan(hub, _INVOICING)
+        assert _DIMENSION_KEY not in {code for code, _, _ in logical.advisories}
+
+    def test_an_exception_on_a_joined_key_is_unused(self, tmp_path):
+        hub = _hub(tmp_path, billing_extra=_exception("fact_invoice.customer_sk"))
+        with pytest.raises(GoldContractError) as excinfo:
+            _plan(hub, _INVOICING)
+        assert excinfo.value.code == "gold.bpa-ignore-unused"
+
+    def test_the_exception_is_deferred_where_the_domain_is_absent(self, tmp_path):
+        """A shared exception must not fail the product that lacks the target's domain."""
+        hub = _hub(tmp_path, party=False, billing_extra=_exception("fact_invoice.customer_sk"))
+        solo = GoldProductConfig(name="billing", domains=("billing",), declared=False)
+        logical = _plan(hub, solo)
+        assert logical.dimension_keys == ()
+        assert _DIMENSION_KEY not in {code for code, _, _ in logical.advisories}
+
+    def test_exclude_column_removes_an_unresolved_key(self, tmp_path):
+        """Before #1142 this failed with gold.relationship-column-not-emitted."""
+        hub = _hub(
+            tmp_path,
+            party_extra='  kairos-ext:goldExcludeColumn "dim_customer.country_sk" ;\n',
+        )
+        logical = _plan(hub, _INVOICING)
+        customer = next(table for table in logical.tables if table.name == "dim_customer")
+        assert "country_sk" not in {column.name for column in customer.columns}
+        assert logical.unresolved_relationships == ()
+        assert _DIMENSION_KEY not in {code for code, _, _ in logical.advisories}
+
+    def test_emit_gold_leaves_it_to_the_shape_finding(self, capsys):
+        from kairos_ontology.cli.emit_gold import _report_unresolved
+
+        report = {
+            "unresolved_relationships": [
+                {"property": "p:country", "source_table": "dim_customer", "target_class": "C"},
+                {"property": "p:carrier", "source_table": "fact_x", "target_class": "D"},
+            ]
+        }
+        logical = SimpleNamespace(dimension_keys=(("p:country", "dim_customer", "x", "C"),))
+        _report_unresolved(
+            {"p/p-gold-product.json": json.dumps(report)},
+            SimpleNamespace(name="p"),
+            logical,
+        )
+        out = capsys.readouterr().out
+        assert "1 relationship(s)" in out
+        assert "fact_x -> D" in out
+        assert "dim_customer" not in out

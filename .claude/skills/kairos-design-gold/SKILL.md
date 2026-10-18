@@ -110,7 +110,10 @@ business semantics.
   EntityBinding; without one the compile blocks on `safety.relationship-endpoint` before
   Gold sees it. After emit, read the `unresolved_relationships` warning: it lists foreign
   keys whose join column is emitted but whose target table is not in the product, which is
-  a dead column until the owning domain joins the product.
+  a dead column until the owning domain joins the product. When the owning domain is
+  already in the product but its class has no Gold table, the finding is
+  `gold.dimension-key-without-dimension` instead: add the dimension (`goldTableName`),
+  remove the key (`goldExcludeColumn`), or record a `practiceException` on the column.
 - Author the calendar and the security policy in exactly one participating domain. The
   product inherits them, which is how one calendar serves every product that includes that
   domain; two declarations fail closed.

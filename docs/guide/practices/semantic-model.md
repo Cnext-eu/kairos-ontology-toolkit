@@ -58,6 +58,16 @@ After emit-gold, review deactivated_relationships in the product report, and fix
 - **Source:** #996
 - **Excusable:** no
 
+### `semantic-model.dimension-key-without-dimension`
+
+A fact key whose target class a domain of the product binds in Silver joins a Gold dimension, or is removed, or the author records why it stays a dead column.
+
+- **Why:** The key is emitted and hidden (DD-221), so nobody notices that nothing joins it. Reports then slice on the raw source codes (SEA, AIR) instead of the governed list, and lose the slicer a conformed dimension shares across facts. Unlike a key whose owning domain is missing from the product (gold.unresolved-relationship), adding a domain is not the fix: the domain is here and its class has no Gold table. Code lists are the usual case. Add the dimension with kairos-ext:goldTableName, remove the key with kairos-ext:goldExcludeColumn, or record an exception on the column.
+- **Enforcement:** warning, at `compile --check`
+- **Check:** `gold.dimension-key-without-dimension`
+- **Source:** #1142, DD-221
+- **Excusable:** yes, on a column
+
 ### `semantic-model.star-schema`
 
 Prefer a star: a dimension carries its own attributes rather than referencing another dimension (an outrigger).

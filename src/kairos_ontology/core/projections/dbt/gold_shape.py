@@ -1118,6 +1118,8 @@ def _shape_relationships(
     *,
     excluded: frozenset[tuple[str, str, str, str]] = frozenset(),
     matched: set[tuple[str, str, str, str]] | None = None,
+    excluded_columns: frozenset[tuple[str, str]] = frozenset(),
+    dead_keys: list[tuple[str, str, str, str]] | None = None,
 ) -> tuple[
     tuple[GoldRelationshipSpec, ...],
     tuple[tuple[str, str, str], ...],
@@ -1137,6 +1139,11 @@ def _shape_relationships(
     An edge in *excluded* (``goldExcludeRelationship``, #1012) is left out and its key
     added to *matched*. It is matched on the foreign key's own column name, before the
     emitted-column check, so the column may also be removed with ``goldExcludeColumn``.
+
+    A key whose target is not here has no edge to exclude, so ``goldExcludeColumn`` alone
+    removes it: *excluded_columns* holds ``(table, column)``, casefolded (#1142). Each
+    unresolved key that stays is appended to *dead_keys* as ``(property_uri,
+    source_table, column, target_class)``.
     """
     by_resource = {table.resource_uri: table for table in tables}
     relationships: list[GoldRelationshipSpec] = []
@@ -1170,6 +1177,19 @@ def _shape_relationships(
             )
             if typed_column is not None and is_excluded(source.name, typed_column, target):
                 continue
+        if target is None and excluded_columns:
+            typed_column = _typed_foreign_key_column(
+                source,
+                descriptor.property_uri,
+                source_model.foreign_keys if source_model is not None else (),
+                resource_uri=descriptor.property_uri,
+            )
+            if (
+                typed_column is not None
+                and (source.name.casefold(), typed_column.casefold()) in excluded_columns
+                and not any(column.name == typed_column for column in source.columns)
+            ):
+                continue
         column_name = _relationship_column(
             source,
             descriptor.property_uri,
@@ -1181,6 +1201,10 @@ def _shape_relationships(
             continue
         if target is None:
             unresolved.append((descriptor.property_uri, source.name, descriptor.target_class))
+            if dead_keys is not None:
+                dead_keys.append(
+                    (descriptor.property_uri, source.name, column_name, descriptor.target_class)
+                )
             continue
         if excluded and is_excluded(source.name, column_name, target):
             continue
@@ -2253,13 +2277,31 @@ def _shape_dimensional_product(
 
     excluded_relationships = _excluded_relationship_keys(members)
     matched_exclusions: set[tuple[str, str, str, str]] = set()
+    excluded_columns = frozenset(
+        (table.name.casefold(), column.casefold())
+        for table in ordered
+        for member in members
+        for column in _excluded_column_names(member.policy, table.name)
+    )
+    dead_keys: list[tuple[str, str, str, str]] = []
     relationships, unresolved, dropped_relationships = _shape_relationships(
         ordered,
         tuple(descriptors),
         models,
         excluded=frozenset(excluded_relationships),
         matched=matched_exclusions,
+        excluded_columns=excluded_columns,
+        dead_keys=dead_keys,
     )
+    # #1142: a dead key whose target class a domain of this product binds in Silver is
+    # not a missing domain -- the domain is here, and nobody decided whether the class
+    # is a dimension. That is a design question with its own practice; the rest stay
+    # `unresolved_relationships`, fixed by adding the owning domain to the product.
+    bound_here = {
+        model.identity.class_uri for member in members for model in member.silver_models
+    }
+    dimension_keys = tuple(sorted(set(item for item in dead_keys if item[3] in bound_here)))
+    absent_keys = tuple(sorted(set(item for item in dead_keys if item[3] not in bound_here)))
     relationships = relationships + _calendar_relationships(calendar)
     shaped_table_names = frozenset(table.name.casefold() for table in ordered) | (
         {CALENDAR_TABLE.casefold()} if calendar is not None else frozenset()
@@ -2361,6 +2403,8 @@ def _shape_dimensional_product(
             ordered,
             relationships,
             bpa_ignores,
+            dimension_keys=dimension_keys,
+            absent_keys=absent_keys,
             measures=ordered_measures,
             calendar_table=CALENDAR_TABLE if calendar is not None and calendar.approved else "",
         )
@@ -2387,6 +2431,7 @@ def _shape_dimensional_product(
         silver_registry_columns=tuple(sorted(set(registry_columns))),
         domains=tuple(member.ontology_name for member in members),
         unresolved_relationships=unresolved,
+        dimension_keys=dimension_keys,
         unresolved_bridges=tuple(sorted(set(unresolved_bridges))),
         deferred_references=tuple(sorted(set(deferred or ()))),
         excluded_relationships=tuple(
