@@ -1,0 +1,231 @@
+# Managed by kairos-ontology-toolkit. `update --refresh-workflows` replaces this file
+# while it matches a shipped generation, so an undeclared edit is silently reverted.
+# To keep one: declare it under [tool.kairos] customized-workflows in pyproject.toml,
+# and `update --check` will report it without failing or overwriting it. If the edit is
+# worth having everywhere, send it upstream instead (#772).
+# Pull-request workflow (DD-206 §4 "Hub pull request"): validates ontology, SHACL,
+# binding, and dbt-package correctness, then regenerates the tracked output and fails
+# on drift. This runs *alongside* managed-check.yml (which only verifies
+# toolkit-managed files), not instead of it.
+#
+# Three jobs, deliberately parallel. They share no path and none reads what another
+# writes: `validate` works over the authored tree only, `compile` is the only job that
+# emits, and `architecture` regenerates the class diagrams and DDD maps, which are drawn
+# from the authored ontologies, never from compile output. Run serially on a real
+# 16-ontology hub this took 9m10s, with the slowest gate waiting on the second-slowest for
+# no reason; the split roughly halves wall-clock feedback for ~9s of duplicated setup per
+# job. `architecture` was split out of `compile` (#998): the two `project` runs were more
+# than half of that job, and nothing in them waited on the emit.
+#
+# `compile --all --check` used to run before the emit step and has been removed as pure
+# duplication: `compile_domain` forces rendering in *every* mode, and all four gates
+# plus the success verdict are mode-blind, so `--check` is `--emit` minus the disk
+# write. The one thing it genuinely added -- every domain's verdict before anything is
+# written -- is preserved by having the emit loop report a failing domain and continue
+# rather than aborting the run. The full serial gate set, `--check` included, still runs
+# in full-validate.yml on main and on a schedule.
+
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A superseded run is worthless: after a force-push its verdict describes bytes nobody
+# will merge. The ref must be part of the group -- `github.workflow` on its own cancels
+# across concurrent PRs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# CI is a sanctioned caller. Every skill-managed command would otherwise print "prefer the
+# <skill> skill in your AI coding session" into a log where there is no session to redirect
+# to and no skill to prefer -- and the advisory claims the run skipped validation gates that
+# adjacent steps here perform explicitly. Set at workflow level, not per step: it was on one
+# of five steps, and a step added later must inherit it rather than silently regress (#721).
+env:
+  KAIROS_SKILL_CONTEXT: "1"
+
+jobs:
+  # The job id stays `validate`. It is the status-check context name
+  # (`PR Validation / validate`) that a hub's branch protection may already require, and
+  # renaming it would leave that required check permanently pending, blocking every PR.
+  validate:
+    name: Validate authored inputs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # An unpinned version queries github.com's "latest release" API, which
+          # 404s from a GitHub Enterprise Server host (astral-sh/uv doesn't exist
+          # there). Pinning a known-good version skips that lookup entirely.
+          version: "0.12.5"
+          enable-cache: true
+
+      - name: Install toolkit
+        run: uv sync --locked
+
+      # `--all` is the default when no phase flag is given, but it is passed explicitly
+      # so this reads as "every phase" rather than "whatever the default happens to be",
+      # and so a phase added later behind an opt-in flag is included here.
+      - name: Validate ontologies (syntax, SHACL, consistency)
+        run: |
+          uv run --no-sync kairos-ontology validate \
+            --ontologies ontology-hub/model/ontologies \
+            --shapes ontology-hub/model/shapes \
+            --all
+
+      # DD-215: lints the *hand-authored* dbt transform tree -- meta.kairos
+      # completeness, grain_key, and adapter dialect rules. Offline: no dbt install, no
+      # adapter, no warehouse. It reads `integration/transforms/dbt/`, the authored tree,
+      # never the emitted project -- which is why it belongs in this job rather than
+      # behind the emit, and it balances the two jobs' durations.
+      # Skipped cleanly when the hub authors no dbt transforms at all.
+      - name: Lint hand-authored dbt transforms
+        run: |
+          uv run --no-sync kairos-ontology validate-dbt-contracts --format json
+
+  compile:
+    name: Compile, emit and check drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.5"
+          enable-cache: true
+
+      - name: Install toolkit
+        run: uv sync --locked
+
+      # The extra name is resolved by the toolkit, never composed here: DD-215 renamed
+      # the canonical adapter id to `fabric-warehouse` while the hub extra stayed
+      # `dbt-validate-fabric`, so `dbt-validate-$adapter` names an extra no hub
+      # declares. That mapping is a table lookup in `core.adapters.dbt_validate_extra`,
+      # not a string transform, which is why this step needs the toolkit installed above
+      # and cannot be reduced to a grep of kairos.yaml.
+      - name: Install dbt adapter for the full offline gate
+        run: |
+          set -euo pipefail
+          extra="$(uv run --no-sync python -c 'import re,pathlib;from kairos_ontology.core.adapters import dbt_validate_extra;t=pathlib.Path("ontology-hub/kairos.yaml").read_text(encoding="utf-8");m=re.search(r"^adapter:\s*([A-Za-z0-9._-]+)",t,re.M);print(dbt_validate_extra(m.group(1)) if m else "")')"
+          if [ -z "$extra" ]; then
+            echo "::error::ontology-hub/kairos.yaml declares no 'adapter:' - the dbt gate cannot run."
+            exit 1
+          fi
+          uv sync --locked --extra "$extra"
+
+      # DD-206 §4.2: "regenerates the tracked publish output" / "fails if the
+      # committed output differs from regenerated output". Two tracked paths:
+      #
+      #   * ontology-hub-publish/medallion/dbt -- the dbt package a dataplatform pins
+      #     by SHA and subdirectory (see gitignore.template); and
+      #   * ontology-hub/model/contracts/diagrams -- the ERDs, which live in the
+      #     authored hub so a reviewer sees the model change in the pull request.
+      #
+      # The third tracked path, ontology-hub-publish/architecture, is the `architecture`
+      # job's.
+      #
+      # ontology-hub-publish/powerbi is not tracked: package-powerbi-release renders and
+      # zips it in CI from the compile plan, so there is nothing committed there to diff.
+      #
+      # The tracked-ness assertion is load-bearing (#699). `git diff --exit-code --
+      # <path>` exits 0 when *nothing at that path is tracked*, so the natural reaction
+      # to line-ending churn -- gitignoring the generated tree and running
+      # `git rm -r --cached` -- turns this gate into a permanent green light with no
+      # error, no warning, and nothing in the log. It fails open, undetectably.
+      # Especially load-bearing because a dataplatform pins
+      # `subdirectory: ontology-hub-publish/medallion/dbt` at a SHA: an untracked
+      # package path also silently disables `verified_hub_sha` staleness checking.
+      - name: Regenerate tracked output and fail on drift
+        run: |
+          set -euo pipefail
+          uv run --no-sync kairos-ontology compile --all --emit --confirm-emit
+          for path in \
+            ontology-hub-publish/medallion/dbt \
+            ontology-hub/model/contracts/diagrams; do
+            if [ -d "$path" ] && [ -z "$(git ls-files "$path")" ]; then
+              echo "::error::$path exists but is not tracked - the drift gate cannot verify it."
+              exit 1
+            fi
+          done
+          git diff --exit-code -- \
+            ontology-hub-publish/medallion/dbt \
+            ontology-hub/model/contracts/diagrams
+
+      # DD-206 §4.2: "validates the assembled dbt package".
+      #
+      # The full gate, not `--structural-only` (#686). Structural-only stops after the
+      # ref() scan, so it cannot detect a project dbt refuses to parse -- a duplicate
+      # model name passed every step of this workflow while `dbt parse` reported
+      # "found two models with the name ...". `dbt parse` covers a far wider class than
+      # anything re-implemented here, which is the actual argument for running it.
+      #
+      # Still offline and credential-free: only the final `dbt compile` needs a
+      # warehouse, and it degrades to `environment-blocked` rather than failing.
+      # `--platform` is resolved from `adapter:` in ontology-hub/kairos.yaml, so this
+      # step needs no per-hub templating.
+      - name: Validate assembled dbt package
+        run: |
+          uv run --no-sync kairos-ontology validate-dbt
+
+  architecture:
+    name: Regenerate architecture diagrams and check drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.5"
+          enable-cache: true
+
+      - name: Install toolkit
+        run: uv sync --locked
+
+      # `architecture/**` comes from `project`, not from `compile --emit`, so tracking it
+      # without regenerating it would be worse than not tracking it: the files would look
+      # authoritative and never be checked (#774). Both targets read only authored inputs
+      # (the ontologies, overlays, contracts, bindings and ledgers), so this job needs no
+      # compile output and runs beside `compile` instead of after it (#998). One `project`
+      # run with both targets parses every ontology once; two runs parsed it twice. It
+      # parses cold: the on-disk parse cache is written only by `compile --emit`.
+      #
+      # The tracked-ness assertion is the #699 guard the `compile` job explains:
+      # `git diff --exit-code` passes when nothing at the path is tracked.
+      - name: Regenerate architecture diagrams and fail on drift
+        run: |
+          set -euo pipefail
+          uv run --no-sync kairos-ontology project --target erd --target ddd
+          path=ontology-hub-publish/architecture
+          if [ -d "$path" ] && [ -z "$(git ls-files "$path")" ]; then
+            echo "::error::$path exists but is not tracked - the drift gate cannot verify it."
+            exit 1
+          fi
+          git diff --exit-code -- "$path"

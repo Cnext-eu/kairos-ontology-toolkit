@@ -205,11 +205,15 @@ def render_seed_docs(
     reference: ReferenceList,
     seed_name: str,
     column_types: dict[str, str] | None,
+    origin: dict[str, str] | None = None,
 ) -> str:
     """The seed's dbt properties document, headed by :data:`GENERATED_MARKER`.
 
     *column_types* maps each column to the adapter's text type. ``None`` leaves typing to
-    dbt, which then infers numbers from codes such as ``1`` or ``02``.
+    dbt, which then infers numbers from codes such as ``1`` or ``02``. *origin* is written
+    into the header as ``# key: value`` lines (``class`` and ``domain`` or ``ontology``),
+    so ``export-reference-list --all`` can regenerate or check the seed without being told
+    what it came from.
     """
     snapshots = "; ".join(
         f"{item.name}: snapshot {item.version or 'unversioned'}, source {item.source or 'unstated'}"
@@ -241,8 +245,10 @@ def render_seed_docs(
         allow_unicode=True,
         width=100,
     )
+    origin_lines = "".join(f"# {key}: {value}\n" for key, value in (origin or {}).items())
     return (
         f"{GENERATED_MARKER}\n"
+        f"{origin_lines}"
         "# Re-run the command after each reference-models upgrade instead of editing this file.\n"
         f"{body}"
     )
@@ -250,6 +256,22 @@ def render_seed_docs(
 
 def is_generated(docs_text: str) -> bool:
     return docs_text.startswith(GENERATED_MARKER)
+
+
+#: Header keys :func:`read_origin` returns.
+ORIGIN_KEYS = ("class", "domain", "ontology")
+
+
+def read_origin(docs_text: str) -> dict[str, str]:
+    """The ``# key: value`` origin lines of a generated header, before the YAML body."""
+    origin: dict[str, str] = {}
+    for line in docs_text.splitlines()[1:]:
+        if not line.startswith("#"):
+            break
+        key, sep, value = line[1:].strip().partition(":")
+        if sep and key.strip() in ORIGIN_KEYS and value.strip():
+            origin[key.strip()] = value.strip()
+    return origin
 
 
 @dataclass(frozen=True)

@@ -2828,6 +2828,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         # Pre-#1124 generations, before every action was pinned to a commit SHA.
         "hub-pr-validate/8.template",
         "dataplatform-pr-validate/7.template",
+        # Pre-#1126 hub generation, before the generated reference-seed drift check.
+        "hub-pr-validate/9.template",
     ),
     # Pre-#771 generation, before every `uv run` gained `--no-sync`. Also carries the
     # pre-#721 skill-context placement for full-validate.

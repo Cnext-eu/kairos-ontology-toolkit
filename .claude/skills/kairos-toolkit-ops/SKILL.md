@@ -21,14 +21,25 @@ generated diffs.
 
 After an update, inspect `git diff`, run managed/scaffold tests, and compile representative v5
 bindings. A hub then regenerates its tracked output with the new toolkit and commits it, or
-`pr-validate.yml` fails on the difference: `compile --all --emit --confirm-emit` and
-`project --target erd --target ddd` (`update --upgrade` prints both). Diagrams and the DDD
-files carry no toolkit version (#1121), so a release that draws nothing differently leaves
-them unchanged.
+`pr-validate.yml` fails on the difference. `update --upgrade` prints all three commands, in
+this order:
+1. `export-reference-list --all` regenerates seeds of shipped reference lists (DD-257); it
+   does nothing in a hub that generated none.
+2. `compile --all --emit --confirm-emit`.
+3. `project --target erd --target ddd`.
 
-Updating reference models is explicit: inspect the ontology closure
-(`show-class-inventory --domain <domain>`, `explain-term`; never a `.ttl` as text, DD-103)
-and compiler diagnostics before accepting changed semantics.
+Diagrams and the DDD files carry no toolkit version (#1121), so a release that draws
+nothing differently leaves them unchanged.
+
+Updating reference models is explicit, and the hub's own pin is what moves. `update
+--upgrade` moves it together with the toolkit; `update-refmodels [--version <tag>]` moves it
+alone. A toolkit release never changes a hub's reference models by itself.
+- **Before accepting:** inspect the ontology closure (`show-class-inventory --domain
+  <domain>`, `explain-term`; never a `.ttl` as text, DD-103) and the compiler diagnostics
+  for changed semantics.
+- **Then run the three regeneration commands above.** The resulting diff (Silver models,
+  contracts, seeds, diagrams) is the upgrade's impact on the hub. `pr-validate.yml`
+  rejects any part of it that was not regenerated and committed.
 
 ## Toolkit release
 
