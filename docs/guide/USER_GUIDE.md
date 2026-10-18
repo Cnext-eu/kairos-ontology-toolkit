@@ -44,8 +44,9 @@ The authored authorities are:
 - ordinary contracted dbt SQL and model YAML only for relational logic outside the closed
   scalar-expression grammar;
 - optional dbt seed CSVs for small, static, hand-maintained reference data that belongs in
-  version control rather than a warehouse source, with optional sibling `seeds/<name>.yml`
-  column docs; and
+  version control rather than a warehouse source, organised by who edits them
+  (`seeds/reference/`, `extensions/`, `crosswalks/`, `hub-lists/`, DD-260), with an optional
+  sibling `<name>.yml` for column docs; and
 - optional Gold and MDM policy TTL; and
 - the optional DDD architecture layer — one hub-wide `model/extensions/ddd-contexts-ext.ttl`
   (bounded contexts, context map) and one `model/extensions/<domain>-ddd-ext.ttl` per domain

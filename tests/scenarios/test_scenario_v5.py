@@ -1076,6 +1076,66 @@ def test_all_emit_publishes_a_change_to_a_dbt_model_several_domains_share(
     validate_dbt_project(target, "fabric-warehouse", structural_only=True)
 
 
+@pytest.mark.parametrize("moved", ["model", "seed"])
+def test_all_emit_publishes_a_dependency_moved_to_another_folder(tmp_path, monkeypatch, moved):
+    """#1153: moving a shared dbt model or a seed to another folder (the DD-260 seed layout)
+    must not collide with the path the other domains recorded. A whole-hub run re-emits
+    every domain, so the old path is retired and the file is published at its new path."""
+    hub = _copy_hub(tmp_path)
+    _, _, shared, shared_sql = _add_contracted_multi_domain_fixture(hub)
+    transforms = hub / "integration" / "transforms" / "dbt"
+    if moved == "seed":
+        seed = transforms / "seeds" / "country_codes.csv"
+        seed.parent.mkdir(parents=True, exist_ok=True)
+        seed.write_text("code,name\nBE,Belgium\n", encoding="utf-8")
+        shared.write_text(
+            shared_sql.rstrip("\n")
+            + "\nwhere country_code in (select code from {{ ref('country_codes') }})\n",
+            encoding="utf-8",
+        )
+        old, new = seed, transforms / "seeds" / "reference" / "country_codes.csv"
+        old_key, new_key = "seeds/country_codes.csv", "seeds/reference/country_codes.csv"
+    else:
+        old, new = shared, transforms / "models" / "intermediate" / "common" / "stg_shared.sql"
+        old_key = "models/intermediate/shared/stg_shared.sql"
+        new_key = "models/intermediate/common/stg_shared.sql"
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    env = {"KAIROS_SKILL_CONTEXT": "1"}
+    first = runner.invoke(cli, ["compile", "--all", "--emit", "--confirm-emit"], env=env)
+    assert first.exit_code == 0, first.output
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    assert target.joinpath(*old_key.split("/")).is_file()
+
+    new.parent.mkdir(parents=True, exist_ok=True)
+    old.replace(new)
+    # A partial emit still refuses: the other domain's state names the old path. Its
+    # message says how to retire it.
+    refused = runner.invoke(cli, ["compile", "party", "--emit", "--confirm-emit"], env=env)
+    assert refused.exit_code != 0
+    assert "compile --all --emit" in refused.output
+    second = runner.invoke(cli, ["compile", "--all", "--emit", "--confirm-emit"], env=env)
+    assert second.exit_code == 0, second.output
+
+    assert target.joinpath(*new_key.split("/")).is_file()
+    assert not target.joinpath(*old_key.split("/")).exists()
+    validate_dbt_project(target, "fabric-warehouse", structural_only=True)
+    snapshot = {
+        path.relative_to(target).as_posix(): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    }
+    third = runner.invoke(cli, ["compile", "--all", "--emit", "--confirm-emit"], env=env)
+    assert third.exit_code == 0, third.output
+    assert {
+        path.relative_to(target).as_posix(): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    } == snapshot
+    partial = runner.invoke(cli, ["compile", "party", "--emit", "--confirm-emit"], env=env)
+    assert partial.exit_code == 0, partial.output
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected"),
     [
