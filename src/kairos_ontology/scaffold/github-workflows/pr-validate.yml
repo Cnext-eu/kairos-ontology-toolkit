@@ -97,6 +97,15 @@ jobs:
         run: |
           uv run --no-sync kairos-ontology validate-dbt-contracts --format json
 
+      # DD-257: a reference list the reference models ship becomes a seed through
+      # `export-reference-list`. After a reference-models upgrade that seed lags the
+      # closure until someone regenerates it; this fails the PR instead. Each generated
+      # seed's docs record the class and domain it came from. Nothing to do, and a pass,
+      # when the hub generated no seeds.
+      - name: Check generated reference seeds against the ontology
+        run: |
+          uv run --no-sync kairos-ontology export-reference-list --all --check
+
   compile:
     name: Compile, emit and check drift
     runs-on: ubuntu-latest

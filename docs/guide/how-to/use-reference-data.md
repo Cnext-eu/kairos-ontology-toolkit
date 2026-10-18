@@ -71,9 +71,12 @@ It also writes `transport_mode_code.yml`, the seed docs:
   `02` keeps its leading zero.
 - **Generated marker.** The command refuses to overwrite a seed it did not generate
   (`--force` overrides), and never touches `<name>_local`.
-- **Keeping current.** After each reference-models upgrade, re-run it. The change then
-  shows up as a diff in the hub PR. `--check` writes nothing and exits 1 when the seed is
-  stale.
+- **Keeping current.** The docs header records the class and domain the seed came from.
+  - After a reference-models upgrade (`update --upgrade` or `update-refmodels`), run
+    `kairos-ontology export-reference-list --all`. It regenerates every generated seed,
+    and the change shows up as a diff in the hub PR.
+  - `--all --check` writes nothing and fails when a seed is stale. The hub's
+    `pr-validate` workflow runs it, so a forgotten regeneration fails the PR.
 - **No members, no seed.** A list with no members (kind 2 or 3) is refused.
 
 Read it from a contracted model

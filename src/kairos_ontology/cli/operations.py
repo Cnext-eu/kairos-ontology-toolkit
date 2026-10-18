@@ -1252,6 +1252,9 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
 #: The commands whose output a hub tracks and `pr-validate.yml` regenerates and diffs.
 #: Kept in step with that workflow's `compile` and `architecture` jobs.
 HUB_REGENERATION_COMMANDS = (
+    # First: an upgrade also moves the reference-models pin, and compile emits the seeds
+    # this regenerates (DD-257). A no-op in a hub that generated none.
+    "uv run kairos-ontology export-reference-list --all",
     "uv run kairos-ontology compile --all --emit --confirm-emit",
     "uv run kairos-ontology project --target erd --target ddd",
 )

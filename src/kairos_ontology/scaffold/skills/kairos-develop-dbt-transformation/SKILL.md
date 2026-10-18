@@ -145,8 +145,10 @@ CSV is the wrong loop, it is a source, not a seed: import it and bind it normall
   - The seed is keyed on `(code_list, code)`, with the upstream IRI as a column.
   - Its generated docs carry the snapshot and `dcterms:source`, and type every
     column as text.
-  - Never edit the generated seed. Re-run the command after a reference-models
-    upgrade; `--check` reports drift.
+  - Never edit the generated seed. After a reference-models upgrade, run
+    `export-reference-list --all`, which regenerates every generated seed from
+    the class and domain its docs record. `pr-validate` runs `--all --check`
+    and fails on a stale seed.
 - **Local extension rows** go in a sibling `<list>_local` seed, not into the
   ontology. The model unions them in with an `origin` column. Their codes come
   from the standard's user-assigned range when it has one; the binding's

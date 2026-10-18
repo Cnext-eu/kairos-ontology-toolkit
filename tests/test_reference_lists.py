@@ -15,6 +15,7 @@ from kairos_ontology.cli.main import cli
 from kairos_ontology.core.reference_lists import (
     GENERATED_MARKER,
     ReferenceListError,
+    read_origin,
     collect_reference_list,
     default_seed_name,
     diff_seed,
@@ -235,3 +236,73 @@ class TestCli:
         result = _export("nope:ModeList")
         assert result.exit_code == 2
         assert "prefix:Local" in result.output
+
+
+class TestAll:
+    """`--all` re-derives every generated seed from the origin its docs record (#1126)."""
+
+    def test_the_header_records_class_and_domain(self, hub):
+        assert _export("std:ModeList").exit_code == 0
+        text = (hub / _SEEDS / "mode_list.yml").read_text(encoding="utf-8")
+        assert read_origin(text) == {
+            "class": "https://example.org/std/ModeList",
+            "domain": "reference-data",
+        }
+
+    def test_check_all_passes_when_every_seed_is_current(self, hub):
+        assert _export("std:ModeList").exit_code == 0
+        assert _export("ref:TransportModeCode", "--name", "transport_mode").exit_code == 0
+        result = _all("--check")
+        assert result.exit_code == 0, result.output
+        assert result.output.count("matches the closure") == 2
+
+    def test_check_all_fails_on_a_stale_seed_and_says_how_to_fix_it(self, hub):
+        assert _export("std:ModeList").exit_code == 0
+        path = hub / _SEEDS / "mode_list.csv"
+        path.write_text(path.read_text(encoding="utf-8").replace(",1,", ",9,"), encoding="utf-8")
+        result = _all("--check")
+        assert result.exit_code == 1
+        assert "is stale" in result.output
+        assert "export-reference-list --all" in result.output
+
+    def test_all_regenerates_a_stale_seed(self, hub):
+        assert _export("std:ModeList").exit_code == 0
+        path = hub / _SEEDS / "mode_list.csv"
+        original = path.read_text(encoding="utf-8")
+        path.write_text("code_list,code,name,iri\n", encoding="utf-8")
+        assert _all().exit_code == 0
+        assert path.read_text(encoding="utf-8") == original
+
+    def test_hand_authored_seeds_are_ignored(self, hub):
+        seeds = hub / _SEEDS
+        seeds.mkdir(parents=True)
+        (seeds / "country_codes.csv").write_text("code\nBE\n", encoding="utf-8")
+        (seeds / "country_codes.yml").write_text("version: 2\nseeds: []\n", encoding="utf-8")
+        result = _all("--check")
+        assert result.exit_code == 0
+        assert "nothing to do" in result.output
+
+    def test_a_generated_seed_without_an_origin_fails(self, hub):
+        seeds = hub / _SEEDS
+        seeds.mkdir(parents=True)
+        (seeds / "old.csv").write_text("code_list,code,name,iri\n", encoding="utf-8")
+        (seeds / "old.yml").write_text(f"{GENERATED_MARKER}\nversion: 2\n", encoding="utf-8")
+        result = _all("--check")
+        assert result.exit_code == 1
+        assert "records no class and domain" in result.output
+
+    def test_all_refuses_a_class_argument(self, hub):
+        result = CliRunner().invoke(cli, ["export-reference-list", "std:ModeList", "--all"])
+        assert result.exit_code == 2
+        assert "--all takes each seed's class" in result.output
+
+    def test_no_class_and_no_all_is_a_usage_error(self, hub):
+        result = CliRunner().invoke(cli, ["export-reference-list", "--domain", "reference-data"])
+        assert result.exit_code == 2
+        assert "CLASS_IRI, or --all" in result.output
+
+
+def _all(*args: str):
+    return CliRunner().invoke(
+        cli, ["export-reference-list", "--all", *args], catch_exceptions=False
+    )

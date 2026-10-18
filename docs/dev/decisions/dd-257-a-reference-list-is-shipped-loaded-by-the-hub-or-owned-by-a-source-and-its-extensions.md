@@ -134,6 +134,10 @@ the list's rows live.**
   - A hub re-runs it after each reference-models upgrade, so the change shows up as a diff;
     `--check` reports drift without writing.
   - It never writes `<name>_local`, so extensions survive a refresh.
+  - Each generated seed's docs record the class and domain it came from.
+    `export-reference-list --all` regenerates every generated seed after an upgrade, and
+    `update --upgrade` names that command first. The hub's `pr-validate` workflow runs
+    `--all --check`, so a seed left behind by an upgrade fails the PR.
   - It writes no binding: the binding maps seed columns onto the hub's own properties,
     which only the hub knows.
 - **`validate-dbt-contracts` checks crosswalk seeds** (#1126 P3):
