@@ -178,6 +178,26 @@ only, not runtime cost: `int_merged__*` models are materialized as a `view`
 by this toolkit's own dbt template convention, so an unused single-source
 union costs nothing at query time.
 
+**Code lists: decide where the rows come from first (DD-257).** A reference
+list is one of three kinds:
+
+- **shipped** by the reference models as individuals (UNECE Rec 19/20/21,
+  ISO 3166): a seed exported from the closure, a contracted model, a binding;
+- **hub-loaded** (UN/LOCODE locations): a source import and a binding;
+- **client- or system-owned** (a TMS master; ISO 6346 codes, which cannot ship):
+  a binding to the source table.
+
+The kind follows from where the class is defined and whether it has members,
+never from `isReferenceData`. Bind `unlcdv:Country` and
+`unece:CurrencyCodeList` rather than their duplicates. Key the binding on the
+code, never the upstream IRI. Local extensions are seed rows, not individuals.
+They are unioned in with an `origin` column, use a user-assigned code where the
+standard reserves a range, and never override a shipped row. A source-to-standard crosswalk is a hub seed
+that a contracted model left-joins: keep the raw source value as a property
+and link the governed code through a relationship with `missingParent: null`.
+`isReferenceData` does not add a `ref_` prefix in v5; the model is named after
+the class. Worked examples: the how-to `use-reference-data.md`.
+
 **If the target class already has an existing `EntityBinding`** (found via step 4
 or by checking `integration/bindings/` directly), authoring a second
 `source.relation` binding to it puts both bindings in the same DD-133 §3c
