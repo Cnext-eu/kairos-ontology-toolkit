@@ -32,6 +32,8 @@ _DEPENDENCY_MANIFEST_NAME = ".kairos-compile-manifest.dependencies.json"
 _DEPENDENCY_STATE_SCHEMA = "kairos.eu/compiler-dbt-dependencies/v1"
 _DEPENDENCY_STATE_PREFIX = ".kairos-compile-dependencies."
 _PACKAGE_ARTIFACTS = frozenset({"README.md", "dbt_project.yml", "packages.yml"})
+_SOURCE_RECORD_SCHEMA = "kairos.eu/compiler-source-catalogs/v1"
+_SOURCE_RECORD_PREFIX = ".kairos-compile-sources."
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,11 +423,64 @@ def _is_source_catalog_artifact(path: str) -> bool:
     return path.startswith("models/silver/") and path.endswith("__sources.yml")
 
 
+def _source_record_name(domain: str) -> str:
+    safe_domain = re.sub(r"[^A-Za-z0-9_.-]", "_", domain) or "domain"
+    return f"{_SOURCE_RECORD_PREFIX}{safe_domain}.json"
+
+
+def _is_source_record(path: str) -> bool:
+    return "/" not in path and path.startswith(_SOURCE_RECORD_PREFIX) and path.endswith(".json")
+
+
+def _source_record_text(domain: str, catalogs: dict[str, str]) -> str:
+    document = {
+        "catalogs": dict(sorted(catalogs.items())),
+        "domain": domain,
+        "schema": _SOURCE_RECORD_SCHEMA,
+    }
+    return json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def _load_source_records(target: Path) -> dict[str, dict[str, str]]:
+    """Each domain's last-emitted source catalogs, read from its record (#1147).
+
+    A record is shared-manifest-owned, so it was written by this compiler; one that does
+    not parse means the target was edited by hand, and guessing a domain's contribution
+    from it could drop a table a model still reads. Fail closed instead.
+    """
+    from ..core.compiler.emit import ManifestError
+
+    records: dict[str, dict[str, str]] = {}
+    if not target.is_dir():
+        return records
+    for path in sorted(target.glob(f"{_SOURCE_RECORD_PREFIX}*.json")):
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ManifestError(f"malformed source catalog record {path.name!r}") from exc
+        catalogs = document.get("catalogs") if isinstance(document, dict) else None
+        domain = document.get("domain") if isinstance(document, dict) else None
+        if (
+            not isinstance(domain, str)
+            or document.get("schema") != _SOURCE_RECORD_SCHEMA
+            or _source_record_name(domain) != path.name
+            or not isinstance(catalogs, dict)
+            or not all(
+                isinstance(key, str) and _is_source_catalog_artifact(key) and isinstance(v, str)
+                for key, v in catalogs.items()
+            )
+        ):
+            raise ManifestError(f"malformed source catalog record {path.name!r}")
+        records[domain] = dict(catalogs)
+    return records
+
+
 def _is_shared_artifact(path: str) -> bool:
     return (
         path in _PACKAGE_ARTIFACTS
         or path.startswith("macros/")
         or _is_source_catalog_artifact(path)
+        or _is_source_record(path)
         # The governed calendar is materialized once for the hub, so it belongs to the
         # shared manifest. Claiming it for the declaring domain made the second
         # calendar-bearing domain uncompilable against the same target (issue #849).
@@ -488,6 +543,14 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
         )
         shared.update(render_project_config(replace(plan, project=project)))
 
+    # #1147: what each domain contributed to the shared source catalogs, so a table no
+    # domain reads any more leaves them. This run's rendering replaces its own record.
+    records = _load_source_records(target)
+    records[result.domain] = {path: shared[path] for path in current_source_paths}
+    shared[_source_record_name(result.domain)] = _source_record_text(
+        result.domain, records[result.domain]
+    )
+
     if target.is_dir():
         for existing in target.rglob("*"):
             if not existing.is_file():
@@ -496,21 +559,44 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
             if _is_shared_artifact(relative) and relative not in shared:
                 shared[relative] = existing.read_text(encoding="utf-8")
 
-    for path, content in tuple(shared.items()):
-        if path not in current_source_paths:
-            continue
-        existing = target.joinpath(*path.split("/"))
-        if existing.is_file():
-            from ..core.compiler.emit import ArtifactCollisionError
-            from ..core.projector import SourcesUnionError, _union_sources_yaml
+    from ..core.compiler.emit import ArtifactCollisionError
+    from ..core.projector import SourcesUnionError, _union_sources_yaml
 
-            try:
-                shared[path] = _union_sources_yaml(existing.read_text(encoding="utf-8"), content)
-            except SourcesUnionError as exc:
-                # Preflight ordering guarantees the target tree is untouched on failure.
-                raise ArtifactCollisionError(
-                    f"conflicting source metadata across domains in {path!r}: {exc}"
-                ) from exc
+    # Rebuild from the records once every domain on disk has one. Until then -- the first
+    # emits after an upgrade -- a domain's tables are known only from the catalog file
+    # itself, so the file is unioned as before and nothing is dropped.
+    if set(_existing_domains(target, result.domain)) <= set(records):
+        rebuilt: dict[str, str] = {}
+        for domain in sorted(records):
+            for path, content in sorted(records[domain].items()):
+                try:
+                    rebuilt[path] = (
+                        _union_sources_yaml(rebuilt[path], content)
+                        if path in rebuilt
+                        else _union_sources_yaml("", content)
+                    )
+                except SourcesUnionError as exc:
+                    raise ArtifactCollisionError(
+                        f"conflicting source metadata across domains in {path!r}: {exc}"
+                    ) from exc
+        for path in [path for path in shared if _is_source_catalog_artifact(path)]:
+            del shared[path]
+        shared.update(rebuilt)
+    else:
+        for path, content in tuple(shared.items()):
+            if path not in current_source_paths:
+                continue
+            existing = target.joinpath(*path.split("/"))
+            if existing.is_file():
+                try:
+                    shared[path] = _union_sources_yaml(
+                        existing.read_text(encoding="utf-8"), content
+                    )
+                except SourcesUnionError as exc:
+                    # Preflight ordering guarantees the target tree is untouched on failure.
+                    raise ArtifactCollisionError(
+                        f"conflicting source metadata across domains in {path!r}: {exc}"
+                    ) from exc
 
     from ..core.projections.dbt.gold_shared import (
         SHARED_GOLD_MODELS_PATH,

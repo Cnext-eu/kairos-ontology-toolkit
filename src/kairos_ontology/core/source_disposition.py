@@ -522,6 +522,23 @@ def _dbt_model_source_pairs(
     return pairs
 
 
+def is_superseded(entry: dict[str, Any] | None) -> bool:
+    """True for a ledger entry recording ``superseded`` (DD-259)."""
+    return entry is not None and str(entry.get("disposition") or "") == "superseded"
+
+
+def column_rows_under_superseded(
+    recorded: dict[tuple[str, str, str], dict[str, Any]],
+) -> dict[tuple[str, str], list[str]]:
+    """``{(system, table): [column, ...]}`` for column rows a table-grain ``superseded``
+    outranks (#1147): leftovers the hub may clear, never read as decisions."""
+    leftovers: dict[tuple[str, str], list[str]] = {}
+    for system, table, column in sorted(recorded):
+        if column and is_superseded(recorded.get((system, table, ""))):
+            leftovers.setdefault((system, table), []).append(column)
+    return leftovers
+
+
 def column_decision(
     recorded: dict[tuple[str, str, str], dict[str, Any]],
     system: str,
@@ -536,13 +553,20 @@ def column_decision(
     auto-disposition pass all ask this, so a helper that reports nothing to decide
     while the gate blocks cannot happen again.
 
+    A table-grain ``superseded`` outranks the table's column rows (#1147): another
+    binding now supplies the table's rows, so a column row recorded before that -- a
+    ``deferred`` waiting for a property, a ``bound`` through a chain since removed -- no
+    longer describes anything.
+
     ``recorded`` is :func:`load_dispositions` output.
     """
+    table_entry = recorded.get((system, table, ""))
+    if table_entry is not None and is_superseded(table_entry):
+        return table_entry
     if column:
         entry = recorded.get((system, table, column))
         if entry is not None:
             return entry
-    table_entry = recorded.get((system, table, ""))
     if (
         table_entry is not None
         and str(table_entry.get("disposition") or "") in CASCADING_DISPOSITIONS
@@ -748,6 +772,7 @@ def audit_source_dispositions(
     bound = load_bound_relations(hub_root / "integration" / "bindings", hub_root)
     recorded = load_dispositions(hub_root)
     binding_names: dict[str, Path] | None = None  # read only when a row needs it
+    leftovers: dict[tuple[str, str], list[str]] | None = None  # likewise (#1147)
 
     for (system, table), row_count in sorted(tables.items()):
         key = (system, table)
@@ -827,6 +852,29 @@ def audit_source_dispositions(
                         )
                     )
                     continue
+                if leftovers is None:
+                    leftovers = column_rows_under_superseded(recorded)
+                columns = leftovers.get(key, [])
+                if columns:
+                    shown = ", ".join(columns[:5]) + (", ..." if len(columns) > 5 else "")
+                    report.diagnostics.append(
+                        DispositionDiagnostic(
+                            level="warning",
+                            code="disposition.column-rows-under-superseded-table",
+                            message=(
+                                f"{system}.{table} is superseded by {replacement}, but the "
+                                f"ledger still holds {len(columns)} column row(s) for it "
+                                f"({shown}). They are ignored: the table-grain row decides "
+                                "every column."
+                            ),
+                            system=system,
+                            table=table,
+                            remediation=(
+                                "Withdraw them with 'kairos-ontology source-disposition clear "
+                                f"--system {system} --table {table} --column-grain-only'."
+                            ),
+                        )
+                    )
             if disposition in _REQUIRES_RATIONALE and not str(entry.get("rationale") or "").strip():
                 report.diagnostics.append(
                     DispositionDiagnostic(
@@ -882,6 +930,7 @@ def clear_dispositions(
     disposition: str | None = None,
     decided_by: str | None = None,
     dry_run: bool = False,
+    column_grain_only: bool = False,
 ) -> dict[str, Any]:
     """Remove matching disposition entries, returning what was (or would be) removed.
 
@@ -893,7 +942,9 @@ def clear_dispositions(
     Filters are conjunctive and all optional; ``decided_by`` is the important one
     in practice, because it lets an agent's blanket answers be withdrawn without
     touching a decision a human actually made. ``column`` matches one column-grain
-    entry by name; ``""`` matches table-grain entries only.
+    entry by name; ``""`` matches table-grain entries only. ``column_grain_only``
+    matches every column-grain entry and no table-grain one -- the leftovers under a
+    superseded table (#1147).
     """
 
     def matches(entry: dict[str, Any]) -> bool:
@@ -901,6 +952,8 @@ def clear_dispositions(
             if (str(entry.get("system") or ""), str(entry.get("table") or "")) not in tables:
                 return False
         if column is not None and str(entry.get("column") or "") != column:
+            return False
+        if column_grain_only and not str(entry.get("column") or ""):
             return False
         if disposition is not None and str(entry.get("disposition") or "") != disposition:
             return False

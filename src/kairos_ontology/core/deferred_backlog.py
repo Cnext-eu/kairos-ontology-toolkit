@@ -34,7 +34,12 @@ from .bound_columns import (
     retired_by_binding,
 )
 from .sibling_columns import Sibling, column_profiles, detect_sibling, sinks
-from .source_disposition import column_decision, load_dispositions, load_source_tables
+from .source_disposition import (
+    column_decision,
+    is_superseded,
+    load_dispositions,
+    load_source_tables,
+)
 
 #: How a decided gap column is summarised per domain. ``ruled_out`` groups the
 #: dispositions that take a column out of this table's path to Silver for good: not
@@ -202,7 +207,11 @@ def load_deferred_columns(
     deferred = [
         (key, entry)
         for key, entry in sorted(recorded.items())
-        if key[2] and str(entry.get("disposition") or "") == "deferred"
+        if key[2]
+        and str(entry.get("disposition") or "") == "deferred"
+        # #1147: a superseded table's rows come from its replacement; a column row
+        # recorded before that decides nothing and is not backlog.
+        and not is_superseded(recorded.get((key[0], key[1], "")))
     ]
     if not deferred:
         return DeferredBacklog()

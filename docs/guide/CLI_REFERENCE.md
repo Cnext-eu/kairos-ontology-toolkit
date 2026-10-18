@@ -1809,6 +1809,7 @@ kairos-ontology source-disposition clear [OPTIONS]
 | `--table` |  | With --system: only entries for this table. |
 | `--column` |  | Only the entry for this column. Without it, both table- and column-grain entries of the matching tables are withdrawn. |
 | `--table-grain-only` |  | Only table-grain entries, e.g. every table-grain 'deferred' recorded before #881. |
+| `--column-grain-only` |  | Only column-grain entries, keeping the table's own row: e.g. the column rows left under a table recorded 'superseded' (#1147). |
 | `--disposition` |  | Withdraw only entries with this disposition. |
 | `--decided-by` |  | Withdraw only entries recorded by this decider (e.g. every 'autopilot' answer). |
 | `--dry-run` |  | Report what would be removed. |

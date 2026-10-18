@@ -18,10 +18,12 @@ from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.alignment_report import undecided_gap_columns
+from kairos_ontology.core.deferred_backlog import load_deferred_columns
 from kairos_ontology.core.source_disposition import (
     CASCADING_DISPOSITIONS,
     NON_GENERATING_DISPOSITIONS,
     audit_source_dispositions,
+    column_decision,
     load_binding_names,
     load_dispositions,
     record_disposition,
@@ -257,3 +259,86 @@ class TestCli:
         result = self._set(hub, monkeypatch)
         assert result.exit_code != 0
         assert "needs --superseded-by" in result.output
+
+
+class TestColumnRowsUnderASupersededTable:
+    """#1147: a table-grain `superseded` outranks the column rows recorded before it."""
+
+    def _column(self, hub: Path, column: str, disposition: str = "deferred") -> None:
+        record_disposition(
+            hub_root=hub,
+            system=SYSTEM,
+            table=TABLE,
+            column=column,
+            disposition=disposition,
+            rationale="waiting for a property",
+        )
+
+    def test_the_table_row_decides_a_column_that_has_its_own_row(self, hub):
+        self._column(hub, "name")
+        _supersede(hub)
+        entry = column_decision(load_dispositions(hub), SYSTEM, TABLE, "name")
+        assert entry is not None and entry["disposition"] == "superseded"
+
+    def test_a_column_row_still_decides_without_a_superseded_table(self, hub):
+        self._column(hub, "name")
+        entry = column_decision(load_dispositions(hub), SYSTEM, TABLE, "name")
+        assert entry is not None and entry["disposition"] == "deferred"
+
+    def test_its_deferred_columns_leave_the_backlog(self, hub):
+        self._column(hub, "name")
+        assert [c.column for c in load_deferred_columns(hub).columns] == ["name"]
+        _supersede(hub)
+        assert load_deferred_columns(hub).columns == []
+
+    def test_the_audit_warns_about_the_leftover_rows(self, hub):
+        self._column(hub, "name")
+        self._column(hub, "code", disposition="not-business-data")
+        _supersede(hub)
+        report = audit_source_dispositions(hub_root=hub)
+        warnings = [
+            d
+            for d in report.diagnostics
+            if d.code == "disposition.column-rows-under-superseded-table"
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].level == "warning"
+        assert "2 column row(s) for it (code, name)" in warnings[0].message
+        assert "--column-grain-only" in warnings[0].remediation
+        assert report.is_blocking is False
+
+    def test_no_warning_without_leftover_rows(self, hub):
+        _supersede(hub)
+        report = audit_source_dispositions(hub_root=hub)
+        assert not any(
+            d.code == "disposition.column-rows-under-superseded-table" for d in report.diagnostics
+        )
+
+    def test_clear_column_grain_only_keeps_the_table_row(self, hub, monkeypatch):
+        self._column(hub, "name")
+        _supersede(hub)
+        monkeypatch.chdir(hub)
+        (hub / "model" / "ontologies").mkdir(parents=True, exist_ok=True)
+        result = CliRunner().invoke(
+            cli,
+            [
+                "source-disposition",
+                "clear",
+                "--system",
+                SYSTEM,
+                "--table",
+                TABLE,
+                "--column-grain-only",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert list(load_dispositions(hub)) == [(SYSTEM, TABLE, "")]
+
+    def test_clear_rejects_two_grain_filters(self, hub, monkeypatch):
+        monkeypatch.chdir(hub)
+        result = CliRunner().invoke(
+            cli,
+            ["source-disposition", "clear", "--table-grain-only", "--column-grain-only"],
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
