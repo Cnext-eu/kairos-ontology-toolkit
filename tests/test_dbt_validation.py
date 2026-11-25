@@ -114,9 +114,9 @@ def test_databricks_offline_profile_fails_connection_fast() -> None:
         "[Microsoft]Named Pipes Provider: Could not open a connection to SQL Server [53].",
         # dbt-databricks with the fail-fast offline profile.
         "HTTPSConnectionPool(host='offline.invalid', port=443): Max retries exceeded with url: "
-        "/sql/1.0/warehouses/offline (Caused by NameResolutionError(\"HTTPSConnection(host="
+        '/sql/1.0/warehouses/offline (Caused by NameResolutionError("HTTPSConnection(host='
         "'offline.invalid', port=443): Failed to resolve 'offline.invalid' ([Errno 11001] "
-        "getaddrinfo failed)\"))",
+        'getaddrinfo failed)"))',
     ],
 )
 def test_the_offline_profiles_connect_failures_read_as_environment_blocked(message) -> None:
@@ -335,6 +335,56 @@ def test_manifest_requires_wrapper_and_decision_test_edges(
     _manifest(project, include_wrapper=include_wrapper, include_test=include_test)
 
     with pytest.raises(DbtValidationError, match=match):
+        validate_manifest(project / "target" / "manifest.json")
+
+
+def _chain_manifest(project: Path, *, silver_at_end: bool) -> None:
+    """A per-source contracted model unioned into a conformed contracted model."""
+    source_id = "model.test_project.int_source_a__shipment"
+    merged_id = "model.test_project.int_merged__shipment"
+    kairos_meta = {"kairos": {"target_class": "https://example.org/ont#Shipment"}}
+    nodes: dict[str, object] = {
+        source_id: {
+            "name": "int_source_a__shipment",
+            "resource_type": "model",
+            "original_file_path": "models/intermediate/int_source_a__shipment.sql",
+            "meta": kairos_meta,
+            "depends_on": {"nodes": []},
+        },
+        merged_id: {
+            "name": "int_merged__shipment",
+            "resource_type": "model",
+            "original_file_path": "models/intermediate/int_merged__shipment.sql",
+            "meta": kairos_meta,
+            "depends_on": {"nodes": [source_id]},
+        },
+    }
+    if silver_at_end:
+        nodes["model.test_project.shipment"] = {
+            "name": "shipment",
+            "resource_type": "model",
+            "original_file_path": "models/silver/logistics/shipment.sql",
+            "depends_on": {"nodes": [merged_id]},
+        }
+    (project / "target" / "manifest.json").write_text(
+        json.dumps({"nodes": nodes}), encoding="utf-8"
+    )
+
+
+def test_manifest_accepts_silver_dependent_through_another_contracted_model(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    _chain_manifest(project, silver_at_end=True)
+
+    validate_manifest(project / "target" / "manifest.json")
+
+
+def test_manifest_rejects_contracted_chain_that_never_reaches_silver(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _chain_manifest(project, silver_at_end=False)
+
+    with pytest.raises(DbtValidationError, match="int_source_a__shipment' has no generated Silver"):
         validate_manifest(project / "target" / "manifest.json")
 
 
