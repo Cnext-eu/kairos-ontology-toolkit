@@ -32,11 +32,14 @@ from .bpa_profile import (
     load_upstream_rules,
 )
 
-#: Pinned, and bumped only by a toolkit release (DD-238). Verified against 0.17.1:
-#: ``run_model_bpa(return_dataframe=, extended=)``, ``directlake.get_direct_lake_guardrails``,
-#: ``directlake.check_fallback_reason``, ``tom.connect_semantic_model``,
-#: ``save_as_delta_table``, ``format_dax_object_name``, ``create_relationship_name``.
-SEMANTIC_LINK_LABS_PIN = "0.17.1"
+#: Pinned, and bumped only by a toolkit release (DD-238). Verified against 0.18.1 (signatures
+#: and exports unchanged from 0.17.1; `_model_bpa.py`, its bundled rules and the TOM methods
+#: used are byte-identical): ``run_model_bpa(return_dataframe=, extended=)``,
+#: ``directlake.get_direct_lake_guardrails``, ``directlake.check_fallback_reason``,
+#: ``tom.connect_semantic_model`` with ``get_annotation_value``/``all_columns``/
+#: ``all_measures``, ``save_as_delta_table``, ``format_dax_object_name``,
+#: ``create_relationship_name``.
+SEMANTIC_LINK_LABS_PIN = "0.18.1"
 
 #: The notebook's Fabric item name, which the deploy workflow looks up after publishing.
 NOTEBOOK_DISPLAY_NAME = "Kairos Model BPA"

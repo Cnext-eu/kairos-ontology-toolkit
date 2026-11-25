@@ -76,7 +76,7 @@ single-domain compile the target may belong to another domain, as a bridge endpo
 #763). The emitter writes each exception on its object as the standard
 `BestPracticeAnalyzer_IgnoreRules` annotation, which Tabular Editor honours, and lists it in
 `gold_product_report` under `bpa_exceptions`. A blocking compile check honours an exception for
-the object it names. Semantic Link Labs does not read the annotation (verified against 0.17.1):
+the object it names. Semantic Link Labs does not read the annotation (verified against 0.17.1 and 0.18.1):
 it evaluates its own rule set, keyed by rule name. So the post-deploy notebook carries the
 profile with it, maps each finding to its Microsoft rule ID and this target's disposition, and
 applies the model's own ignore annotations itself.
