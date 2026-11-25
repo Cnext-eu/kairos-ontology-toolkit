@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -378,35 +379,38 @@ def validate_manifest(manifest_path: Path) -> None:
                     f"columns {declared} (order-sensitive)"
                 ),
             )
+    # Reverse edges between models, so each contracted model's dependents can be walked.
+    dependents: dict[str, set[str]] = {node_id: set() for node_id in model_nodes}
+    for node_id, node in model_nodes.items():
+        for dependency in _dependency_ids(node):
+            if dependency in dependents:
+                dependents[dependency].add(node_id)
+
+    def _is_silver(node_id: str) -> bool:
+        path = str(model_nodes[node_id].get("original_file_path") or "").replace("\\", "/")
+        return "models/silver/" in path
+
+    def _reaches_silver(start: str) -> bool:
+        # A contracted model may reach Silver through another contracted model, e.g. a
+        # per-source model unioned into a conformed model that the binding reads.
+        seen = {start}
+        queue = deque(dependents.get(start, ()))
+        while queue:
+            node_id = queue.popleft()
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            if _is_silver(node_id):
+                return True
+            queue.extend(dependents.get(node_id, ()))
+        return False
+
     for model_id, model in model_nodes.items():
         meta = model.get("meta")
         kairos = meta.get("kairos") if isinstance(meta, dict) else None
         if not isinstance(kairos, dict):
             continue
-
-        silver_dependents = [
-            node
-            for node in model_nodes.values()
-            if model_id in _dependency_ids(node)
-            and "models/silver/" in str(node.get("original_file_path") or "").replace("\\", "/")
-        ]
-        if not silver_dependents:
-            raise DbtValidationError(
-                "manifest",
-                f"contracted model '{_node_name(model)}' has no generated Silver dependent",
-            )
-        meta = model.get("meta")
-        kairos = meta.get("kairos") if isinstance(meta, dict) else None
-        if not isinstance(kairos, dict):
-            continue
-
-        silver_dependents = [
-            node
-            for node in model_nodes.values()
-            if model_id in _dependency_ids(node)
-            and "models/silver/" in str(node.get("original_file_path") or "").replace("\\", "/")
-        ]
-        if not silver_dependents:
+        if not _reaches_silver(model_id):
             raise DbtValidationError(
                 "manifest",
                 f"contracted model '{_node_name(model)}' has no generated Silver dependent",
