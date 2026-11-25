@@ -2889,6 +2889,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "dataplatform-bpa-notebook/1.template",
         # DD-262 (#1113): profile version 3, calculated tables allowed as parameters.
         "dataplatform-bpa-notebook/2.template",
+        # Semantic Link Labs pinned at 0.17.1, before the bump to 0.18.1.
+        "dataplatform-bpa-notebook/3.template",
     ),
 }
 
