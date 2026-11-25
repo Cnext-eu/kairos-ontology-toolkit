@@ -577,6 +577,8 @@ kairos-ext:MeasureShape a sh:NodeShape ;
                         { $this kairos-ext:measureColumnDependency ?column }
                         UNION
                         { $this kairos-ext:measureDependency ?measure }
+                        UNION
+                        { $this kairos-ext:measureParameterDependency ?parameter }
                     }
                 )
             }
@@ -609,6 +611,61 @@ kairos-ext:MeasureShape a sh:NodeShape ;
             }
         """ ;
     ] .
+
+# Report parameters and authored calculation groups (issue #1113, DD-262). The shapes
+# hold the cardinalities; the kind-specific rules -- which slots a field, selector or
+# range takes, defaults inside the values, items resolving to emitted objects -- are the
+# compiler's, which fails closed with a named diagnostic for each.
+kairos-ext:ParameterShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:Parameter ;
+    sh:targetObjectsOf kairos-ext:parameter ;
+    sh:property [ sh:path kairos-ext:parameterId ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:parameterKind ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in ( "field" "selector" "range" ) ;
+    ] ;
+    sh:property [ sh:path kairos-ext:parameterDisplayName ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:parameterItem ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:parameterValue ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:parameterMin ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:parameterMax ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:parameterStep ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:parameterDefault ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:parameterFormatString ; sh:maxCount 1 ] .
+
+kairos-ext:CalculationGroupShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:CalculationGroup ;
+    sh:targetObjectsOf kairos-ext:calculationGroup ;
+    sh:property [ sh:path kairos-ext:calculationGroupId ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:calculationGroupDisplayName ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:calculationGroupPrecedence ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:integer ;
+        sh:minInclusive 1 ;
+    ] ;
+    sh:property [
+        sh:path kairos-ext:calculationItem ;
+        sh:minCount 1 ;
+        sh:class kairos-ext:CalculationItem ;
+    ] .
+
+kairos-ext:CalculationItemShape a sh:NodeShape ;
+    sh:targetClass kairos-ext:CalculationItem ;
+    sh:targetObjectsOf kairos-ext:calculationItem ;
+    sh:property [ sh:path kairos-ext:calculationItemName ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [
+        sh:path kairos-ext:calculationItemOrdinal ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:datatype xsd:integer ;
+        sh:minInclusive 0 ;
+    ] ;
+    sh:property [ sh:path kairos-ext:calculationItemExpression ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kairos-ext:calculationItemFormatString ; sh:maxCount 1 ] .
 
 kairos-ext:CalendarProfileShape a sh:NodeShape ;
     sh:targetClass kairos-ext:CalendarProfile ;

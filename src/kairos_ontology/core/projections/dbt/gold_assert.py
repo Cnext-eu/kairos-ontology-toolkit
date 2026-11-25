@@ -57,7 +57,64 @@ def assert_gold_semantics(artifacts: dict[str, str]) -> None:
         _assert_calculation_group(path, content)
     if calculation_groups:
         _assert_discourages_implicit_measures(artifacts, calculation_groups)
+        _assert_unique_precedence(calculation_groups)
+    _assert_calculated_tables_are_parameters(artifacts)
     _assert_best_practice(artifacts)
+
+
+_PRECEDENCE = re.compile(r"^\t\tprecedence:\s*(?P<value>\d+)\s*$", re.MULTILINE)
+_CALCULATED_PARTITION = re.compile(r"^\tpartition\s.+=\s*calculated\s*$", re.MULTILINE)
+_REDUCE_CALCULATED_TABLES = "REDUCE_USAGE_OF_CALCULATED_TABLES"
+
+
+def _assert_unique_precedence(calculation_groups: dict[str, str]) -> None:
+    """Two calculation groups with one precedence have no order; the engine refuses it.
+
+    A group that declares none has the default, 0 -- which is what Time Intelligence
+    relies on, so an authored group may never take 0 (#1113).
+    """
+    seen: dict[int, str] = {}
+    for path in sorted(calculation_groups):
+        match = _PRECEDENCE.search(calculation_groups[path])
+        value = int(match.group("value")) if match is not None else 0
+        if value in seen:
+            raise GoldContractError(
+                "gold.calculation-group-precedence-collision",
+                f"{path} and {seen[value]} both have precedence {value}",
+                rule_id=_RULE,
+                resource_uri=path,
+            )
+        seen[value] = path
+
+
+def _assert_calculated_tables_are_parameters(artifacts: dict[str, str]) -> None:
+    """A calculated table is emitted only as a report parameter, recording why (#1113).
+
+    DD-262 narrows "the emitter never writes calculated tables" to one exception: the
+    parameter shapes, which read no Direct Lake data. This keeps the exception that
+    narrow -- a calculated partition anywhere else is an emitter defect -- and keeps it
+    recorded on each table, so the post-deploy BPA run does not report it as debt.
+    """
+    for path, content in artifacts.items():
+        if not path.endswith(".tmdl") or not _CALCULATED_PARTITION.search(content):
+            continue
+        if "\tannotation Kairos_ParameterKind = " not in content:
+            raise GoldContractError(
+                "gold.calculated-table-not-parameter",
+                f"{path} declares a calculated partition but is not a report parameter",
+                rule_id=_BPA_RULE,
+                resource_uri=path,
+            )
+        if _REDUCE_CALCULATED_TABLES not in content:
+            raise GoldContractError(
+                "gold.calculated-table-exception-missing",
+                (
+                    f"{path} is a calculated table that does not record its "
+                    f"{_REDUCE_CALCULATED_TABLES} exception"
+                ),
+                rule_id=_BPA_RULE,
+                resource_uri=path,
+            )
 
 
 def _assert_calculation_group(path: str, content: str) -> None:
@@ -188,7 +245,9 @@ def _assert_best_practice(artifacts: dict[str, str]) -> None:
                         f"{path}: measure {name} has no expression",
                         path,
                     )
-                if not _property(lines, "formatString"):
+                # PROVIDE_FORMAT_STRING_FOR_MEASURES skips a hidden measure, and so does
+                # this: a selector's text-valued `<name> Value` is read, not shown (#1113).
+                if not _property(lines, "formatString") and _property(lines, "isHidden") is None:
                     _fail_bpa(
                         "gold.measure-format-missing",
                         f"{path}: measure {name} has no formatString",

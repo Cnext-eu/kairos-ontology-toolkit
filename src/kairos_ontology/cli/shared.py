@@ -2887,6 +2887,8 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
     # DD-240: the notebook embeds the BPA profile, which moved to version 2.
     "fabric/KairosModelBpa.Notebook/notebook-content.py": (
         "dataplatform-bpa-notebook/1.template",
+        # DD-262 (#1113): profile version 3, calculated tables allowed as parameters.
+        "dataplatform-bpa-notebook/2.template",
     ),
 }
 

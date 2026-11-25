@@ -40,6 +40,9 @@ from .policy_specs import (
     BranchLateArrivalAction,
     BranchRelationship,
     BusinessIdentityPolicy,
+    CalculationGroupFact,
+    CalculationGroupSpec,
+    CalculationItemSpec,
     CalendarFact,
     CalendarProfileSpec,
     CanonicalHashPolicySpec,
@@ -112,6 +115,9 @@ from .policy_specs import (
     MultiSourcePolicySpec,
     NamingConvention,
     NormalizationSpec,
+    ParameterFact,
+    ParameterKind,
+    ParameterSpec,
     ParentAction,
     PerspectiveSpec,
     PolicyIssue,
@@ -2785,8 +2791,14 @@ def _normalize_measures(facts: tuple[MeasureFact, ...]) -> tuple[MeasureSpec, ..
                 rule_id="DD-113-measure-dependencies",
                 resource_uri=fact.resource_uri,
             )
+        parameters = _many(
+            fact.parameter_dependencies,
+            "measure parameter dependencies",
+            "DD-262-parameter",
+            required=False,
+        )
         if lifecycle.value is not MeasureLifecycle.INTENT and (
-            expression is None or not (columns.value or dependencies.value)
+            expression is None or not (columns.value or dependencies.value or parameters)
         ):
             raise PolicyNormalizationError(
                 "measure.incomplete-governed-measure",
@@ -2912,9 +2924,475 @@ def _normalize_measures(facts: tuple[MeasureFact, ...]) -> tuple[MeasureSpec, ..
                     if fact.display_name is not None
                     else None
                 ),
+                parameter_dependencies=parameters,
+                format_string_expression=(
+                    _single(
+                        fact.format_string_expression,
+                        "measure format string expression",
+                        "DD-262-parameter",
+                    )
+                    if fact.format_string_expression is not None
+                    else ""
+                ),
             )
         )
     return tuple(result)
+
+
+#: A parameter or calculation group id names an emitted file and seeds lineage tags, so it
+#: is a plain token: no spaces, no path separators, no quoting needed anywhere.
+_GOLD_OBJECT_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+#: Field parameter item grammar: ``Label=column:table.column`` or ``Label=measure:id``.
+_PARAMETER_ITEM = re.compile(r"^(?P<label>[^=]+)=(?P<kind>column|measure):(?P<target>.+)$")
+#: What a model object name may not hold (DD-238): control characters break TMDL and
+#: square brackets end a DAX ``[Name]`` reference early.
+_INVALID_OBJECT_NAME = re.compile(r"[\x00-\x1f\x7f\[\]]")
+
+
+def _object_id(fact: AuthoredValuesFact, label: str, code: str, rule_id: str) -> str:
+    value = _single(fact, label, rule_id)
+    if not _GOLD_OBJECT_ID.fullmatch(value):
+        raise _error(
+            code,
+            (
+                f"{label} {value!r} must start with a letter and hold only letters, "
+                "digits, '_' and '-'"
+            ),
+            fact,
+            rule_id,
+        )
+    return value
+
+
+def _object_name(fact: AuthoredValuesFact, label: str, code: str, rule_id: str) -> str:
+    """A name the model carries: trimmed, and free of control characters and brackets."""
+    if len(fact.values) == 1:
+        raw = fact.values[0]
+        if raw != raw.strip() or _INVALID_OBJECT_NAME.search(raw):
+            raise _error(
+                code,
+                (
+                    f"{label} {raw!r} must carry no leading or trailing whitespace and "
+                    "hold no control characters or square brackets"
+                ),
+                fact,
+                rule_id,
+            )
+    return _single(fact, label, rule_id)
+
+
+def _decimal(fact: AuthoredValuesFact, label: str, rule_id: str) -> Decimal:
+    raw = _single(fact, label, rule_id)
+    try:
+        value = Decimal(raw)
+    except InvalidOperation as exc:
+        raise _error(
+            "parameter.invalid-number", f"{label} {raw!r} is not a number", fact, rule_id
+        ) from exc
+    if not value.is_finite():
+        raise _error("parameter.invalid-number", f"{label} {raw!r} is not finite", fact, rule_id)
+    return value
+
+
+def _dax_number(value: Decimal) -> str:
+    """Canonical DAX literal: no exponent, no trailing zeros, ``-0`` folded to ``0``."""
+    text = format(value.normalize(), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "0" if text in {"-0", ""} else text
+
+
+def _ordered(fact: AuthoredValuesFact, label: str, rule_id: str) -> tuple[str, ...]:
+    """The values of an ordered slot; several values must come as one Turtle collection."""
+    values = tuple(item.strip() for item in fact.values)
+    if len(values) > 1 and not fact.ordered:
+        raise _error(
+            "parameter.unordered-values",
+            (
+                f"{label} has several values but no order: RDF keeps repeated values as a "
+                'set, so write them as one Turtle collection, ( "first" "second" ... )'
+            ),
+            fact,
+            rule_id,
+        )
+    if not values or any(not item for item in values):
+        raise _error("policy.empty-value", f"{label} cannot be empty", fact, rule_id)
+    duplicates = sorted({item for item in values if values.count(item) > 1})
+    if duplicates:
+        raise _error(
+            "parameter.duplicate-value",
+            f"{label} repeats {duplicates!r}",
+            fact,
+            rule_id,
+        )
+    return values
+
+
+def _refuse_slots(fact: ParameterFact, kind: ParameterKind, allowed: set[str]) -> None:
+    """A slot of another kind is an authoring mistake, never something to ignore."""
+    slots = {
+        "parameterItem": fact.items,
+        "parameterValue": fact.values,
+        "parameterMin": fact.minimum,
+        "parameterMax": fact.maximum,
+        "parameterStep": fact.step,
+        "parameterDefault": fact.default,
+        "parameterFormatString": fact.format_string,
+    }
+    stray = sorted(
+        name for name, value in slots.items() if value is not None and name not in allowed
+    )
+    if stray:
+        raise PolicyNormalizationError(
+            "parameter.slot-not-applicable",
+            f"a {kind.value} parameter takes no {', '.join(stray)}",
+            rule_id="DD-262-parameter",
+            resource_uri=fact.resource_uri,
+        )
+
+
+def _normalize_parameter(fact: ParameterFact) -> ParameterSpec:
+    rule = "DD-262-parameter"
+    parameter_id = _object_id(fact.parameter_id, "parameterId", "parameter.invalid-id", rule)
+    kind = _enum(fact.kind, ParameterKind, "parameter kind", rule).value
+    display_name = _object_name(
+        fact.display_name, "parameterDisplayName", "parameter.invalid-display-name", rule
+    )
+    base = {
+        "resource_uri": fact.resource_uri,
+        "parameter_id": parameter_id,
+        "kind": kind,
+        "display_name": display_name,
+    }
+    if kind is ParameterKind.FIELD:
+        _refuse_slots(fact, kind, {"parameterItem"})
+        if fact.items is None:
+            raise _error(
+                "policy.missing-value",
+                "a field parameter requires parameterItem",
+                None,
+                rule,
+                resource_uri=fact.resource_uri,
+            )
+        items: list[tuple[str, str, str]] = []
+        for raw in _ordered(fact.items, "parameterItem", rule):
+            match = _PARAMETER_ITEM.fullmatch(raw)
+            if (
+                match is None
+                or not match.group("label").strip()
+                or not match.group("target").strip()
+            ):
+                raise _error(
+                    "parameter.invalid-item",
+                    (
+                        f"parameterItem {raw!r} must read Label=column:<table>.<column> "
+                        "or Label=measure:<measureId>"
+                    ),
+                    fact.items,
+                    rule,
+                )
+            label = match.group("label").strip()
+            if _INVALID_OBJECT_NAME.search(label):
+                raise _error(
+                    "parameter.invalid-item",
+                    f"parameterItem label {label!r} holds a control character or bracket",
+                    fact.items,
+                    rule,
+                )
+            target = match.group("target").strip()
+            if match.group("kind") == "column" and (
+                "." not in target or target.startswith(".") or target.endswith(".")
+            ):
+                raise _error(
+                    "parameter.invalid-item",
+                    f"parameterItem {raw!r} must name its column as <Gold table>.<column>",
+                    fact.items,
+                    rule,
+                )
+            items.append((label, match.group("kind"), target))
+        labels = [label.casefold() for label, _, _ in items]
+        repeated = sorted({label for label in labels if labels.count(label) > 1})
+        if repeated:
+            raise _error(
+                "parameter.duplicate-value",
+                f"parameterItem repeats label(s) {repeated!r}",
+                fact.items,
+                rule,
+            )
+        return ParameterSpec(**base, items=tuple(items))
+    if kind is ParameterKind.SELECTOR:
+        _refuse_slots(fact, kind, {"parameterValue", "parameterDefault"})
+        if fact.values is None:
+            raise _error(
+                "policy.missing-value",
+                "a selector parameter requires parameterValue",
+                None,
+                rule,
+                resource_uri=fact.resource_uri,
+            )
+        values = _ordered(fact.values, "parameterValue", rule)
+        default = (
+            _single(fact.default, "parameterDefault", rule) if fact.default is not None else ""
+        )
+        if default and default not in values:
+            raise _error(
+                "parameter.default-out-of-range",
+                f"parameterDefault {default!r} is not one of the values {values!r}",
+                fact.default,
+                rule,
+            )
+        return ParameterSpec(**base, values=values, default=default)
+    _refuse_slots(
+        fact,
+        kind,
+        {
+            "parameterMin",
+            "parameterMax",
+            "parameterStep",
+            "parameterDefault",
+            "parameterFormatString",
+        },
+    )
+    bounds = {}
+    for name, slot in (
+        ("parameterMin", fact.minimum),
+        ("parameterMax", fact.maximum),
+        ("parameterStep", fact.step),
+        ("parameterDefault", fact.default),
+    ):
+        if slot is None:
+            raise _error(
+                "policy.missing-value",
+                f"a range parameter requires {name}",
+                None,
+                rule,
+                resource_uri=fact.resource_uri,
+            )
+        bounds[name] = _decimal(slot, name, rule)
+    minimum, maximum = bounds["parameterMin"], bounds["parameterMax"]
+    step, default = bounds["parameterStep"], bounds["parameterDefault"]
+    if step <= 0:
+        raise _error(
+            "parameter.invalid-range", "parameterStep must be greater than zero", fact.step, rule
+        )
+    if maximum < minimum:
+        raise _error(
+            "parameter.invalid-range",
+            f"parameterMax {_dax_number(maximum)} is below parameterMin {_dax_number(minimum)}",
+            fact.maximum,
+            rule,
+        )
+    if not minimum <= default <= maximum:
+        raise _error(
+            "parameter.default-out-of-range",
+            (
+                f"parameterDefault {_dax_number(default)} lies outside "
+                f"[{_dax_number(minimum)}, {_dax_number(maximum)}]"
+            ),
+            fact.default,
+            rule,
+        )
+    whole = all(value == value.to_integral_value() for value in bounds.values())
+    format_string = (
+        _single(fact.format_string, "parameterFormatString", rule)
+        if fact.format_string is not None
+        else ("0" if whole else "0.00")
+    )
+    return ParameterSpec(
+        **base,
+        minimum=_dax_number(minimum),
+        maximum=_dax_number(maximum),
+        step=_dax_number(step),
+        default=_dax_number(default),
+        whole_numbers=whole,
+        format_string=format_string,
+    )
+
+
+def _integer(fact: AuthoredValuesFact, label: str, rule_id: str, *, minimum: int) -> int:
+    raw = _single(fact, label, rule_id)
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise _error(
+            "policy.unsupported-value", f"{label} {raw!r} is not an integer", fact, rule_id
+        ) from exc
+    if value < minimum:
+        raise _error(
+            "policy.unsupported-value",
+            f"{label} must be at least {minimum}, not {value}",
+            fact,
+            rule_id,
+        )
+    return value
+
+
+def _normalize_calculation_group(fact: CalculationGroupFact) -> CalculationGroupSpec:
+    rule = "DD-262-calculation-group"
+    group_id = _object_id(fact.group_id, "calculationGroupId", "calculation-group.invalid-id", rule)
+    if group_id.casefold() == "time-intelligence":
+        raise _error(
+            "calculation-group.invalid-id",
+            "calculationGroupId 'time-intelligence' is the built-in group's",
+            fact.group_id,
+            rule,
+        )
+    display_name = _object_name(
+        fact.display_name,
+        "calculationGroupDisplayName",
+        "calculation-group.invalid-display-name",
+        rule,
+    )
+    if display_name.casefold() == "ordinal":
+        raise _error(
+            "calculation-group.invalid-display-name",
+            "calculationGroupDisplayName 'Ordinal' would repeat the group's ordinal column",
+            fact.display_name,
+            rule,
+        )
+    precedence = _integer(fact.precedence, "calculationGroupPrecedence", rule, minimum=1)
+    linked = set(fact.item_refs.values)
+    items: list[CalculationItemSpec] = []
+    for item in fact.items:
+        if item.resource_uri not in linked:
+            continue
+        items.append(
+            CalculationItemSpec(
+                resource_uri=item.resource_uri,
+                name=_object_name(
+                    item.name, "calculationItemName", "calculation-group.invalid-item-name", rule
+                ),
+                ordinal=_integer(item.ordinal, "calculationItemOrdinal", rule, minimum=0),
+                expression=_single(item.expression, "calculationItemExpression", rule),
+                format_string=(
+                    _single(item.format_string, "calculationItemFormatString", rule)
+                    if item.format_string is not None
+                    else ""
+                ),
+                column_dependencies=_many(
+                    item.column_dependencies,
+                    "calculation item column dependencies",
+                    rule,
+                    required=False,
+                ),
+            )
+        )
+    if not items:
+        raise PolicyNormalizationError(
+            "calculation-group.no-items",
+            f"calculation group {group_id!r} links no calculationItem",
+            rule_id=rule,
+            resource_uri=fact.resource_uri,
+        )
+    for label, key in (
+        ("name", lambda item: item.name.casefold()),
+        ("ordinal", lambda item: item.ordinal),
+    ):
+        seen: dict[object, str] = {}
+        for item in items:
+            other = seen.get(key(item))
+            if other is not None:
+                raise PolicyNormalizationError(
+                    f"calculation-group.duplicate-item-{label}",
+                    (
+                        f"calculation group {group_id!r} gives items {other!r} and "
+                        f"{item.name!r} the same {label}"
+                    ),
+                    rule_id=rule,
+                    resource_uri=item.resource_uri,
+                )
+            seen[key(item)] = item.name
+    return CalculationGroupSpec(
+        resource_uri=fact.resource_uri,
+        group_id=group_id,
+        display_name=display_name,
+        precedence=precedence,
+        items=tuple(sorted(items, key=lambda item: item.ordinal)),
+    )
+
+
+def _linked_only(
+    refs: AuthoredValuesFact | None,
+    resources: tuple,
+    *,
+    code: str,
+    what: str,
+    rule_id: str,
+    ontology_uri: str,
+    profile_declared: bool,
+) -> tuple:
+    """The *resources* the product links; an unlinked one fails closed like a measure."""
+    linked = frozenset(refs.values) if refs is not None else frozenset()
+    unlinked = tuple(item.resource_uri for item in resources if item.resource_uri not in linked)
+    if profile_declared and unlinked:
+        raise PolicyNormalizationError(
+            code,
+            f"Gold {what} are not linked from the product: {unlinked!r}",
+            rule_id=rule_id,
+            resource_uri=ontology_uri,
+        )
+    return tuple(item for item in resources if item.resource_uri in linked)
+
+
+def _normalize_report_objects(
+    fact: GoldProductFact, *, profile_declared: bool
+) -> tuple[tuple[ParameterSpec, ...], tuple[CalculationGroupSpec, ...]]:
+    """Normalize the product's parameters and calculation groups (#1113, DD-262)."""
+    parameters = tuple(
+        _normalize_parameter(item)
+        for item in _linked_only(
+            fact.parameter_refs,
+            fact.parameters,
+            code="gold.unlinked-parameter",
+            what="parameters",
+            rule_id="DD-262-parameter",
+            ontology_uri=fact.ontology_uri,
+            profile_declared=profile_declared,
+        )
+    )
+    groups = tuple(
+        _normalize_calculation_group(item)
+        for item in _linked_only(
+            fact.calculation_group_refs,
+            fact.calculation_groups,
+            code="gold.unlinked-calculation-group",
+            what="calculation groups",
+            rule_id="DD-262-calculation-group",
+            ontology_uri=fact.ontology_uri,
+            profile_declared=profile_declared,
+        )
+    )
+    owner: dict[str, str] = {}
+    for group in groups:
+        for item in group.items:
+            if item.resource_uri in owner:
+                raise PolicyNormalizationError(
+                    "calculation-group.shared-item",
+                    (
+                        f"calculation item {item.resource_uri!r} is linked from both "
+                        f"{owner[item.resource_uri]!r} and {group.group_id!r}"
+                    ),
+                    rule_id="DD-262-calculation-group",
+                    resource_uri=item.resource_uri,
+                )
+            owner[item.resource_uri] = group.group_id
+    for what, ids in (
+        ("parameterId", [item.parameter_id for item in parameters]),
+        ("calculationGroupId", [item.group_id for item in groups]),
+    ):
+        folded = [value.casefold() for value in ids]
+        repeated = sorted({value for value in folded if folded.count(value) > 1})
+        if repeated:
+            raise PolicyNormalizationError(
+                "gold.duplicate-report-object-id",
+                f"{what} {repeated!r} is authored more than once",
+                rule_id="DD-262-parameter",
+                resource_uri=fact.ontology_uri,
+            )
+    return (
+        tuple(sorted(parameters, key=lambda item: item.parameter_id)),
+        tuple(sorted(groups, key=lambda item: item.group_id)),
+    )
 
 
 def _normalize_calendar(fact: CalendarFact) -> CalendarProfileSpec:
@@ -3400,7 +3878,12 @@ def _normalize_gold(
                 resource_uri=fact.ontology_uri,
             )
     if profile is None and (
-        fact.tables or fact.measures or fact.calendars or fact.security_policies
+        fact.tables
+        or fact.measures
+        or fact.calendars
+        or fact.security_policies
+        or fact.parameters
+        or fact.calculation_groups
     ):
         issues.append(
             PolicyIssue(
@@ -3446,6 +3929,9 @@ def _normalize_gold(
         fact.security_policies,
         "security policy",
     )
+    parameters, calculation_groups = _normalize_report_objects(
+        fact, profile_declared=profile is not None
+    )
     perspectives: dict[str, list[str]] = {}
     for table in fact.tables:
         if table.perspectives is None:
@@ -3482,6 +3968,8 @@ def _normalize_gold(
             else ()
         ),
         ontology_uri=fact.ontology_uri,
+        parameters=parameters,
+        calculation_groups=calculation_groups,
         profile=profile,
         schema=(
             _text(fact.schema, "Gold schema", "DD-112-profile") if fact.schema is not None else None

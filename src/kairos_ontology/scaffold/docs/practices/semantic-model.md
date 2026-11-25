@@ -188,6 +188,36 @@ A fact that joins dimension history (as of an event, invoice or effective date) 
 - **Source:** Kimball (slowly changing dimensions), DD-112
 - **Excusable:** no
 
+### `semantic-model.parameter-belongs-to-the-product`
+
+A report parameter or authored calculation group is named for the Gold product it belongs to, not for the one report that asked for it.
+
+- **Why:** A kairos-ext:Parameter or kairos-ext:CalculationGroup is a table of the semantic model, so every report on the product sees it in its field list (#1113, DD-262). One named for a single report ("Sales page breakdown") confuses every other author, and a second report needing the same switch authors a near-duplicate instead of reusing it. Name it for what it switches ("Breakdown", "Date Basis").
+- **Enforcement:** advisory (design guidance)
+- **Check:** none
+- **Source:** #1113, DD-262
+- **Excusable:** no
+
+### `semantic-model.selector-measure-format`
+
+A measure that switches between measures of different units, on a selector or calculation group, carries a dynamic format string.
+
+- **Why:** One static format cannot fit both a count and a weight: "Shipments" shows as "1,204.00 kg", or "Weight" loses its decimals. Author kairos-ext:measureFormatStringExpression so the format follows the selection -- the "Format ..." companion measures of a hand-built selector, as one property of the measure (#1113).
+- **Enforcement:** advisory (design guidance)
+- **Check:** none
+- **Source:** #1113, DD-262
+- **Excusable:** no
+
+### `semantic-model.calculation-group-precedence`
+
+Every calculation group of a model has its own precedence; an authored group takes a positive one, since Time Intelligence holds 0.
+
+- **Why:** Two calculation groups with one precedence apply in no defined order, and the engine refuses the model. The group with the higher precedence is applied first: its item's SELECTEDMEASURE() is the other group's result, so choose the order deliberately and test one combination (a date basis with YTD, say) by hand.
+- **Enforcement:** blocking, at `compile --check`
+- **Check:** `gold.calculation-group-precedence-collision`
+- **Source:** #1113, DD-262
+- **Excusable:** no
+
 ### `semantic-model.review-bus-matrix`
 
 Review the product's bus matrix (<product>-bus-matrix.md) with the business: which facts share which dimensions.
@@ -228,7 +258,7 @@ The reason is mandatory, and an exception that excuses nothing fails the check t
 | `AVOID_USING_MANY-TO-MANY_RELATIONSHIPS_ON_TABLES_USED_FOR_DYNAMIC_ROW_LEVEL_SECURITY` | none | none | — |
 | `UNPIVOT_PIVOTED_(MONTH)_DATA` | none | none | — |
 | `MANY-TO-MANY_RELATIONSHIPS_SHOULD_BE_SINGLE-DIRECTION` | none | none | — |
-| `REDUCE_USAGE_OF_CALCULATED_TABLES` | none | none | — |
+| `REDUCE_USAGE_OF_CALCULATED_TABLES` | blocking | emit-gold | `gold.calculated-table-not-parameter` |
 | `REMOVE_REDUNDANT_COLUMNS_IN_RELATED_TABLES` | none | none | — |
 | `MEASURES_USING_TIME_INTELLIGENCE_AND_MODEL_IS_USING_DIRECT_QUERY` | post-deploy | dataplatform | — |
 | `REDUCE_NUMBER_OF_CALCULATED_COLUMNS` | none | none | — |

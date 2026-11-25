@@ -53,7 +53,7 @@ UPSTREAM_REFRESHED = "2026-09-24"
 
 #: Bumped whenever a disposition changes, so a provenance sidecar (DD-218) says which
 #: profile judged the model it describes.
-PROFILE_VERSION = "2"
+PROFILE_VERSION = "3"
 
 #: The vendored copy. Line endings are normalised to LF by ``.gitattributes``; the
 #: per-rule digests are over parsed JSON, so that is not a change to any rule.
@@ -136,8 +136,8 @@ def _d(kind: DispositionKind, reason: str, **kwargs) -> Disposition:
 
 
 _NO_CALCULATED = (
-    "The emitter never writes calculated columns or calculated tables; Direct Lake does "
-    "not support them and every Gold column is a Silver column."
+    "The emitter never writes calculated columns: Direct Lake does not support them, and "
+    "every Gold column is a Silver column."
 )
 _VERTIPAQ = (
     "Needs VertiPaq statistics that only exist once the model is deployed and refreshed, "
@@ -319,7 +319,21 @@ PROFILE: tuple[RuleProfile, ...] = (
             "many-to-one (DD-238).",
         ),
     ),
-    _rule("REDUCE_USAGE_OF_CALCULATED_TABLES", "8a9bbfc2e29a", _d(_BC, _NO_CALCULATED)),
+    _rule(
+        "REDUCE_USAGE_OF_CALCULATED_TABLES",
+        "8a9bbfc2e29a",
+        _d(
+            _RA,
+            "The emitter writes a calculated table only for an authored report parameter "
+            "(field, selector or range, DD-262): a disconnected constant computed from its "
+            "own DAX, which reads no Direct Lake data and so is supported in Direct Lake. "
+            "Each one records this rule in its BestPracticeAnalyzer_IgnoreRules "
+            "annotation; the assertion fails a calculated table that is not a parameter or "
+            "does not record the exception.",
+            enforced_by="gold.calculated-table-not-parameter",
+            blocking=True,
+        ),
+    ),
     _rule(
         "REMOVE_REDUNDANT_COLUMNS_IN_RELATED_TABLES",
         "d2ab1d4f1331",

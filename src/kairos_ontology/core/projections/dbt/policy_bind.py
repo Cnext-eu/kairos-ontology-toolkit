@@ -13,6 +13,8 @@ from rdflib.namespace import OWL, RDF
 from .policy_specs import (
     AdapterSupportFact,
     AuthoredValuesFact,
+    CalculationGroupFact,
+    CalculationItemFact,
     CalendarFact,
     DataQualityRuleFact,
     DeviationFact,
@@ -20,6 +22,7 @@ from .policy_specs import (
     GoldTablePolicyFact,
     MeasureFact,
     MedallionPolicyFacts,
+    ParameterFact,
     SecurityFact,
 )
 
@@ -207,8 +210,66 @@ def _measures(graph: Graph) -> tuple[MeasureFact, ...]:
             tests=_values(graph, resource, EXT.measureValidationTest),
             evidence=_values(graph, resource, EXT.measureValidationEvidence),
             display_name=_values(graph, resource, EXT.measureDisplayName),
+            parameter_dependencies=_values(graph, resource, EXT.measureParameterDependency),
+            format_string_expression=_values(graph, resource, EXT.measureFormatStringExpression),
         )
         for resource in _subjects_of_type(graph, EXT.Measure)
+    )
+
+
+def _ordered_optional(
+    graph: Graph, subject: URIRef, predicate: URIRef
+) -> AuthoredValuesFact | None:
+    """An ordered slot that may be absent: a Turtle collection keeps its order (#1113)."""
+    if next(graph.objects(subject, predicate), None) is None:
+        return None
+    return _ordered_required(graph, subject, predicate)
+
+
+def _parameters(graph: Graph) -> tuple[ParameterFact, ...]:
+    return tuple(
+        ParameterFact(
+            resource_uri=str(resource),
+            parameter_id=_required(graph, resource, EXT.parameterId),
+            kind=_required(graph, resource, EXT.parameterKind),
+            display_name=_required(graph, resource, EXT.parameterDisplayName),
+            items=_ordered_optional(graph, resource, EXT.parameterItem),
+            values=_ordered_optional(graph, resource, EXT.parameterValue),
+            minimum=_values(graph, resource, EXT.parameterMin),
+            maximum=_values(graph, resource, EXT.parameterMax),
+            step=_values(graph, resource, EXT.parameterStep),
+            default=_values(graph, resource, EXT.parameterDefault),
+            format_string=_values(graph, resource, EXT.parameterFormatString),
+        )
+        for resource in _subjects_of_type(graph, EXT.Parameter)
+    )
+
+
+def _calculation_item(graph: Graph, resource: URIRef) -> CalculationItemFact:
+    return CalculationItemFact(
+        resource_uri=str(resource),
+        name=_required(graph, resource, EXT.calculationItemName),
+        ordinal=_required(graph, resource, EXT.calculationItemOrdinal),
+        expression=_required(graph, resource, EXT.calculationItemExpression),
+        format_string=_values(graph, resource, EXT.calculationItemFormatString),
+        column_dependencies=_values(graph, resource, EXT.calculationItemColumnDependency),
+    )
+
+
+def _calculation_groups(graph: Graph) -> tuple[CalculationGroupFact, ...]:
+    return tuple(
+        CalculationGroupFact(
+            resource_uri=str(resource),
+            group_id=_required(graph, resource, EXT.calculationGroupId),
+            display_name=_required(graph, resource, EXT.calculationGroupDisplayName),
+            precedence=_required(graph, resource, EXT.calculationGroupPrecedence),
+            item_refs=_required(graph, resource, EXT.calculationItem),
+            items=tuple(
+                _calculation_item(graph, item)
+                for item in _linked(graph, resource, EXT.calculationItem)
+            ),
+        )
+        for resource in _subjects_of_type(graph, EXT.CalculationGroup)
     )
 
 
@@ -387,6 +448,10 @@ def bind_policy_facts(
         bpa_ignore_rules=product(EXT.bpaIgnoreRule),
         practice_exceptions=product(EXT.practiceException),
         relationship_cross_filters=product(EXT.goldRelationshipCrossFilter),
+        parameter_refs=product(EXT.parameter),
+        parameters=_parameters(policy_graph),
+        calculation_group_refs=product(EXT.calculationGroup),
+        calculation_groups=_calculation_groups(policy_graph),
     )
     return MedallionPolicyFacts(
         ontology_uri=ontology_uri,

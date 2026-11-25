@@ -17,11 +17,15 @@ from .calendar_columns import CALENDAR_COLUMN_NAMES, CALENDAR_DATE_TABLE_KEY
 from ..uri_utils import camel_to_snake
 from .gold_specs import (
     DimensionalGoldSpec,
+    GoldCalculationGroupSpec,
+    GoldCalculationItemSpec,
     GoldCalendarRoleSpec,
     GoldCalendarSpec,
     GoldColumnSpec,
     GoldContractError,
     GoldMeasureSpec,
+    GoldParameterItemSpec,
+    GoldParameterSpec,
     GoldProductLogicalSpec,
     GoldRelationshipSpec,
     GoldSecurityBindingSpec,
@@ -38,6 +42,7 @@ from .policy_specs import (
     GoldTableRole,
     MeasureLifecycle,
     MedallionPolicySpec,
+    ParameterKind,
     ScdType,
     SilverColumnRole,
 )
@@ -433,12 +438,18 @@ def _relationship_endpoints_only(
 
 
 def _check_measure_names(
-    measures: tuple[GoldMeasureSpec, ...], tables: tuple[GoldTableSpec, ...]
+    measures: tuple[GoldMeasureSpec, ...],
+    tables: tuple[GoldTableSpec, ...],
+    parameters: tuple[GoldParameterSpec, ...] = (),
 ) -> None:
     """A measure name is unique in the model and never shadows a home-table column."""
     columns = {
         table.name: {column.name.casefold() for column in table.columns} for table in tables
     }
+    # #1113: a measure that reads only a parameter is homed on the parameter's table.
+    columns.update(
+        {item.table_name: {name.casefold() for name in item.column_names} for item in parameters}
+    )
     seen: dict[str, str] = {}
     for measure in measures:
         if not measure.emitted:
@@ -534,15 +545,21 @@ def _shape_measures(
     tables: tuple[GoldTableSpec, ...],
     *,
     has_calendar: bool | None = None,
+    parameters: dict[str, GoldParameterSpec] | None = None,
 ) -> tuple[GoldMeasureSpec, ...]:
     """Shape *policy*'s measures against the product's emitted tables.
 
     *has_calendar* is the product's answer, not this domain's: in a multi-domain product
     one domain declares the calendar and every domain's DAX may reference `dim_date`
     (#744). It defaults to this policy's own declaration for single-domain callers.
+
+    *parameters* maps each casefolded parameter id of the product to its spec (#1113): a
+    ``measureParameterDependency`` resolves there, and is what lets the measure's DAX
+    name the parameter's table, columns and value measure.
     """
     if has_calendar is None:
         has_calendar = policy.gold.calendar is not None
+    parameters = parameters or {}
     by_resource = {item.resource_uri: item for item in policy.gold.measures}
     shaped: dict[str, GoldMeasureSpec] = {}
     visiting: set[str] = set()
@@ -581,7 +598,23 @@ def _shape_measures(
                     resource_uri=source.resource_uri,
                 )
             column_dependencies.append(resolved)
+        parameter_dependencies: list[GoldParameterSpec] = []
+        for parameter_id in getattr(source, "parameter_dependencies", ()):
+            parameter = parameters.get(parameter_id.casefold())
+            if parameter is None:
+                _fail(
+                    "measure.unknown-parameter-dependency",
+                    (
+                        f"measure {source.measure_id.value!r} declares "
+                        f"measureParameterDependency {parameter_id!r}, which names no "
+                        "parameter of this Gold product"
+                    ),
+                    rule_id="DD-262-parameter",
+                    resource_uri=source.resource_uri,
+                )
+            parameter_dependencies.append(parameter)
         expression = source.expression.value if source.expression is not None else ""
+        format_expression = getattr(source, "format_string_expression", "") or ""
         endpoints = _relationship_endpoints_only(expression, column_dependencies)
         home_tables = {
             table_name
@@ -590,6 +623,10 @@ def _shape_measures(
         } | {item.home_table for item in measure_dependencies if item.home_table}
         if not home_tables:
             home_tables = {table_name for table_name, _ in column_dependencies}
+        if not home_tables:
+            # #1113: a measure that reads only a parameter -- a dynamic title -- lives on
+            # the parameter's own table, the one object it is about.
+            home_tables = {item.table_name for item in parameter_dependencies}
         if len(home_tables) > 1:
             _fail(
                 "measure.ambiguous-home-table",
@@ -629,11 +666,17 @@ def _shape_measures(
             allowed.update(item.measure_id for item in measure_dependencies)
             allowed.update(item.name for item in measure_dependencies)
             allowed.update(_local_name(item.measure_id) for item in measure_dependencies)
+            for parameter in parameter_dependencies:
+                allowed.update(parameter.column_names)
+                if parameter.value_measure:
+                    allowed.add(parameter.value_measure)
+            # The dynamic format string is DAX too, and must name only what is declared.
+            scanned = f"{expression}\n{format_expression}"
             missing_dax = tuple(
                 sorted(
                     {
                         reference
-                        for reference in _DAX_REFERENCE.findall(expression)
+                        for reference in _DAX_REFERENCE.findall(scanned)
                         if reference not in allowed
                     }
                 )
@@ -655,12 +698,14 @@ def _shape_measures(
                     rule_id="DD-113-measure-dependencies",
                     resource_uri=source.resource_uri,
                 )
-            known_tables = {item.name for item in tables} | (
-                {"dim_date"} if has_calendar else set()
+            known_tables = (
+                {item.name for item in tables}
+                | ({"dim_date"} if has_calendar else set())
+                | {item.table_name for item in parameter_dependencies}
             )
             referenced_tables = {
-                *_DAX_QUOTED_TABLE_REFERENCE.findall(expression),
-                *_DAX_BARE_TABLE_REFERENCE.findall(expression),
+                *_DAX_QUOTED_TABLE_REFERENCE.findall(scanned),
+                *_DAX_BARE_TABLE_REFERENCE.findall(scanned),
             }
             unknown_tables = tuple(sorted(referenced_tables - known_tables))
             if unknown_tables:
@@ -692,6 +737,8 @@ def _shape_measures(
             evidence=source.validation_evidence.value,
             emitted=source.lifecycle.value is not MeasureLifecycle.INTENT,
             display_name=_display_name(source),
+            parameter_dependencies=tuple(item.parameter_id for item in parameter_dependencies),
+            format_string_expression=format_expression,
         )
         visiting.remove(resource_uri)
         shaped[resource_uri] = result
@@ -700,6 +747,329 @@ def _shape_measures(
     for resource_uri in sorted(by_resource):
         shape(resource_uri)
     return tuple(sorted(shaped.values(), key=lambda item: item.measure_id))
+
+
+def _product_parameters(
+    members: tuple["GoldDomainInput", ...],
+) -> tuple[GoldParameterSpec, ...]:
+    """Every member's parameters, before their items resolve (#1113, DD-262).
+
+    Shaped in two passes because the references run both ways: a measure may read a
+    parameter, and a field parameter may show a measure. A parameter's name and columns
+    depend only on what was authored, so measures shape against this first pass, and the
+    field items resolve once the measures exist.
+    """
+    shaped: list[GoldParameterSpec] = []
+    owner: dict[str, str] = {}
+    for member in members:
+        for item in getattr(member.policy.gold, "parameters", ()) or ():
+            key = item.parameter_id.casefold()
+            if key in owner:
+                _fail(
+                    "gold.product-parameter-id-collision",
+                    (
+                        f"parameter {item.parameter_id!r} is authored in both {owner[key]!r} "
+                        f"and {member.ontology_name!r}; a parameterId is unique in one product"
+                    ),
+                    rule_id="DD-262-parameter",
+                    resource_uri=item.resource_uri,
+                )
+            owner[key] = member.ontology_name
+            shaped.append(
+                GoldParameterSpec(
+                    resource_uri=item.resource_uri,
+                    parameter_id=item.parameter_id,
+                    kind=item.kind,
+                    display_name=item.display_name,
+                    values=item.values,
+                    minimum=item.minimum,
+                    maximum=item.maximum,
+                    step=item.step,
+                    default=item.default,
+                    whole_numbers=item.whole_numbers,
+                    format_string=item.format_string,
+                )
+            )
+    return tuple(sorted(shaped, key=lambda item: item.parameter_id))
+
+
+def _resolve_parameter_items(
+    members: tuple["GoldDomainInput", ...],
+    parameters: tuple[GoldParameterSpec, ...],
+    tables: tuple[GoldTableSpec, ...],
+    measures: tuple[GoldMeasureSpec, ...],
+    *,
+    has_calendar: bool,
+    defer: bool,
+    deferred: list[tuple[str, str]] | None,
+) -> tuple[GoldParameterSpec, ...]:
+    """Resolve each field parameter's items to emitted columns and measures.
+
+    Fail-closed, like ``goldHideColumn``: an item naming nothing would render a NAMEOF
+    the engine refuses at refresh. On a single-domain compile (*defer*) an item may name
+    another domain's table or measure, so it is left out of this domain's render and
+    checked when the product is shaped -- the same contract as a bridge endpoint (#763).
+    """
+    columns = {
+        f"{table.name}.{column.name}".casefold(): (table.name, column.name)
+        for table in tables
+        for column in table.columns
+    }
+    if has_calendar:
+        columns.update(
+            {
+                f"{CALENDAR_TABLE}.{name}".casefold(): (CALENDAR_TABLE, name)
+                for name in CALENDAR_COLUMN_NAMES
+            }
+        )
+    emitted = {item.measure_id.casefold(): item for item in measures if item.emitted}
+    authored = {
+        item.resource_uri: item
+        for member in members
+        for item in getattr(member.policy.gold, "parameters", ()) or ()
+    }
+    resolved: list[GoldParameterSpec] = []
+    for parameter in parameters:
+        if parameter.kind is not ParameterKind.FIELD:
+            resolved.append(parameter)
+            continue
+        items: list[GoldParameterItemSpec] = []
+        for label, kind, target in authored[parameter.resource_uri].items:
+            if kind == "column":
+                found = columns.get(target.casefold())
+                item = GoldParameterItemSpec(label, kind, *found) if found else None
+            else:
+                measure = emitted.get(target.casefold())
+                item = (
+                    GoldParameterItemSpec(label, kind, measure.home_table, measure.name)
+                    if measure is not None
+                    else None
+                )
+            if item is not None:
+                items.append(item)
+                continue
+            value = f"{label}={kind}:{target}"
+            if defer:
+                if deferred is not None:
+                    deferred.append(("parameterItem", value))
+                continue
+            _fail(
+                "gold.parameter-item-unresolved",
+                (
+                    f"parameter {parameter.parameter_id!r} item {value!r} names a {kind} "
+                    "this Gold product does not emit"
+                    + (
+                        " (only emitted measures can be shown, not intent ones)"
+                        if kind == "measure"
+                        else ""
+                    )
+                ),
+                rule_id="DD-262-parameter",
+                resource_uri=parameter.resource_uri,
+            )
+        if items:
+            resolved.append(replace(parameter, items=tuple(items)))
+    return tuple(resolved)
+
+
+def _shape_calculation_groups(
+    members: tuple["GoldDomainInput", ...],
+    tables: tuple[GoldTableSpec, ...],
+    measures: tuple[GoldMeasureSpec, ...],
+    parameters: tuple[GoldParameterSpec, ...],
+    *,
+    has_calendar: bool,
+    time_intelligence: bool,
+) -> tuple[GoldCalculationGroupSpec, ...]:
+    """Shape every authored calculation group against the product (#1113, DD-262).
+
+    Each item's column dependencies resolve like a measure's, and its DAX may name only
+    those columns, the product's measures and its parameters' objects. Precedence is
+    unique in the model, including against Time Intelligence (precedence 0): two groups
+    with one precedence have no defined order, and the engine refuses the model.
+    """
+    groups: list[GoldCalculationGroupSpec] = []
+    owner: dict[str, str] = {}
+    precedence: dict[int, str] = {0: "Time Intelligence"} if time_intelligence else {}
+    known_tables = (
+        {table.name for table in tables}
+        | ({CALENDAR_TABLE} if has_calendar else set())
+        | {item.table_name for item in parameters}
+    )
+    model_names = {item.name for item in measures if item.emitted}
+    for parameter in parameters:
+        model_names.update(parameter.column_names)
+        if parameter.value_measure:
+            model_names.add(parameter.value_measure)
+    for member in members:
+        for group in getattr(member.policy.gold, "calculation_groups", ()) or ():
+            key = group.group_id.casefold()
+            if key in owner:
+                _fail(
+                    "gold.product-calculation-group-id-collision",
+                    (
+                        f"calculation group {group.group_id!r} is authored in both "
+                        f"{owner[key]!r} and {member.ontology_name!r}"
+                    ),
+                    rule_id="DD-262-calculation-group",
+                    resource_uri=group.resource_uri,
+                )
+            owner[key] = member.ontology_name
+            if group.precedence in precedence:
+                _fail(
+                    "gold.calculation-group-precedence-collision",
+                    (
+                        f"calculation group {group.group_id!r} has precedence "
+                        f"{group.precedence}, which {precedence[group.precedence]!r} already "
+                        "has; precedence is unique in a semantic model"
+                    ),
+                    rule_id="DD-262-calculation-group",
+                    resource_uri=group.resource_uri,
+                )
+            precedence[group.precedence] = group.group_id
+            items: list[GoldCalculationItemSpec] = []
+            for item in group.items:
+                dependencies: list[tuple[str, str]] = []
+                for dependency in item.column_dependencies:
+                    found = _column_by_property(tables, dependency, has_calendar=has_calendar)
+                    if found is None:
+                        _fail(
+                            "calculation-group.missing-column-dependency",
+                            (
+                                f"calculation item {group.group_id}/{item.name} references "
+                                f"unavailable Silver/Gold column {dependency!r}"
+                            ),
+                            rule_id="DD-262-calculation-group",
+                            resource_uri=item.resource_uri,
+                        )
+                    dependencies.append(found)
+                scanned = f"{item.expression}\n{item.format_string}"
+                allowed = {column for _, column in dependencies} | model_names
+                undeclared = sorted(
+                    {ref for ref in _DAX_REFERENCE.findall(scanned) if ref not in allowed}
+                )
+                if undeclared:
+                    _fail(
+                        "calculation-group.unresolved-dax-reference",
+                        (
+                            f"calculation item {group.group_id}/{item.name} has undeclared "
+                            f"DAX references {tuple(undeclared)!r}; declare each column with "
+                            "calculationItemColumnDependency"
+                        ),
+                        rule_id="DD-262-calculation-group",
+                        resource_uri=item.resource_uri,
+                    )
+                unknown = sorted(
+                    {
+                        *_DAX_QUOTED_TABLE_REFERENCE.findall(scanned),
+                        *_DAX_BARE_TABLE_REFERENCE.findall(scanned),
+                    }
+                    - known_tables
+                )
+                if unknown:
+                    _fail(
+                        "calculation-group.unresolved-dax-table-reference",
+                        (
+                            f"calculation item {group.group_id}/{item.name} DAX references "
+                            f"table(s) {tuple(unknown)!r} that this Gold product does not emit"
+                        ),
+                        rule_id="DD-262-calculation-group",
+                        resource_uri=item.resource_uri,
+                    )
+                items.append(
+                    GoldCalculationItemSpec(
+                        name=item.name,
+                        ordinal=item.ordinal,
+                        expression=item.expression,
+                        format_string=item.format_string,
+                        column_dependencies=tuple(dependencies),
+                    )
+                )
+            groups.append(
+                GoldCalculationGroupSpec(
+                    resource_uri=group.resource_uri,
+                    group_id=group.group_id,
+                    display_name=group.display_name,
+                    precedence=group.precedence,
+                    items=tuple(items),
+                )
+            )
+    return tuple(sorted(groups, key=lambda item: item.group_id))
+
+
+def _check_report_object_names(
+    tables: tuple[GoldTableSpec, ...],
+    measures: tuple[GoldMeasureSpec, ...],
+    parameters: tuple[GoldParameterSpec, ...],
+    groups: tuple,
+    *,
+    has_calendar: bool,
+    time_intelligence: bool,
+) -> None:
+    """Parameters and calculation groups are tables: their names are the model's (#1113).
+
+    A parameter or group id names an emitted file, so it may not repeat a table's name
+    either -- ``tables/<id>.tmdl`` would overwrite that table's definition.
+    """
+    taken: dict[str, str] = {
+        table.name.casefold(): f"Gold table {table.name!r}" for table in tables
+    }
+    if has_calendar:
+        taken[CALENDAR_TABLE.casefold()] = f"calendar table {CALENDAR_TABLE!r}"
+    if time_intelligence:
+        taken["time intelligence"] = "the Time Intelligence calculation group"
+    files = {table.name.casefold() for table in tables} | (
+        {CALENDAR_TABLE.casefold()} if has_calendar else set()
+    )
+    objects = [
+        (item.parameter_id, item.display_name, "parameter", item.resource_uri, "DD-262-parameter")
+        for item in parameters
+    ] + [
+        (
+            item.group_id,
+            item.display_name,
+            "calculation group",
+            item.resource_uri,
+            "DD-262-calculation-group",
+        )
+        for item in groups
+    ]
+    for object_id, name, what, resource_uri, rule_id in objects:
+        clash = taken.get(name.casefold())
+        if clash is not None:
+            _fail(
+                "gold.report-object-name-collision",
+                (
+                    f"{what} {object_id!r} would be named {name!r}, which {clash} already "
+                    "is; a table name is unique in a semantic model"
+                ),
+                rule_id=rule_id,
+                resource_uri=resource_uri,
+            )
+        taken[name.casefold()] = f"{what} {object_id!r}"
+        if what == "parameter" and object_id.casefold() in files:
+            _fail(
+                "gold.report-object-name-collision",
+                (
+                    f"parameter id {object_id!r} repeats a Gold table name, and both would "
+                    f"be emitted as tables/{object_id}.tmdl"
+                ),
+                rule_id=rule_id,
+                resource_uri=resource_uri,
+            )
+    measure_names = {item.name.casefold(): item.measure_id for item in measures if item.emitted}
+    for parameter in parameters:
+        clash = measure_names.get(parameter.value_measure.casefold())
+        if parameter.value_measure and clash is not None:
+            _fail(
+                "gold.report-object-name-collision",
+                (
+                    f"parameter {parameter.parameter_id!r} emits the measure "
+                    f"{parameter.value_measure!r}, which measure {clash!r} is already named"
+                ),
+                rule_id="DD-262-parameter",
+                resource_uri=parameter.resource_uri,
+            )
 
 
 def _table_aliases(tables: tuple[GoldTableSpec, ...]) -> dict[str, GoldTableSpec]:
@@ -2088,6 +2458,8 @@ def _shape_bpa_ignores(
     has_calendar: bool,
     defer: bool,
     deferred: list[tuple[str, str]] | None = None,
+    parameters: tuple[GoldParameterSpec, ...] = (),
+    calculation_groups: tuple[GoldCalculationGroupSpec, ...] = (),
 ) -> tuple[BpaIgnore, ...]:
     """Resolve every authored ``bpaIgnoreRule`` to an emitted object (DD-238).
 
@@ -2105,6 +2477,17 @@ def _shape_bpa_ignores(
     if has_calendar:
         table_names["dim_date"] = "dim_date"
         columns.update({f"dim_date.{name}": f"dim_date.{name}" for name in CALENDAR_COLUMN_NAMES})
+    # #1113: a parameter or calculation group is a table a practice exception may name.
+    for parameter in parameters:
+        table_names[parameter.table_name.casefold()] = parameter.table_name
+        columns.update(
+            {
+                f"{parameter.table_name}.{name}".casefold(): f"{parameter.table_name}.{name}"
+                for name in parameter.column_names
+            }
+        )
+    for group in calculation_groups:
+        table_names[group.display_name.casefold()] = group.display_name
     emitted_measures = {item.measure_id.casefold(): item.measure_id for item in measures if item.emitted}
     edges = {
         _relationship_key(item): (
@@ -2337,10 +2720,17 @@ def _shape_dimensional_product(
         _shape_security(security_owner.policy, ordered) if security_owner is not None else None
     )
 
+    base_parameters = _product_parameters(members)
+    parameter_map = {item.parameter_id.casefold(): item for item in base_parameters}
     measures: list[GoldMeasureSpec] = []
     measure_owner: dict[str, str] = {}
     for member in members:
-        for measure in _shape_measures(member.policy, ordered, has_calendar=calendar is not None):
+        for measure in _shape_measures(
+            member.policy,
+            ordered,
+            has_calendar=calendar is not None,
+            parameters=parameter_map,
+        ):
             owner = measure_owner.get(measure.measure_id.casefold())
             if owner is not None:
                 _fail(
@@ -2385,7 +2775,38 @@ def _shape_dimensional_product(
                 )
             )
     ordered_measures = tuple(sorted(measures, key=lambda item: item.measure_id))
-    _check_measure_names(ordered_measures, ordered)
+    _check_measure_names(ordered_measures, ordered, base_parameters)
+    # #1113: parameters and calculation groups, after the measures they may name.
+    time_intelligence = calendar is not None and calendar.approved
+    _check_report_object_names(
+        ordered,
+        ordered_measures,
+        base_parameters,
+        tuple(
+            group
+            for member in members
+            for group in getattr(member.policy.gold, "calculation_groups", ()) or ()
+        ),
+        has_calendar=calendar is not None,
+        time_intelligence=time_intelligence,
+    )
+    parameters = _resolve_parameter_items(
+        members,
+        base_parameters,
+        ordered,
+        ordered_measures,
+        has_calendar=time_intelligence,
+        defer=defer_bridges,
+        deferred=deferred,
+    )
+    calculation_groups = _shape_calculation_groups(
+        members,
+        ordered,
+        ordered_measures,
+        parameters,
+        has_calendar=calendar is not None,
+        time_intelligence=time_intelligence,
+    )
     bpa_ignores = _shape_bpa_ignores(
         members,
         ordered,
@@ -2394,6 +2815,8 @@ def _shape_dimensional_product(
         has_calendar=calendar is not None and calendar.approved,
         defer=defer_bridges,
         deferred=deferred,
+        parameters=parameters,
+        calculation_groups=calculation_groups,
     )
     advisories = check_product(ordered, ordered_measures, bpa_ignores)
     if not defer_bridges:
@@ -2444,6 +2867,8 @@ def _shape_dimensional_product(
         undecided_bridge_filters=undecided_bridge_filters,
         advisories=tuple((item.code, item.message, item.resource_uri) for item in advisories),
         dropped_relationships=dropped_relationships,
+        parameters=parameters,
+        calculation_groups=calculation_groups,
     )
 
 
