@@ -112,6 +112,55 @@
 #     kairos-ext:measureValidationEvidence "dq-run:total-amount-v1" .
 
 # ---------------------------------------------------------------------------
+# Report parameters and calculation groups (DD-262)
+# ---------------------------------------------------------------------------
+#
+# What a report viewer switches comes from the hub: a live-connected report cannot add
+# a calculated table. Link each from the product, as measures are. Write item and value
+# lists as one Turtle collection ( ... ) -- repeated values have no order in RDF.
+#
+# <{DOMAIN_ONTOLOGY_URI}>
+#     kairos-ext:parameter domain:Breakdown, domain:Unit, domain:TopN ;
+#     kairos-ext:calculationGroup domain:DateBasis .
+#
+# domain:Breakdown a kairos-ext:Parameter ;          # which field a visual shows
+#     kairos-ext:parameterId "breakdown" ;
+#     kairos-ext:parameterKind "field" ;
+#     kairos-ext:parameterDisplayName "Breakdown" ;
+#     kairos-ext:parameterItem ( "Customer=column:dim_my_entity.name"
+#                                "Amount=measure:{domain}.total-amount" ) .
+#
+# domain:Unit a kairos-ext:Parameter ;               # a label measures react to
+#     kairos-ext:parameterId "unit" ;
+#     kairos-ext:parameterKind "selector" ;
+#     kairos-ext:parameterDisplayName "Unit" ;
+#     kairos-ext:parameterValue ( "Count" "Amount" ) ;
+#     kairos-ext:parameterDefault "Count" .
+#
+# domain:TopN a kairos-ext:Parameter ;               # a number measures use
+#     kairos-ext:parameterId "top_n" ;
+#     kairos-ext:parameterKind "range" ;
+#     kairos-ext:parameterDisplayName "Top N" ;
+#     kairos-ext:parameterMin 5 ; kairos-ext:parameterMax 50 ;
+#     kairos-ext:parameterStep 5 ; kairos-ext:parameterDefault 10 .
+#
+# A measure reading one declares it, and may then name 'Unit'[Unit] or [Unit Value]:
+#     kairos-ext:measureParameterDependency "unit" ;
+#     kairos-ext:measureFormatStringExpression "IF([Unit Value] = \"Amount\", \"#,0.00\", \"#,0\")" .
+#
+# domain:DateBasis a kairos-ext:CalculationGroup ;   # how every measure is evaluated
+#     kairos-ext:calculationGroupId "date_basis" ;
+#     kairos-ext:calculationGroupDisplayName "Date Basis" ;
+#     kairos-ext:calculationGroupPrecedence 20 ;     # unique; Time Intelligence holds 0
+#     kairos-ext:calculationItem domain:DateBasisEvent .
+#
+# domain:DateBasisEvent a kairos-ext:CalculationItem ;
+#     kairos-ext:calculationItemName "Event date" ;
+#     kairos-ext:calculationItemOrdinal 0 ;
+#     kairos-ext:calculationItemExpression "CALCULATE(SELECTEDMEASURE(), USERELATIONSHIP(fact_my_event[event_date], dim_date[full_date]))" ;
+#     kairos-ext:calculationItemColumnDependency "fact_my_event.event_date", "dim_date.full_date" .
+
+# ---------------------------------------------------------------------------
 # Calendar profile
 # ---------------------------------------------------------------------------
 #

@@ -61,8 +61,8 @@ business semantics.
 
 ## Where the hub stops and the report begins
 
-- The hub owns everything governed: tables, relationships, measures, calendar, security,
-  column visibility and descriptions. It also emits `<Product>.Report`, which is
+- The hub owns everything governed: tables, relationships, measures, report parameters and
+  calculation groups, calendar, security, column visibility and descriptions. It also emits `<Product>.Report`, which is
   **intentionally blank** (DD-236): one empty page so the project opens. The report
   deliverable is `<product>-insight-brief.md`.
 - The BI engineer owns look and feel: pages, visuals, bookmarks, theme, and the report's
@@ -144,6 +144,36 @@ business semantics.
   workspace; the emitted fabric-cicd `parameter.yml` then rewrites those values per
   environment.
 
+## Report parameters and calculation groups (DD-262)
+
+A report live-connected to the deployed model cannot add a calculated table, so anything a
+viewer *switches* comes from the hub. Pick the shape by what the selection must do:
+
+| The viewer picks… | Author | Emitted |
+|---|---|---|
+| which column or measure a visual shows | `kairos-ext:Parameter`, `parameterKind "field"` | field-parameter table |
+| a label that measures react to (YoY of the pick, share, dynamic title) | `parameterKind "selector"` | `DATATABLE` + hidden `<name> Value` measure |
+| a number (Top N, tolerance, target) | `parameterKind "range"` | `GENERATESERIES` + `<name> Value` measure |
+| how every measure is evaluated (date basis, scale) | `kairos-ext:CalculationGroup` | `calculationGroups/<id>.tmdl` |
+
+- Link each one from the product (`kairos-ext:parameter`, `kairos-ext:calculationGroup`), as
+  you link measures; an unlinked one fails closed.
+- Write `parameterItem` and `parameterValue` as **one Turtle collection**, `( "A" "B" )`: RDF
+  keeps repeated values as an unordered set, so `"A", "B"` is refused. A field item is
+  `Label=column:<Gold table>.<column>` or `Label=measure:<measureId>`; each must resolve to
+  an emitted column or measure of the product.
+- A measure that reads a parameter declares `kairos-ext:measureParameterDependency
+  "<parameterId>"`; only then may its DAX name `'Volume unit'[Volume unit]` or
+  `[Volume unit Value]`. A measure that reads nothing else (a dynamic title) lives on the
+  parameter's table.
+- A selector measure switching units gets `kairos-ext:measureFormatStringExpression`
+  (`semantic-model.selector-measure-format`).
+- A calculation group takes a positive `calculationGroupPrecedence`, unique in the model;
+  Time Intelligence holds 0. Every column an item's DAX reads is a
+  `calculationItemColumnDependency`.
+- Name parameters and groups for the product, not for one report: every report on the product
+  sees them (`semantic-model.parameter-belongs-to-the-product`).
+
 ## Best practice by design (DD-238, DD-240)
 
 Every rule the model is judged by is in the practices catalogue:
@@ -204,8 +234,8 @@ under `undecided_bridge_filters` and it stays single-direction. Decide it with
 
 Per target:
 
-- **Fabric (Direct Lake).** No calculated columns or tables; the emitter writes none, so model
-  the value in Silver. A Delta source must be a table, not a SQL view: a view silently falls
+- **Fabric (Direct Lake).** No calculated columns, and no calculated tables beyond report
+  parameters (which read no model data, DD-262); model a value in Silver. A Delta source must be a table, not a SQL view: a view silently falls
   back to DirectQuery. Row counts are bounded by the capacity's Direct Lake guardrails.
   Fallback and guardrails are checked after deploy.
 - **Databricks (DirectQuery).** The Time Intelligence calculation group costs a warehouse

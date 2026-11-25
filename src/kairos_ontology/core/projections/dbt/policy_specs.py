@@ -869,6 +869,57 @@ class MeasureFact:
     evidence: AuthoredValuesFact | None
     #: ``kairos-ext:measureDisplayName`` (DD-238): the name the model carries.
     display_name: AuthoredValuesFact | None = None
+    #: ``kairos-ext:measureParameterDependency`` values: parameter ids (#1113).
+    parameter_dependencies: AuthoredValuesFact | None = None
+    #: ``kairos-ext:measureFormatStringExpression``: a dynamic format string (#1113).
+    format_string_expression: AuthoredValuesFact | None = None
+
+
+class ParameterKind(str, Enum):
+    """The three report-parameter shapes a Gold product can author (#1113, DD-262)."""
+
+    #: The viewer picks which column or measure a visual shows.
+    FIELD = "field"
+    #: The viewer picks a label that measures react to.
+    SELECTOR = "selector"
+    #: The viewer picks a number.
+    RANGE = "range"
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterFact:
+    resource_uri: str
+    parameter_id: AuthoredValuesFact
+    kind: AuthoredValuesFact
+    display_name: AuthoredValuesFact
+    #: Read with ``_ordered_required``: ``ordered`` is True only for a Turtle collection.
+    items: AuthoredValuesFact | None
+    values: AuthoredValuesFact | None
+    minimum: AuthoredValuesFact | None
+    maximum: AuthoredValuesFact | None
+    step: AuthoredValuesFact | None
+    default: AuthoredValuesFact | None
+    format_string: AuthoredValuesFact | None
+
+
+@dataclass(frozen=True, slots=True)
+class CalculationItemFact:
+    resource_uri: str
+    name: AuthoredValuesFact
+    ordinal: AuthoredValuesFact
+    expression: AuthoredValuesFact
+    format_string: AuthoredValuesFact | None
+    column_dependencies: AuthoredValuesFact | None
+
+
+@dataclass(frozen=True, slots=True)
+class CalculationGroupFact:
+    resource_uri: str
+    group_id: AuthoredValuesFact
+    display_name: AuthoredValuesFact
+    precedence: AuthoredValuesFact
+    item_refs: AuthoredValuesFact
+    items: tuple[CalculationItemFact, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -931,6 +982,12 @@ class GoldProductFact:
     #: ``kairos-ext:goldRelationshipCrossFilter`` values, each
     #: ``"Table.column -> Table.column = both|single"`` (DD-238).
     relationship_cross_filters: AuthoredValuesFact | None = None
+    #: ``kairos-ext:parameter`` links and every ``kairos-ext:Parameter`` (#1113).
+    parameter_refs: AuthoredValuesFact | None = None
+    parameters: tuple[ParameterFact, ...] = ()
+    #: ``kairos-ext:calculationGroup`` links and every authored group (#1113).
+    calculation_group_refs: AuthoredValuesFact | None = None
+    calculation_groups: tuple[CalculationGroupFact, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -977,6 +1034,60 @@ class MeasureSpec:
     validation_evidence: EffectiveValue[tuple[str, ...]]
     #: ``kairos-ext:measureDisplayName`` (DD-238). None keeps ``measure_id`` as the name.
     display_name: EffectiveValue[str] | None = None
+    #: ``kairos-ext:measureParameterDependency`` parameter ids (#1113). Resolved against
+    #: the product's parameters when the product is shaped.
+    parameter_dependencies: tuple[str, ...] = ()
+    #: ``kairos-ext:measureFormatStringExpression`` (#1113), the DAX of a dynamic format
+    #: string. Empty for a measure with only its static ``format_string``.
+    format_string_expression: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterSpec:
+    """One normalized report parameter (#1113, DD-262).
+
+    Only the slots of its own kind are filled; the normalizer refuses the others, so an
+    empty tuple here means "not this kind", never "authored empty".
+    """
+
+    resource_uri: str
+    parameter_id: str
+    kind: ParameterKind
+    display_name: str
+    #: Field items in authored order, each ``(label, "column"|"measure", target)``.
+    items: tuple[tuple[str, str, str], ...] = ()
+    #: Selector labels in authored order.
+    values: tuple[str, ...] = ()
+    #: Range bounds as canonical decimal text, so the DAX renders exactly what was authored.
+    minimum: str = ""
+    maximum: str = ""
+    step: str = ""
+    #: The selector label or range number ``<name> Value`` falls back to. Empty for a
+    #: field parameter and for a selector without one.
+    default: str = ""
+    #: Range only: whether every bound is a whole number (an int64 column) or not (double).
+    whole_numbers: bool = True
+    format_string: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CalculationItemSpec:
+    resource_uri: str
+    name: str
+    ordinal: int
+    expression: str
+    format_string: str
+    column_dependencies: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CalculationGroupSpec:
+    resource_uri: str
+    group_id: str
+    display_name: str
+    precedence: int
+    #: Sorted by ordinal.
+    items: tuple[CalculationItemSpec, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1071,6 +1182,10 @@ class GoldProductSpec:
     relationship_cross_filters: tuple[str, ...] = ()
     #: The ontology this product was authored on, for diagnostics that have no table.
     ontology_uri: str = ""
+    #: Authored report parameters and calculation groups (#1113, DD-262). Their
+    #: references to columns and measures are checked when the product is shaped.
+    parameters: tuple[ParameterSpec, ...] = ()
+    calculation_groups: tuple[CalculationGroupSpec, ...] = ()
 
 
 class AdapterCapability(str, Enum):

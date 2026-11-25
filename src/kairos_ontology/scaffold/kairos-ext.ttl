@@ -361,6 +361,18 @@ kairos-ext:Measure a owl:Class ;
     rdfs:label "Measure"@en ;
     rdfs:comment "First-class governed semantic measure with stable identity, dependencies and lifecycle."@en .
 
+kairos-ext:Parameter a owl:Class ;
+    rdfs:label "Parameter"@en ;
+    rdfs:comment "A report parameter the Gold product offers every report on it (issue #1113, DD-262): a field parameter (the viewer picks which column or measure a visual shows), a selector (the viewer picks a label measures react to) or a numeric range (the viewer picks a number). Emitted as a disconnected calculated table that reads no Direct Lake data."@en .
+
+kairos-ext:CalculationGroup a owl:Class ;
+    rdfs:label "Calculation group"@en ;
+    rdfs:comment "An authored calculation group (issue #1113, DD-262): a set of calculation items that rewrite whichever measure a visual shows, such as a date-basis switch. Emitted beside the built-in Time Intelligence group, with a precedence unique in the model."@en .
+
+kairos-ext:CalculationItem a owl:Class ;
+    rdfs:label "Calculation item"@en ;
+    rdfs:comment "One item of an authored calculation group: a name the viewer picks, an ordinal that sorts it, and the DAX that rewrites SELECTEDMEASURE()."@en .
+
 kairos-ext:CalendarProfile a owl:Class ;
     rdfs:label "Calendar profile"@en ;
     rdfs:comment "Approved production calendar and time-intelligence assumptions."@en .
@@ -797,6 +809,139 @@ kairos-ext:measureValidationEvidence a owl:AnnotationProperty ;
     rdfs:label "measure validation evidence"@en ;
     rdfs:comment "Imported validation evidence required for validated and approved measures."@en ;
     rdfs:domain kairos-ext:Measure .
+
+kairos-ext:measureParameterDependency a owl:AnnotationProperty ;
+    rdfs:label "measure parameter dependency"@en ;
+    rdfs:comment "The parameterId of a Parameter this measure reads, e.g. with SELECTEDVALUE('Volume unit'[Volume unit]); may repeat (issue #1113). Declaring it is what lets the measure's DAX name the parameter's table, columns and value measure. A measure with no other dependency is homed on the parameter's table -- a dynamic title, for instance."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range xsd:string .
+
+kairos-ext:measureFormatStringExpression a owl:AnnotationProperty ;
+    rdfs:label "measure format string expression"@en ;
+    rdfs:comment "Optional DAX expression returning the measure's format string at query time -- a dynamic format string, emitted as TMDL formatStringDefinition (issue #1113). Use it when a selector switches between measures of different units. measureFormatString stays required: it is the static fallback."@en ;
+    rdfs:domain kairos-ext:Measure ;
+    rdfs:range xsd:string .
+
+# Report parameters (issue #1113, DD-262)
+
+kairos-ext:parameter a owl:AnnotationProperty ;
+    rdfs:label "parameter"@en ;
+    rdfs:comment "Links a Gold product ontology to a Parameter. An unlinked Parameter fails closed, like an unlinked Measure."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range kairos-ext:Parameter .
+
+kairos-ext:parameterId a owl:AnnotationProperty ;
+    rdfs:label "parameter identifier"@en ;
+    rdfs:comment "Stable identifier: letters, digits, '_' and '-', starting with a letter. Names the emitted file and seeds every lineageTag, so a changed display name stays the same object. Unique in the product, and distinct from every Gold table name."@en ;
+    rdfs:domain kairos-ext:Parameter ;
+    rdfs:range xsd:string .
+
+kairos-ext:parameterKind a owl:AnnotationProperty ;
+    rdfs:label "parameter kind"@en ;
+    rdfs:comment "field (the viewer picks which column or measure a visual shows), selector (the viewer picks a label that measures react to) or range (the viewer picks a number)."@en ;
+    rdfs:domain kairos-ext:Parameter ;
+    rdfs:range xsd:string .
+
+kairos-ext:parameterDisplayName a owl:AnnotationProperty ;
+    rdfs:label "parameter display name"@en ;
+    rdfs:comment "The name of the emitted table and of its visible column, so the one DAX references: 'Volume unit'[Volume unit]. Unique among the product's tables, parameters and calculation groups. No control characters, square brackets, or leading/trailing whitespace."@en ;
+    rdfs:domain kairos-ext:Parameter ;
+    rdfs:range xsd:string .
+
+kairos-ext:parameterItem a owl:AnnotationProperty ;
+    rdfs:label "parameter item"@en ;
+    rdfs:comment "A field parameter's items, as one Turtle collection so their order is kept: ( \"Customer=column:dim_customer.customer_name\" \"Revenue=measure:total_revenue\" ). Each is Label=column:<Gold table>.<column> or Label=measure:<measureId>, and must resolve to a column or emitted measure of the product."@en ;
+    rdfs:domain kairos-ext:Parameter .
+
+kairos-ext:parameterValue a owl:AnnotationProperty ;
+    rdfs:label "parameter value"@en ;
+    rdfs:comment "A selector's labels, as one Turtle collection so their order is kept: ( \"Shipments\" \"Weight\" \"Volume\" )."@en ;
+    rdfs:domain kairos-ext:Parameter .
+
+kairos-ext:parameterMin a owl:AnnotationProperty ;
+    rdfs:label "parameter minimum"@en ;
+    rdfs:comment "A range parameter's first value."@en ;
+    rdfs:domain kairos-ext:Parameter .
+
+kairos-ext:parameterMax a owl:AnnotationProperty ;
+    rdfs:label "parameter maximum"@en ;
+    rdfs:comment "A range parameter's last value; not below parameterMin."@en ;
+    rdfs:domain kairos-ext:Parameter .
+
+kairos-ext:parameterStep a owl:AnnotationProperty ;
+    rdfs:label "parameter step"@en ;
+    rdfs:comment "A range parameter's increment; greater than zero."@en ;
+    rdfs:domain kairos-ext:Parameter .
+
+kairos-ext:parameterDefault a owl:AnnotationProperty ;
+    rdfs:label "parameter default"@en ;
+    rdfs:comment "What the parameter's '<display name> Value' measure returns when the viewer selected nothing or several values. Required for a range, where it lies between parameterMin and parameterMax; optional for a selector, where it is one of the values. A field parameter has none."@en ;
+    rdfs:domain kairos-ext:Parameter .
+
+kairos-ext:parameterFormatString a owl:AnnotationProperty ;
+    rdfs:label "parameter format string"@en ;
+    rdfs:comment "Optional format string for a range parameter's column and value measure. Defaults to 0 for a whole-number range and 0.00 otherwise."@en ;
+    rdfs:domain kairos-ext:Parameter ;
+    rdfs:range xsd:string .
+
+# Authored calculation groups (issue #1113, DD-262)
+
+kairos-ext:calculationGroup a owl:AnnotationProperty ;
+    rdfs:label "calculation group"@en ;
+    rdfs:comment "Links a Gold product ontology to an authored CalculationGroup. An unlinked group fails closed."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range kairos-ext:CalculationGroup .
+
+kairos-ext:calculationGroupId a owl:AnnotationProperty ;
+    rdfs:label "calculation group identifier"@en ;
+    rdfs:comment "Stable identifier: letters, digits, '_' and '-', starting with a letter. Names the emitted calculationGroups/<id>.tmdl and seeds its lineageTags. Unique in the product; time-intelligence is reserved."@en ;
+    rdfs:domain kairos-ext:CalculationGroup ;
+    rdfs:range xsd:string .
+
+kairos-ext:calculationGroupDisplayName a owl:AnnotationProperty ;
+    rdfs:label "calculation group display name"@en ;
+    rdfs:comment "The name of the emitted calculation group table and of the column a viewer picks items from. Unique among the product's tables, parameters and calculation groups."@en ;
+    rdfs:domain kairos-ext:CalculationGroup ;
+    rdfs:range xsd:string .
+
+kairos-ext:calculationGroupPrecedence a owl:AnnotationProperty ;
+    rdfs:label "calculation group precedence"@en ;
+    rdfs:comment "A positive integer, unique in the model. The built-in Time Intelligence group has precedence 0; a higher precedence is applied first, so its items wrap the time-intelligence result."@en ;
+    rdfs:domain kairos-ext:CalculationGroup .
+
+kairos-ext:calculationItem a owl:AnnotationProperty ;
+    rdfs:label "calculation item"@en ;
+    rdfs:comment "Links a CalculationGroup to one of its CalculationItem resources; may repeat. An item belongs to exactly one group."@en ;
+    rdfs:domain kairos-ext:CalculationGroup ;
+    rdfs:range kairos-ext:CalculationItem .
+
+kairos-ext:calculationItemName a owl:AnnotationProperty ;
+    rdfs:label "calculation item name"@en ;
+    rdfs:comment "The name a viewer picks; unique within its group."@en ;
+    rdfs:domain kairos-ext:CalculationItem ;
+    rdfs:range xsd:string .
+
+kairos-ext:calculationItemOrdinal a owl:AnnotationProperty ;
+    rdfs:label "calculation item ordinal"@en ;
+    rdfs:comment "A non-negative integer that sorts the item; unique within its group."@en ;
+    rdfs:domain kairos-ext:CalculationItem .
+
+kairos-ext:calculationItemExpression a owl:AnnotationProperty ;
+    rdfs:label "calculation item expression"@en ;
+    rdfs:comment "The DAX that replaces the measure in context, using SELECTEDMEASURE(). Every column it names must be declared with calculationItemColumnDependency."@en ;
+    rdfs:domain kairos-ext:CalculationItem ;
+    rdfs:range xsd:string .
+
+kairos-ext:calculationItemFormatString a owl:AnnotationProperty ;
+    rdfs:label "calculation item format string"@en ;
+    rdfs:comment "Optional DAX expression for the item's format string, emitted as formatStringDefinition; a fixed format is a quoted DAX string, e.g. \"0.0%\". Without it the measure keeps its own format."@en ;
+    rdfs:domain kairos-ext:CalculationItem ;
+    rdfs:range xsd:string .
+
+kairos-ext:calculationItemColumnDependency a owl:AnnotationProperty ;
+    rdfs:label "calculation item column dependency"@en ;
+    rdfs:comment "An emitted Gold column the item's DAX reads, as <Gold table>.<column> or a Silver property; may repeat. Resolved and checked like measureColumnDependency."@en ;
+    rdfs:domain kairos-ext:CalculationItem .
 
 # Calendar and security
 

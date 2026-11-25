@@ -293,6 +293,53 @@ rules:
     source: Kimball (slowly changing dimensions), DD-112
     excusable: false
 
+  - id: semantic-model.parameter-belongs-to-the-product
+    statement: >
+      A report parameter or authored calculation group is named for the Gold product it
+      belongs to, not for the one report that asked for it.
+    rationale: >
+      A kairos-ext:Parameter or kairos-ext:CalculationGroup is a table of the semantic
+      model, so every report on the product sees it in its field list (#1113, DD-262). One
+      named for a single report ("Sales page breakdown") confuses every other author, and
+      a second report needing the same switch authors a near-duplicate instead of reusing
+      it. Name it for what it switches ("Breakdown", "Date Basis").
+    enforcement: advisory
+    stage: design
+    check: none
+    source: "#1113, DD-262"
+    excusable: false
+
+  - id: semantic-model.selector-measure-format
+    statement: >
+      A measure that switches between measures of different units, on a selector or
+      calculation group, carries a dynamic format string.
+    rationale: >
+      One static format cannot fit both a count and a weight: "Shipments" shows as
+      "1,204.00 kg", or "Weight" loses its decimals. Author
+      kairos-ext:measureFormatStringExpression so the format follows the selection -- the
+      "Format ..." companion measures of a hand-built selector, as one property of the
+      measure (#1113).
+    enforcement: advisory
+    stage: design
+    check: none
+    source: "#1113, DD-262"
+    excusable: false
+
+  - id: semantic-model.calculation-group-precedence
+    statement: >
+      Every calculation group of a model has its own precedence; an authored group takes
+      a positive one, since Time Intelligence holds 0.
+    rationale: >
+      Two calculation groups with one precedence apply in no defined order, and the
+      engine refuses the model. The group with the higher precedence is applied first:
+      its item's SELECTEDMEASURE() is the other group's result, so choose the order
+      deliberately and test one combination (a date basis with YTD, say) by hand.
+    enforcement: blocking
+    stage: compile --check
+    check: gold.calculation-group-precedence-collision
+    source: "#1113, DD-262"
+    excusable: false
+
   - id: semantic-model.review-bus-matrix
     statement: >
       Review the product's bus matrix (<product>-bus-matrix.md) with the business: which

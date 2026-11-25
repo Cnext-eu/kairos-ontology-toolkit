@@ -25,14 +25,16 @@ from .gold_connection import (
 )
 from .gold_specs import (
     DimensionalGoldSpec,
+    GoldCalculationGroupSpec,
     GoldCalendarSpec,
     GoldMeasureSpec,
+    GoldParameterSpec,
     GoldPhysicalPlan,
     GoldPhysicalTablePlan,
     GoldSecurityKind,
     GoldTableSpec,
 )
-from .policy_specs import CanonicalTypeKind, CanonicalTypeSpec, GoldTableRole
+from .policy_specs import CanonicalTypeKind, CanonicalTypeSpec, GoldTableRole, ParameterKind
 from ..shared import er_edge, mermaid_frontmatter, mermaid_provenance_comment
 
 
@@ -783,9 +785,10 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
             "\tdefaultPowerBIDataSourceVersion: powerBI_V3",
             f"\tsourceQueryCulture: {locale}",
             # #791. The engine refuses to create *any* calculation group unless the model
-            # discourages implicit measures, so this is coupled to the calendar flag that
-            # gates emitting the group at all -- not an independent preference.
-            *(("\tdiscourageImplicitMeasures",) if has_calendar else ()),
+            # discourages implicit measures, so this is coupled to what gates emitting a
+            # group at all -- the calendar, or an authored group (#1113) -- not an
+            # independent preference.
+            *(("\tdiscourageImplicitMeasures",) if has_calendar or spec.calculation_groups else ()),
             "\tdataAccessOptions",
             "\t\tlegacyRedirects",
             "\t\treturnErrorValuesAsNull",
@@ -805,6 +808,9 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
                 if has_calendar
                 else ()
             ),
+            # #1113: parameters and authored calculation groups are tables too.
+            *(f"ref table {_tmdl_name(item.table_name)}" for item in spec.parameters),
+            *(f"ref table {_tmdl_name(item.display_name)}" for item in spec.calculation_groups),
             *(
                 (f"ref expression '{_DIRECT_LAKE_EXPRESSION_NAME}'",)
                 if physical.semantic_mode == "directLake"
@@ -1035,6 +1041,47 @@ def _measure_header(measure: GoldMeasureSpec) -> list[str]:
     return [f"\tmeasure '{name}' = ```", *body, "\t\t\t```"]
 
 
+def _expression_property(keyword: str, expression: str, *, depth: int) -> list[str]:
+    """Render ``<keyword> = <DAX>`` at *depth* tabs, fencing a multi-line expression.
+
+    An expression property runs until the next line at its own depth or shallower, so
+    the caller must make it the object's last property.
+    """
+    indent = "\t" * depth
+    text = expression.replace("\r\n", "\n").strip("\n")
+    if "\n" not in text:
+        return [f"{indent}{keyword} = {text}"]
+    body = [f"{indent}\t\t{line}" if line.strip() else "" for line in text.split("\n")]
+    return [f"{indent}{keyword} = ```", *body, f"{indent}\t\t```"]
+
+
+def _measure_lines(measure: GoldMeasureSpec, table_name: str, ignores: BpaIgnoreIndex) -> list[str]:
+    return [
+        f"\t/// {_tmdl_text(measure.definition)}",
+        *_measure_header(measure),
+        *(
+            [f"\t\tdataType: {_MEASURE_TMDL_TYPES[measure.data_type]}"]
+            if measure.data_type in _MEASURE_TMDL_TYPES
+            else []
+        ),
+        f"\t\tformatString: {measure.format_string}",
+        f"\t\tdisplayFolder: {measure.folder}",
+        f"\t\tlineageTag: {_guid(f'{table_name}.{measure.measure_id}')}",
+        f'\t\tannotation Kairos_Lifecycle = "{measure.lifecycle.value}"',
+        "\t\tannotation Kairos_DataValidatedByProjection = false",
+        *ignore_annotation(ignores.get(("measure", measure.measure_id), ()), indent="\t\t"),
+        # #1113: a dynamic format string. Last, because it is an expression property.
+        *(
+            _expression_property(
+                "formatStringDefinition", measure.format_string_expression, depth=2
+            )
+            if measure.format_string_expression
+            else []
+        ),
+        "",
+    ]
+
+
 def _table_tmdl(
     table: GoldTableSpec,
     physical: GoldPhysicalTablePlan,
@@ -1054,26 +1101,7 @@ def _table_tmdl(
         "",
     ]
     for measure in measures:
-        lines.extend(
-            [
-                f"\t/// {_tmdl_text(measure.definition)}",
-                *_measure_header(measure),
-                *(
-                    [f"\t\tdataType: {_MEASURE_TMDL_TYPES[measure.data_type]}"]
-                    if measure.data_type in _MEASURE_TMDL_TYPES
-                    else []
-                ),
-                f"\t\tformatString: {measure.format_string}",
-                f"\t\tdisplayFolder: {measure.folder}",
-                f"\t\tlineageTag: {_guid(f'{table.name}.{measure.measure_id}')}",
-                f'\t\tannotation Kairos_Lifecycle = "{measure.lifecycle.value}"',
-                "\t\tannotation Kairos_DataValidatedByProjection = false",
-                *ignore_annotation(
-                    ignores.get(("measure", measure.measure_id), ()), indent="\t\t"
-                ),
-                "",
-            ]
-        )
+        lines.extend(_measure_lines(measure, table.name, ignores))
     for column in physical.columns:
         # `isKey` only where the key is provably unique: a dimension or bridge whose
         # primary key is the Silver surrogate. `_primary_key` falls back to "first
@@ -1412,6 +1440,277 @@ def _time_intelligence_tmdl(calendar: GoldCalendarSpec) -> str:
     return "\n".join(lines)
 
 
+#: The rules every parameter table is an exception to, recorded on the table itself
+#: (#1113, DD-262). The exception is per shape, not "calculated tables allowed": a
+#: parameter table is a constant the engine computes from its own DAX, reading no Direct
+#: Lake data, and it is disconnected by design -- a relationship would filter it.
+_PARAMETER_BPA_EXCEPTIONS = (
+    "ENSURE_TABLES_HAVE_RELATIONSHIPS",
+    "REDUCE_USAGE_OF_CALCULATED_TABLES",
+)
+
+#: What each parameter kind tells a report author, as its table's description.
+_PARAMETER_DESCRIPTIONS = {
+    ParameterKind.FIELD: "Field parameter: pick which field a visual shows.",
+    ParameterKind.SELECTOR: "Selector: pick the option the measures that read it react to.",
+    ParameterKind.RANGE: "Numeric parameter: pick the value the measures that read it use.",
+}
+
+
+def _dax_string(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _dax_column(table: str, column: str) -> str:
+    return f"{_quoted(table)}[{column}]"
+
+
+def _calculated_column(
+    name: str,
+    data_type: str,
+    source: str,
+    seed: str,
+    *,
+    hidden: bool = False,
+    sort_by: str = "",
+    format_string: str = "",
+    description: str = "",
+    trailer: tuple[str, ...] = (),
+) -> list[str]:
+    """One column of a calculated table, in the property order TOM serializes."""
+    return [
+        *([f"\t/// {_tmdl_text(description)}"] if description else []),
+        f"\tcolumn {_tmdl_name(name)}",
+        f"\t\tdataType: {data_type}",
+        *([f"\t\tformatString: {format_string}"] if format_string else []),
+        *(["\t\tisHidden"] if hidden else []),
+        "\t\tisDataTypeInferred",
+        f"\t\tlineageTag: {_guid(seed)}",
+        f"\t\tsourceColumn: [{source}]",
+        *([f"\t\tsortByColumn: {_tmdl_name(sort_by)}"] if sort_by else []),
+        "\t\tsummarizeBy: none",
+        *(("", *trailer) if trailer else ()),
+        "",
+    ]
+
+
+def _parameter_tmdl(
+    parameter: GoldParameterSpec,
+    measures: tuple[GoldMeasureSpec, ...],
+    ignores: BpaIgnoreIndex,
+) -> str:
+    """Render one report parameter as a disconnected calculated table (#1113, DD-262).
+
+    The shapes are the ones Power BI Desktop writes for the same parameter, read back
+    through the TOM serializer: a field parameter carries the ``ParameterMetadata``
+    extended property that makes Power BI treat it as one, and a range the what-if
+    metadata plus its ``<name> Value`` measure. None of them relates to another table,
+    and none reads model data, which is what lets Direct Lake accept them.
+    """
+    seed = f"parameter:{parameter.parameter_id}"
+    name = parameter.display_name
+    lines = [
+        f"/// {_tmdl_text(_PARAMETER_DESCRIPTIONS[parameter.kind])}",
+        f"table {_tmdl_name(name)}",
+        f"\tlineageTag: {_guid(seed)}",
+        f'\tannotation Kairos_ParameterKind = "{parameter.kind.value}"',
+        *ignore_annotation(
+            (*_PARAMETER_BPA_EXCEPTIONS, *ignores.get(("table", name), ())), indent="\t"
+        ),
+        "",
+    ]
+    if parameter.value_measure:
+        fallback = (
+            ""
+            if not parameter.default
+            else ", "
+            + (
+                _dax_string(parameter.default)
+                if parameter.kind is ParameterKind.SELECTOR
+                else parameter.default
+            )
+        )
+        lines.extend(
+            [
+                f"\t/// The {name} the viewer picked, or the default when there is not one.",
+                f"\tmeasure {_tmdl_name(parameter.value_measure)} = "
+                f"SELECTEDVALUE({_dax_column(name, name)}{fallback})",
+                # A selector's value is text, read by measures rather than shown, so it
+                # is hidden instead of given a meaningless number format.
+                *(
+                    [f"\t\tformatString: {parameter.format_string}"]
+                    if parameter.kind is ParameterKind.RANGE
+                    else ["\t\tisHidden"]
+                ),
+                f"\t\tlineageTag: {_guid(f'{seed}.value')}",
+                "",
+            ]
+        )
+    for measure in measures:
+        lines.extend(_measure_lines(measure, name, ignores))
+
+    def column_ignores(column: str) -> tuple[str, ...]:
+        return tuple(
+            ignore_annotation(ignores.get(("column", f"{name}.{column}"), ()), indent="\t\t")
+        )
+
+    if parameter.kind is ParameterKind.FIELD:
+        fields, order = parameter.fields_column, parameter.order_column
+        lines.extend(
+            _calculated_column(
+                name,
+                "string",
+                "Value1",
+                f"{seed}.name",
+                sort_by=order,
+                description="The field the visual shows.",
+                trailer=(
+                    "\t\trelatedColumnDetails",
+                    f"\t\t\tgroupByColumn: {_tmdl_name(fields)}",
+                    *column_ignores(name),
+                ),
+            )
+        )
+        lines.extend(
+            _calculated_column(
+                fields,
+                "string",
+                "Value2",
+                f"{seed}.fields",
+                hidden=True,
+                sort_by=order,
+                trailer=(
+                    '\t\textendedProperty ParameterMetadata = {"version":3,"kind":2}',
+                    *column_ignores(fields),
+                ),
+            )
+        )
+        lines.extend(
+            _calculated_column(
+                order, "int64", "Value3", f"{seed}.order", hidden=True, format_string="0"
+            )
+        )
+        rows = [
+            f"({_dax_string(item.label)}, NAMEOF({_dax_column(item.table, item.name)}), {ordinal})"
+            for ordinal, item in enumerate(parameter.items)
+        ]
+        source = ["{", *(f"    {row}," for row in rows[:-1]), f"    {rows[-1]}", "}"]
+    elif parameter.kind is ParameterKind.SELECTOR:
+        order = parameter.order_column
+        lines.extend(
+            _calculated_column(
+                name,
+                "string",
+                name,
+                f"{seed}.name",
+                sort_by=order,
+                description="The option the measures react to.",
+                trailer=column_ignores(name),
+            )
+        )
+        lines.extend(
+            _calculated_column(
+                order, "int64", order, f"{seed}.order", hidden=True, format_string="0"
+            )
+        )
+        rows = [
+            f"{{{_dax_string(value)}, {ordinal}}}" for ordinal, value in enumerate(parameter.values)
+        ]
+        source = [
+            "DATATABLE(",
+            f"    {_dax_string(name)}, STRING,",
+            f"    {_dax_string(order)}, INTEGER,",
+            "    {",
+            *(f"        {row}," for row in rows[:-1]),
+            f"        {rows[-1]}",
+            "    }",
+            ")",
+        ]
+    else:
+        lines.extend(
+            _calculated_column(
+                name,
+                "int64" if parameter.whole_numbers else "double",
+                "Value",
+                f"{seed}.name",
+                format_string=parameter.format_string,
+                description="The value the measures use.",
+                trailer=(
+                    '\t\textendedProperty ParameterMetadata = {"version":0}',
+                    *column_ignores(name),
+                ),
+            )
+        )
+        source = [f"GENERATESERIES({parameter.minimum}, {parameter.maximum}, {parameter.step})"]
+    lines.extend([f"\tpartition {_tmdl_name(name)} = calculated", "\t\tmode: import"])
+    if len(source) == 1:
+        lines.append(f"\t\tsource = {source[0]}")
+    else:
+        lines.extend(["\t\tsource =", *(f"\t\t\t\t{line}" for line in source)])
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _calculation_group_tmdl(group: GoldCalculationGroupSpec) -> str:
+    """Render an authored calculation group (#1113, DD-262).
+
+    The same TOM shape as Time Intelligence -- one name column sorted by a hidden
+    ordinal, and a ``calculationGroup`` partition -- plus the precedence the author chose.
+    """
+    seed = f"calculation-group:{group.group_id}"
+    name = group.display_name
+    lines = [
+        f"table {_tmdl_name(name)}",
+        f"\tlineageTag: {_guid(seed)}",
+        f'\tannotation Kairos_CalculationGroup = "{group.group_id}"',
+        "",
+        "\tcalculationGroup",
+        f"\t\tprecedence: {group.precedence}",
+        "",
+    ]
+    for item in group.items:
+        expression = item.expression.replace("\r\n", "\n").strip("\n")
+        if "\n" in expression:
+            lines.append(f"\t\tcalculationItem {_tmdl_name(item.name)} = ```")
+            lines.extend(
+                f"\t\t\t\t{line}" if line.strip() else "" for line in expression.split("\n")
+            )
+            lines.append("\t\t\t\t```")
+        else:
+            lines.append(f"\t\tcalculationItem {_tmdl_name(item.name)} = {expression}")
+        lines.append(f"\t\t\tordinal: {item.ordinal}")
+        # An expression property runs until the next line at its own depth or shallower,
+        # so the format string, when there is one, is the item's last property.
+        if item.format_string:
+            lines.extend(
+                _expression_property("formatStringDefinition", item.format_string, depth=3)
+            )
+        lines.append("")
+    lines.extend(
+        [
+            f"\tcolumn {_tmdl_name(name)}",
+            "\t\tdataType: string",
+            f"\t\tlineageTag: {_guid(f'{seed}.name')}",
+            "\t\tsourceColumn: Name",
+            "\t\tsortByColumn: Ordinal",
+            "\t\tsummarizeBy: none",
+            "",
+            "\tcolumn Ordinal",
+            "\t\tdataType: int64",
+            "\t\tformatString: 0",
+            "\t\tisHidden",
+            f"\t\tlineageTag: {_guid(f'{seed}.ordinal')}",
+            "\t\tsourceColumn: Ordinal",
+            "\t\tsummarizeBy: sum",
+            "",
+            f"\tpartition {_tmdl_name(name)} = calculationGroup",
+            "\t\tmode: import",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _dax(spec: DimensionalGoldSpec) -> str:
     emitted = tuple(item for item in spec.measures if item.emitted)
     if not emitted:
@@ -1432,6 +1731,29 @@ def _dax(spec: DimensionalGoldSpec) -> str:
             ]
         )
     return "\n".join(lines)
+
+
+def _parameter_report(parameter: GoldParameterSpec) -> dict:
+    report: dict[str, object] = {
+        "id": parameter.parameter_id,
+        "name": parameter.display_name,
+        "kind": parameter.kind.value,
+        "bpa_exceptions": list(_PARAMETER_BPA_EXCEPTIONS),
+    }
+    if parameter.kind is ParameterKind.FIELD:
+        report["items"] = [
+            {"label": item.label, item.kind: f"{item.table}.{item.name}"}
+            for item in parameter.items
+        ]
+    elif parameter.kind is ParameterKind.SELECTOR:
+        report["values"] = list(parameter.values)
+    else:
+        report["range"] = [parameter.minimum, parameter.maximum, parameter.step]
+    if parameter.default:
+        report["default"] = parameter.default
+    if parameter.value_measure:
+        report["value_measure"] = parameter.value_measure
+    return report
 
 
 def _exceptions_report(key: str, items: list) -> dict:
@@ -1660,9 +1982,55 @@ def gold_product_report(
                 "tests": list(measure.tests),
                 "evidence": list(measure.evidence),
                 "data_validated_by_projection": False,
+                **(
+                    {"parameter_dependencies": list(measure.parameter_dependencies)}
+                    if measure.parameter_dependencies
+                    else {}
+                ),
+                **(
+                    {"format_string_expression": measure.format_string_expression}
+                    if measure.format_string_expression
+                    else {}
+                ),
             }
             for measure in spec.measures
         ],
+        # #1113: present only when authored, so a product without any keeps its report.
+        **(
+            {"parameters": [_parameter_report(item) for item in spec.parameters]}
+            if spec.parameters
+            else {}
+        ),
+        **(
+            {
+                "calculation_groups": [
+                    {
+                        "id": group.group_id,
+                        "name": group.display_name,
+                        "precedence": group.precedence,
+                        "items": [
+                            {
+                                "name": item.name,
+                                "ordinal": item.ordinal,
+                                "column_dependencies": [
+                                    f"{table}.{column}"
+                                    for table, column in item.column_dependencies
+                                ],
+                                **(
+                                    {"format_string": item.format_string}
+                                    if item.format_string
+                                    else {}
+                                ),
+                            }
+                            for item in group.items
+                        ],
+                    }
+                    for group in spec.calculation_groups
+                ]
+            }
+            if spec.calculation_groups
+            else {}
+        ),
         "calendar": (
             {
                 "approved": spec.calendar.approved,
@@ -1814,6 +2182,22 @@ def render_powerbi_artifacts(
         )
         artifacts[f"{definition}/calculationGroups/time-intelligence.tmdl"] = (
             _time_intelligence_tmdl(spec.calendar)
+        )
+    # #1113, DD-262. Named by the authored id, never the display name: a display name is
+    # free text, and the id is what the shaper checked against every table's file.
+    for parameter in spec.parameters:
+        artifacts[f"{definition}/tables/{parameter.parameter_id}.tmdl"] = _parameter_tmdl(
+            parameter,
+            tuple(
+                item
+                for item in spec.measures
+                if item.emitted and item.home_table == parameter.table_name
+            ),
+            ignores,
+        )
+    for group in spec.calculation_groups:
+        artifacts[f"{definition}/calculationGroups/{group.group_id}.tmdl"] = (
+            _calculation_group_tmdl(group)
         )
     roles = _security_tmdl(spec)
     if roles:

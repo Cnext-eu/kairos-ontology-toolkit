@@ -20,6 +20,7 @@ from .policy_specs import (
     GoldTableRole,
     LateArrivalAction,
     MeasureLifecycle,
+    ParameterKind,
 )
 
 
@@ -172,11 +173,94 @@ class GoldMeasureSpec:
     emitted: bool
     #: ``kairos-ext:measureDisplayName`` (DD-238). Empty keeps ``measure_id`` as the name.
     display_name: str = ""
+    #: Parameter ids this measure reads (#1113), each resolved to a product parameter.
+    parameter_dependencies: tuple[str, ...] = ()
+    #: DAX of a dynamic format string (#1113), emitted as ``formatStringDefinition``.
+    format_string_expression: str = ""
 
     @property
     def name(self) -> str:
         """The name the semantic model carries, and so the one DAX must reference."""
         return self.display_name or self.measure_id
+
+
+@dataclass(frozen=True, slots=True)
+class GoldParameterItemSpec:
+    """One resolved field-parameter item: what the viewer sees, and what it shows."""
+
+    label: str
+    #: "column" or "measure".
+    kind: str
+    #: The table the column or measure lives on, as the model names it.
+    table: str
+    #: The column name, or the measure's model name (its display name when it has one).
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class GoldParameterSpec:
+    """A report parameter, shaped against the product it belongs to (#1113, DD-262).
+
+    Emitted as a disconnected calculated table: no relationship, no Direct Lake data.
+    """
+
+    resource_uri: str
+    parameter_id: str
+    kind: ParameterKind
+    display_name: str
+    items: tuple[GoldParameterItemSpec, ...] = ()
+    values: tuple[str, ...] = ()
+    minimum: str = ""
+    maximum: str = ""
+    step: str = ""
+    default: str = ""
+    whole_numbers: bool = True
+    format_string: str = ""
+
+    @property
+    def table_name(self) -> str:
+        return self.display_name
+
+    @property
+    def order_column(self) -> str:
+        """The hidden column a field or selector sorts by; none for a range."""
+        return "" if self.kind is ParameterKind.RANGE else f"{self.display_name} Order"
+
+    @property
+    def fields_column(self) -> str:
+        """A field parameter's hidden NAMEOF column; none for the other kinds."""
+        return f"{self.display_name} Fields" if self.kind is ParameterKind.FIELD else ""
+
+    @property
+    def value_measure(self) -> str:
+        """``<name> Value``: what a selector or range reads as one value; none for a field."""
+        return "" if self.kind is ParameterKind.FIELD else f"{self.display_name} Value"
+
+    @property
+    def column_names(self) -> tuple[str, ...]:
+        return tuple(
+            name for name in (self.display_name, self.fields_column, self.order_column) if name
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GoldCalculationItemSpec:
+    name: str
+    ordinal: int
+    expression: str
+    format_string: str
+    column_dependencies: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GoldCalculationGroupSpec:
+    """An authored calculation group, shaped against its product (#1113, DD-262)."""
+
+    resource_uri: str
+    group_id: str
+    display_name: str
+    precedence: int
+    items: tuple[GoldCalculationItemSpec, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +373,12 @@ class DimensionalGoldSpec:
     #: Today only "type-mismatch": its two columns render as different TMDL types, which
     #: Direct Lake refuses to load and DirectQuery joins through an implicit cast.
     dropped_relationships: tuple[tuple[str, str, str], ...] = ()
+    #: Authored report parameters (#1113, DD-262), sorted by id. Each is a disconnected
+    #: calculated table that reads no Direct Lake data.
+    parameters: tuple[GoldParameterSpec, ...] = ()
+    #: Authored calculation groups (#1113, DD-262), sorted by id. The built-in Time
+    #: Intelligence group is not here: it follows from an approved calendar.
+    calculation_groups: tuple[GoldCalculationGroupSpec, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
